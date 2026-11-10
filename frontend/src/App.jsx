@@ -1,0 +1,139 @@
+// src/App.jsx
+import { Navigate, Route, Routes, useParams } from "react-router-dom";
+import { useAuth } from "./context/AuthContext";
+import { AuthOnly, Guard, Loading, homeFor } from "./components/Guards";
+import Catalog from "./components/catalog/Catalog";
+import { moduleIcon, moduleLabel } from "./constants/modules";
+// public / shared
+import AccountSuspended from "./pages/AccountSuspended";
+import Billing from "./pages/Billing";
+import Landing from "./pages/Landing";
+import Login from "./pages/Login";
+import PaymentSuccess from "./pages/PaymentSuccess";
+import MockPayment from "./pages/MockPayment";
+import Register from "./pages/Register";
+import VerifyEmail from "./pages/VerifyEmail";
+import OwnerPlaceholder from "./owner/pages/OwnerPlaceholder";
+import OwnerSettings from "./owner/pages/OwnerSettings";
+import BusinessWorkspace from "./owner/pages/BusinessWorkspace";
+
+// owner
+import OwnerDashboard from "./owner/pages/OwnerDashboard";
+import OwnerRoles from "./owner/pages/OwnerRoles";
+import OwnerStaff from "./owner/pages/OwnerStaff";
+
+// staff
+import StaffDashboard from "./staff/pages/StaffDashboard";
+import StaffLayout from "./staff/components/StaffLayout";
+import SelectPlan from "./pages/SelectPlan";
+import Checkout from "./pages/Checkout";
+import Features from "./pages/Features";
+import How from "./pages/Howitworks";
+import Industries from "./pages/Industries";
+import Businesses from "./pages/Businesses";
+import Pricing from "./pages/Plans";
+import OrdersDashboard from "./operations/OrdersDashboard";
+import RiderDeliveries from "./operations/RiderDeliveries";
+import AgentConsole from "./operations/AgentConsole";
+import AgentConversations from "./operations/AgentConversations";
+import PublicAgentPage from "./operations/PublicAgentPage";
+import DeliveriesDashboard from "./operations/DeliveriesDashboard";
+function Home() {
+  const { user, loading } = useAuth();
+  if (loading) return <Loading />;
+  if (!user) return <Landing />;
+  return <Navigate to={homeFor(user)} replace />;
+}
+function OwnerModulePage() {
+  const { moduleKey } = useParams();
+  if (moduleKey === "orders" || moduleKey === "deliveries") return <OrdersDashboard />;
+  return <Catalog moduleKey={moduleKey} />;
+}
+function ModuleGuard({ children }) {
+  const { user } = useAuth();
+  const { moduleKey } = useParams();
+  return user?.modules?.includes(moduleKey) ? children : <Navigate to="/staff/dashboard" replace />;
+}
+
+function StaffModulePage() {
+  const { moduleKey } = useParams();
+  if (moduleKey === "orders") return <OrdersDashboard staff />;
+  if (moduleKey === "deliveries") return <DeliveriesDashboard />;
+  if (moduleKey === "my_deliveries") return <RiderDeliveries />;
+  if (["products", "menu", "medicines", "services"].includes(moduleKey)) return <StaffLayout title={moduleLabel(moduleKey)}><Catalog moduleKey={moduleKey} /></StaffLayout>;
+  return (
+    <StaffLayout title={moduleLabel(moduleKey)}>
+      <div className="ad-empty">
+        <span>{moduleIcon(moduleKey)}</span>
+        <h3>{moduleLabel(moduleKey)}</h3>
+        <p>This page is coming soon.</p>
+      </div>
+    </StaffLayout>
+  );
+}
+export default function App() {
+  return (
+    <Routes>
+      <Route path="/" element={<Home />} />
+      <Route path="/login" element={<Login />} />
+      <Route path="/agent/:publicId" element={<PublicAgentPage />} />
+      <Route path="/register" element={<Register />} />
+      <Route path="/verify-email" element={<VerifyEmail />} />
+      <Route path="/select-plan" element={<Guard roles={["owner"]}><SelectPlan /></Guard>} />
+      <Route path="/checkout" element={<Guard roles={["owner"]}><Checkout /></Guard>} />
+      {/* <Route path="/select-plan" element={<AuthOnly><SelectPlan /></AuthOnly>} />
+      <Route path="/checkout" element={<AuthOnly><Checkout /></AuthOnly>} /> */}
+      <Route path="/account-suspended" element={<AuthOnly><AccountSuspended /></AuthOnly>} />
+      <Route path="/payment-success" element={<Guard roles={["owner"]}><PaymentSuccess /></Guard>} />
+      <Route path="/mock-payment" element={<Guard roles={["owner"]}><MockPayment /></Guard>} />
+      <Route path="/billing" element={<Guard roles={["owner"]}><Billing /></Guard>} />
+      <Route path="/features" element={<Features />} />
+      <Route path="/how" element={<How />} />
+      <Route path="/industries" element={<Industries />} />
+      <Route path="/businesses" element={<Businesses />} />
+      <Route path="/pricing" element={<Pricing />} />
+
+      <Route path="/owner/dashboard" element={<Guard roles={["owner"]}><OwnerDashboard /></Guard>} />
+      <Route path="/owner/staff" element={<Guard roles={["owner"]}><OwnerStaff /></Guard>} />
+      <Route path="/owner/roles" element={<Guard roles={["owner"]}><OwnerRoles /></Guard>} />
+
+      <Route
+        path="/owner/m/:moduleKey"
+        element={
+          <Guard roles={["owner"]}>
+            <OwnerModulePage />
+          </Guard>
+        }
+      />
+
+      {["ai-agent", "conversations", "knowledge", "channels"].map((p) => (
+        <Route
+          key={p}
+          path={`/owner/${p}`}
+          element={
+            <Guard roles={["owner"]}>
+              {p === "ai-agent" ? <AgentConsole /> : p === "conversations" ? <AgentConversations /> : p === "knowledge" ? <BusinessWorkspace /> : <OwnerPlaceholder />}
+            </Guard>
+          }
+        />
+      ))}
+
+      <Route path="/owner/business-workspace" element={<Guard roles={["owner"]}><BusinessWorkspace /></Guard>} />
+      <Route path="/owner/catalog" element={<Guard roles={["owner"]}><Catalog /></Guard>} />
+      <Route path="/owner/settings" element={<Guard roles={["owner"]}><OwnerSettings /></Guard>} />
+      <Route path="/owner/billing" element={<Navigate to="/owner/settings?tab=billing" replace />} />
+
+      <Route path="/staff/dashboard" element={<Guard roles={["staff"]}><StaffDashboard /></Guard>} />
+      <Route
+        path="/staff/:moduleKey"
+        element={
+          <Guard roles={["staff"]}>
+            <ModuleGuard><StaffModulePage /></ModuleGuard>
+          </Guard>
+        }
+      />
+
+      <Route path="*" element={<Navigate to="/" replace />} />
+    </Routes>
+  );
+}

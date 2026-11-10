@@ -1,0 +1,21 @@
+/* src/styles/roles.css  (owner.css ke saath import hoti hai; colors apne theme ke mutabiq badal lein) */
+.ow-mods { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 8px; margin: 8px 0 18px; }
+.ow-mod { display: flex; align-items: center; gap: 8px; padding: 10px 12px; border: 1px solid #e5e7eb; border-radius: 10px; cursor: pointer; font-size: 14px; }
+.ow-mod.on { border-color: #6366f1; background: rgba(99, 102, 241, 0.08); }
+.ow-mod input { accent-color: #6366f1; }
+
+.ow-chips { display: flex; flex-wrap: wrap; gap: 6px; margin: 10px 0 14px; }
+.ow-chip { font-size: 12px; padding: 4px 9px; border-radius: 999px; background: rgba(99, 102, 241, 0.1); }
+.ow-actions-row { display: flex; gap: 8px; flex-wrap: wrap; }
+
+.ow-select { width: 100%; padding: 9px 10px; border: 1px solid #e5e7eb; border-radius: 8px; background: transparent; color: inherit; font: inherit; margin-bottom: 10px; }
+.ow-modal.wide { max-width: 640px; }
+.ow-scroll { max-height: 70vh; overflow-y: auto; }
+
+/* Staff dashboard */
+.sd-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 14px; margin-top: 18px; }
+.sd-card { display: flex; flex-direction: column; gap: 8px; padding: 22px; border: 1px solid #e5e7eb; border-radius: 14px; text-decoration: none; color: inherit; }
+.sd-card span { font-size: 28px; }
+.sd-card:hover { border-color: #6366f1; }
+.sd-wrap { max-width: 960px; margin: 0 auto; padding: 28px 18px; }
+.sd-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
