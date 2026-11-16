@@ -1,7 +1,8 @@
 from django.urls import path
 from .views import (OrderCatalogAPIView, OrderListCreateAPIView, OrderStatusAPIView, RiderDeliveryAPIView,
                     DeliveryAssignAPIView, DeliveryListAPIView, DeliveryRiderListAPIView, AgentSettingsAPIView, AgentChatAPIView,
-                    AgentConversationListAPIView, OrderAssignAPIView, PublicAgentChatAPIView, PublicAgentCatalogAPIView, PublicAgentConversationAPIView)
+                    AgentConversationListAPIView, OrderAssignAPIView, PublicAgentChatAPIView, PublicAgentCatalogAPIView, PublicAgentConversationAPIView,
+                    WhatsAppWebhookAPIView, WhatsAppSettingsAPIView)
 
 urlpatterns = [
     path("orders/catalog/", OrderCatalogAPIView.as_view(), name="order-catalog"),
@@ -13,7 +14,9 @@ urlpatterns = [
     path("deliveries/assign/", DeliveryAssignAPIView.as_view(), name="assign-delivery"),
     path("deliveries/riders/", DeliveryRiderListAPIView.as_view(), name="delivery-riders"),
     path("agent/settings/", AgentSettingsAPIView.as_view(), name="agent-settings"),
+    path("agent/whatsapp-settings/", WhatsAppSettingsAPIView.as_view(), name="agent-whatsapp-settings"),
     path("agent/chat/", AgentChatAPIView.as_view(), name="agent-chat"),
+    path("whatsapp/webhook/", WhatsAppWebhookAPIView.as_view(), name="whatsapp-webhook"),
     path("public/agent/<uuid:public_id>/catalog/", PublicAgentCatalogAPIView.as_view(), name="public-agent-catalog"),
     path("public/agent/<uuid:public_id>/conversation/<uuid:conversation_id>/", PublicAgentConversationAPIView.as_view(), name="public-agent-conversation"),
     path("public/agent/<uuid:public_id>/chat/", PublicAgentChatAPIView.as_view(), name="public-agent-chat"),

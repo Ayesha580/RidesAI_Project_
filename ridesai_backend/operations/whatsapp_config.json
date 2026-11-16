@@ -1,0 +1,16 @@
+{
+  "default": {
+    "phone_number_id": "",
+    "access_token": "",
+    "verify_token": "ridesai_default_verify_token",
+    "is_active": false,
+    "updated_at": ""
+  },
+  "3": {
+    "phone_number_id": "1527102377143902",
+    "access_token": "EEAG123TYUI456POLK789BHGY148MNHUY8096VFDSH359BHGTL778NHUJM89900",
+    "verify_token": "ridesai_default_verify_token",
+    "is_active": true,
+    "updated_at": "2026-11-16T08:10:26.419089Z"
+  }
+}
