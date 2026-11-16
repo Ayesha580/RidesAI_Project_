@@ -38,6 +38,8 @@ import AgentConsole from "./operations/AgentConsole";
 import AgentConversations from "./operations/AgentConversations";
 import PublicAgentPage from "./operations/PublicAgentPage";
 import DeliveriesDashboard from "./operations/DeliveriesDashboard";
+import WhatsAppSettings from "./operations/components/agent-settings/WhatsAppSettings";
+import KnowledgeBaseForm from "./operations/components/agent-settings/KnowledgeBaseForm";
 function Home() {
   const { user, loading } = useAuth();
   if (loading) return <Loading />;
@@ -112,7 +114,7 @@ export default function App() {
           path={`/owner/${p}`}
           element={
             <Guard roles={["owner"]}>
-              {p === "ai-agent" ? <AgentConsole /> : p === "conversations" ? <AgentConversations /> : p === "knowledge" ? <BusinessWorkspace /> : <OwnerPlaceholder />}
+              {p === "ai-agent" ? <AgentConsole /> : p === "conversations" ? <AgentConversations /> : p === "knowledge" ? <KnowledgeBaseForm /> : <WhatsAppSettings />}
             </Guard>
           }
         />
