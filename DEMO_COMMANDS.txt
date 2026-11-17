@@ -1,0 +1,153 @@
+================================================================================
+RIDES AI — WHATSAPP WEBHOOK SIMULATION TEST COMMANDS (POWERSHELL)
+================================================================================
+Endpoint:           http://127.0.0.1:8000/api/operations/whatsapp/webhook/
+Target Phone ID:    1527102377143902
+Sender Phone (wa_id): 923090139836
+================================================================================
+
+PREREQUISITE:
+Ensure your Django development server is running in a terminal:
+  cd c:\Users\DELL\Desktop\RidesAI_Project_-main\ridesai_backend
+  .venv\Scripts\python.exe manage.py runserver 8000
+
+--------------------------------------------------------------------------------
+TEST CASE 1: Standard Menu Query ("show menu")
+--------------------------------------------------------------------------------
+Purpose: Verifies the AI Agent loads the business catalog and returns formatted items and prices.
+
+$body1 = @'
+{
+  "object": "whatsapp_business_account",
+  "entry": [
+    {
+      "id": "WHATSAPP_ENTRY_001",
+      "changes": [
+        {
+          "value": {
+            "messaging_product": "whatsapp",
+            "metadata": {
+              "display_phone_number": "15551234567",
+              "phone_number_id": "1527102377143902"
+            },
+            "contacts": [
+              {
+                "profile": { "name": "Sarah Customer" },
+                "wa_id": "923090139836"
+              }
+            ],
+            "messages": [
+              {
+                "from": "923090139836",
+                "id": "wamid.TEST_MENU_001",
+                "timestamp": "1710000001",
+                "type": "text",
+                "text": { "body": "show menu" }
+              }
+            ]
+          },
+          "field": "messages"
+        }
+      ]
+    }
+  ]
+}
+'@
+
+Invoke-RestMethod -Uri "http://127.0.0.1:8000/api/operations/whatsapp/webhook/" -Method Post -ContentType "application/json" -Body $body1
+
+
+--------------------------------------------------------------------------------
+TEST CASE 2: AI Greeting & Small Talk Test ("Hi! How are you doing today?")
+--------------------------------------------------------------------------------
+Purpose: Verifies greeting etiquette — agent responds warmly, acknowledges status, and pivots to store assistance.
+
+$body2 = @'
+{
+  "object": "whatsapp_business_account",
+  "entry": [
+    {
+      "id": "WHATSAPP_ENTRY_002",
+      "changes": [
+        {
+          "value": {
+            "messaging_product": "whatsapp",
+            "metadata": {
+              "display_phone_number": "15551234567",
+              "phone_number_id": "1527102377143902"
+            },
+            "contacts": [
+              {
+                "profile": { "name": "Sarah Customer" },
+                "wa_id": "923090139836"
+              }
+            ],
+            "messages": [
+              {
+                "from": "923090139836",
+                "id": "wamid.TEST_GREETING_002",
+                "timestamp": "1710000002",
+                "type": "text",
+                "text": { "body": "Hi! How are you doing today?" }
+              }
+            ]
+          },
+          "field": "messages"
+        }
+      ]
+    }
+  ]
+}
+'@
+
+Invoke-RestMethod -Uri "http://127.0.0.1:8000/api/operations/whatsapp/webhook/" -Method Post -ContentType "application/json" -Body $body2
+
+
+--------------------------------------------------------------------------------
+TEST CASE 3: Out-Of-Domain (OOD) Guardrail Test ("Can you give me a python script to save money?")
+--------------------------------------------------------------------------------
+Purpose: Verifies strict conversational guardrails — agent politely declines non-business tasks and steers back to the menu/store.
+
+$body3 = @'
+{
+  "object": "whatsapp_business_account",
+  "entry": [
+    {
+      "id": "WHATSAPP_ENTRY_003",
+      "changes": [
+        {
+          "value": {
+            "messaging_product": "whatsapp",
+            "metadata": {
+              "display_phone_number": "15551234567",
+              "phone_number_id": "1527102377143902"
+            },
+            "contacts": [
+              {
+                "profile": { "name": "Sarah Customer" },
+                "wa_id": "923090139836"
+              }
+            ],
+            "messages": [
+              {
+                "from": "923090139836",
+                "id": "wamid.TEST_OOD_003",
+                "timestamp": "1710000003",
+                "type": "text",
+                "text": { "body": "Can you give me a python script to save money?" }
+              }
+            ]
+          },
+          "field": "messages"
+        }
+      ]
+    }
+  ]
+}
+'@
+
+Invoke-RestMethod -Uri "http://127.0.0.1:8000/api/operations/whatsapp/webhook/" -Method Post -ContentType "application/json" -Body $body3
+
+================================================================================
+END OF DEMO COMMANDS
+================================================================================

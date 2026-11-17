@@ -1,13 +1,17 @@
 import json
 import logging
+import os
 import re
+import threading
 from decimal import Decimal, InvalidOperation
 
 import requests
 from django.conf import settings
 from django.db import transaction
-from django.http import HttpResponse
+from django.http import HttpResponse, HttpResponseForbidden, JsonResponse
 from django.shortcuts import get_object_or_404
+from django.utils.decorators import method_decorator
+from django.views.decorators.csrf import csrf_exempt
 from rest_framework.permissions import IsAuthenticated, AllowAny
 from rest_framework.throttling import AnonRateThrottle
 from rest_framework.response import Response
@@ -22,6 +26,8 @@ from .models import (Order, OrderItem, DeliveryAssignment, OrderEvent,
                      AgentConversation, AgentMessage, AgentActionLog)
 from .whatsapp_storage import (get_whatsapp_config, save_whatsapp_config,
                                is_valid_verify_token, get_config_by_phone_number_id)
+from .whatsapp_service import WhatsAppService, send_whatsapp_message
+from .whatsapp_agent import process_incoming_whatsapp_message
 
 logger = logging.getLogger(__name__)
 
@@ -696,12 +702,15 @@ class AgentConversationListAPIView(BusinessAPIView):
         return Response({"id": str(row.conversation_key), "status": row.status})
 
 
+@method_decorator(csrf_exempt, name="dispatch")
 class WhatsAppWebhookAPIView(APIView):
     """
     Public webhook endpoint for Meta WhatsApp Cloud API.
+    Handles verification handshake (GET) and incoming message dispatch (POST).
     URL: /api/operations/whatsapp/webhook/
     """
     permission_classes = [AllowAny]
+    authentication_classes = []
 
     def get(self, request):
         """
@@ -712,27 +721,35 @@ class WhatsAppWebhookAPIView(APIView):
         token = request.GET.get("hub.verify_token")
         challenge = request.GET.get("hub.challenge")
 
-        print(f"[WhatsApp Webhook Handshake] Received mode={mode}, token={token}, challenge={challenge}")
+        logger.info(f"[WhatsApp Webhook Handshake] Received mode={mode}, token={token}, challenge={challenge}")
 
-        if mode == "subscribe" and token and is_valid_verify_token(token):
-            logger.info("[WhatsApp Webhook] Verification successful.")
-            print("[WhatsApp Webhook] Handshake verified successfully!")
+        # Check against Django settings, environment variable, or stored tenant tokens
+        configured_token = getattr(settings, "WHATSAPP_VERIFY_TOKEN", None) or os.getenv(
+            "WHATSAPP_VERIFY_TOKEN", "rides_default_verify_token"
+        )
+        is_token_valid = (token == configured_token) or is_valid_verify_token(token)
+
+        if mode == "subscribe" and challenge and is_token_valid:
+            logger.info("[WhatsApp Webhook] Handshake verified successfully.")
             return HttpResponse(challenge, content_type="text/plain", status=200)
 
-        logger.warning(f"[WhatsApp Webhook] Handshake verification failed for token={token}")
-        print(f"[WhatsApp Webhook] Handshake rejected for token: {token}")
-        return HttpResponse("Verification failed: invalid token or mode.", status=403)
+        logger.warning(f"[WhatsApp Webhook] Handshake rejected for token: {token}, mode: {mode}")
+        return HttpResponseForbidden("Verification failed")
 
     def post(self, request):
         """
         Receives incoming WhatsApp messages and notifications from Meta.
-        Logs and prints incoming messages for developer inspection.
+        Parses customer inquiries/order requests, triggers background AI agent processing,
+        and returns an immediate HTTP 200 response to Meta.
         """
-        payload = request.data
-        print("=" * 60)
-        print("[WHATSAPP WEBHOOK POST INCOMING PAYLOAD]")
-        print(json.dumps(payload, indent=2) if isinstance(payload, (dict, list)) else str(payload))
-        print("=" * 60)
+        try:
+            if isinstance(request.data, dict):
+                payload = request.data
+            else:
+                payload = json.loads(request.body.decode("utf-8"))
+        except Exception as e:
+            logger.error(f"[WhatsApp Webhook] Error parsing request JSON: {e}", exc_info=True)
+            return JsonResponse({"status": "error", "message": "Invalid JSON"}, status=400)
 
         logger.info(f"[WhatsApp Webhook] Received event payload: {payload}")
 
@@ -743,21 +760,53 @@ class WhatsAppWebhookAPIView(APIView):
                 for change in changes:
                     value = change.get("value", {})
                     metadata = value.get("metadata", {})
-                    phone_number_id = metadata.get("phone_number_id")
+                    phone_number_id = str(metadata.get("phone_number_id", "")).strip()
+
+                    # Ignore status delivery events (sent, delivered, read)
+                    if "statuses" in value and "messages" not in value:
+                        logger.debug("[WhatsApp Webhook] Received status event acknowledgment.")
+                        continue
+
                     messages = value.get("messages", [])
                     contacts = value.get("contacts", [])
-                    sender_name = contacts[0].get("profile", {}).get("name", "Unknown") if contacts else "Unknown"
+                    sender_name = contacts[0].get("profile", {}).get("name", "Customer") if contacts else "Customer"
 
                     for msg in messages:
-                        sender_phone = msg.get("from")
+                        sender_phone = str(msg.get("from", "")).strip()
                         msg_type = msg.get("type")
-                        content = msg.get("text", {}).get("body") if msg_type == "text" else f"[{msg_type}]"
-                        print(f"--> [WhatsApp Message] Business Phone ID: {phone_number_id} | From: {sender_name} ({sender_phone}) | Content: '{content}'")
-        except Exception as e:
-            logger.error(f"[WhatsApp Webhook] Error parsing message structure: {e}")
 
-        # Meta requires an immediate 200 OK acknowledgment
-        return HttpResponse("EVENT_RECEIVED", status=200)
+                        # Extract content from text or interactive button/list selections
+                        content = ""
+                        if msg_type == "text":
+                            content = msg.get("text", {}).get("body", "").strip()
+                        elif msg_type == "interactive":
+                            interactive = msg.get("interactive", {})
+                            content = (
+                                interactive.get("button_reply", {}).get("title")
+                                or interactive.get("list_reply", {}).get("title")
+                                or ""
+                            )
+                        else:
+                            content = f"[{msg_type} message]"
+
+                        logger.info(
+                            f"[WhatsApp Message] Phone ID: {phone_number_id} | "
+                            f"From: {sender_name} ({sender_phone}) | Content: '{content}'"
+                        )
+
+                        # Trigger background processing so Meta receives instant HTTP 200 within timeout window
+                        if sender_phone and content:
+                            worker = threading.Thread(
+                                target=process_incoming_whatsapp_message,
+                                args=(sender_phone, content, phone_number_id, sender_name),
+                                daemon=True,
+                            )
+                            worker.start()
+
+        except Exception as e:
+            logger.error(f"[WhatsApp Webhook] Error processing incoming payload: {e}", exc_info=True)
+
+        return JsonResponse({"status": "success"}, status=200)
 
 
 class WhatsAppSettingsAPIView(BusinessAPIView):
@@ -784,8 +833,27 @@ class WhatsAppSettingsAPIView(BusinessAPIView):
         if request.user.role != User.ROLE_OWNER:
             return Response({"detail": "Only business owners can configure WhatsApp settings."}, status=403)
 
+        # Basic input validation — phone_number_id and access_token are required
+        phone_number_id = str(request.data.get("phone_number_id", "")).strip()
+        access_token = str(request.data.get("access_token", "")).strip()
+
+        if not phone_number_id or not access_token:
+            return Response(
+                {"status": "error", "message": "Both 'phone_number_id' and 'access_token' are required fields."},
+                status=400,
+            )
+
         company_id = self.company.id if self.company else None
-        updated = save_whatsapp_config(request.data, company_id=company_id)
+
+        try:
+            updated = save_whatsapp_config(request.data, company_id=company_id)
+        except Exception as e:
+            logger.error(f"[WhatsApp Config] Failed to save config for company {company_id}: {e}", exc_info=True)
+            return Response(
+                {"status": "error", "message": "Failed to save WhatsApp configuration. Please try again."},
+                status=500,
+            )
+
         return Response({
             "status": "success",
             "message": "WhatsApp settings updated successfully in temporary file storage.",

@@ -138,14 +138,30 @@ def is_valid_verify_token(token: str) -> bool:
 def get_config_by_phone_number_id(phone_number_id: str) -> dict | None:
     """
     Finds the company config matching an incoming Meta message's recipient phone number ID.
+    Returns config dictionary including company_id (or None if default/unlinked).
     """
     if not phone_number_id:
         return None
 
     with _file_lock:
         configs = _load_all_configs()
-        for _, cfg in configs.items():
-            if isinstance(cfg, dict) and cfg.get("phone_number_id") == str(phone_number_id):
-                return cfg
+        # Check specific company entries first
+        for key, cfg in configs.items():
+            if key != "default" and isinstance(cfg, dict) and cfg.get("phone_number_id") == str(phone_number_id):
+                res = dict(cfg)
+                res["company_id"] = key
+                return res
+
+        # Check default config
+        if "default" in configs and isinstance(configs["default"], dict):
+            default_cfg = configs["default"]
+            if default_cfg.get("phone_number_id") == str(phone_number_id):
+                res = dict(default_cfg)
+                res["company_id"] = None
+                return res
+            if default_cfg.get("phone_number_id"):
+                res = dict(default_cfg)
+                res["company_id"] = None
+                return res
 
     return None

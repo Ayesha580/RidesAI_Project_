@@ -27,8 +27,8 @@ SECRET_KEY = os.environ.get("DJANGO_SECRET_KEY", "dev-only-change-this-secret-be
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = os.environ.get("DJANGO_DEBUG", "True").lower() in ("1", "true", "yes")
 
-ALLOWED_HOSTS = [host.strip() for host in os.environ.get("DJANGO_ALLOWED_HOSTS", "localhost,127.0.0.1").split(",") if host.strip()]
-
+#ALLOWED_HOSTS = [host.strip() for host in os.environ.get("DJANGO_ALLOWED_HOSTS", "localhost,127.0.0.1").split(",") if host.strip()]
+ALLOWED_HOSTS = ["localhost", "127.0.0.1", ".ngrok-free.dev", "*"]
 INSTALLED_APPS = [
     "django.contrib.auth",
     "django.contrib.contenttypes",
