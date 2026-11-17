@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { billingApi } from "../../../api/billingApi";
 import { errorText } from "../../../api/axiosClient";
+import { useEffect as useReactEffect, useState as useReactState } from "react";
 
 const STATUS = {
   trialing: { label: "Plan", tone: "pink" },
@@ -10,6 +11,7 @@ const STATUS = {
   past_due: { label: "Payment due", tone: "amber" },
   canceled: { label: "Canceled", tone: "red" },
   revoked: { label: "Ended", tone: "red" },
+  pending_approval: { label: "Approval pending", tone: "grey" },
 };
 
 const INCLUDED = [
@@ -36,6 +38,65 @@ const dateLabel = (status) =>
     trial_expired: "Trial ended on",
   }[status] || "Next date");
 
+
+function ManualClientPanel({ info, suspended }) {
+  const [payment, setPayment] = useReactState({ amount: "", currency: "USD", payment_reference: "", notes: "" });
+  const [proof, setProof] = useReactState(null);
+  const [email, setEmail] = useReactState({ email_address: "", domain: "", status: "not_started" });
+  const [busy, setBusy] = useReactState(false);
+  const [notice, setNotice] = useReactState("");
+  const [error, setError] = useReactState("");
+  useReactEffect(() => { billingApi.businessEmail().then(({ data }) => setEmail({ email_address: data.email_address || "", domain: data.domain || "", status: data.status || "not_started" })).catch(() => {}); }, []);
+  const submitPayment = async (e) => {
+    e.preventDefault(); setBusy(true); setError(""); setNotice("");
+    const fd = new FormData(); Object.entries(payment).forEach(([k,v]) => fd.append(k,v)); if (proof) fd.append("proof", proof);
+    try { await billingApi.submitManualPayment(fd); setNotice("Your payment details have been submitted for administrator review."); } catch (e2) { setError(errorText(e2)); } finally { setBusy(false); }
+  };
+  const saveEmail = async (e) => {
+    e.preventDefault(); setBusy(true); setError(""); setNotice("");
+    try { await billingApi.saveBusinessEmail(email); setNotice("Business email setup details saved."); } catch (e2) { setError(errorText(e2)); } finally { setBusy(false); }
+  };
+  const fmt = (v) => v ? new Date(v).toLocaleDateString(undefined,{day:"numeric",month:"short",year:"numeric"}) : "Not set";
+  const pct = info.message_limit ? Math.min(100, (info.messages_used / info.message_limit) * 100) : 0;
+  return <div className="se-stack">
+    {error && <div className="ad-alert" role="alert">{error}</div>}
+    {notice && <div className="se-ok" role="status">{notice}</div>}
+    <section className="se-card">
+      <div className="se-plan-top"><div><span className="se-eyebrow">Client access</span><h2>Initial access & renewal</h2></div><span className={`se-badge ${suspended ? "red" : info.status === "past_due" ? "amber" : "green"}`}>{suspended ? "Suspended" : info.status === "past_due" ? "Payment due" : info.status === "pending_approval" ? "Pending approval" : "Access active"}</span></div>
+      <dl className="se-rows">
+        <div><dt>Access expires</dt><dd>{fmt(info.access_expires_at)}</dd></div>
+        <div><dt>Renewal due</dt><dd>{fmt(info.next_due_date)}</dd></div>
+        <div><dt>Days remaining</dt><dd>{info.days_left ?? "—"}</dd></div>
+        <div><dt>Grace period ends</dt><dd>{fmt(info.grace_ends_at)}</dd></div>
+      </dl>
+      <div style={{marginTop:16}}><div style={{display:"flex",justifyContent:"space-between",fontSize:13,marginBottom:7}}><strong>Message usage</strong><span>{info.messages_used} / {info.message_limit}</span></div><div style={{height:9,background:"#eee",borderRadius:99,overflow:"hidden"}}><div style={{height:"100%",width:`${pct}%`,background:"#c026d3",borderRadius:99}} /></div><small style={{display:"block",marginTop:7,color:"#777"}}>{info.messages_remaining} messages remaining in this usage period. The limit is set by the administrator.</small></div>
+    </section>
+    <section className="se-card">
+      <h3>Manual payment</h3><p className="se-sub">There are no subscription plans or automatic online checkout for this client. Submit your transfer details for admin confirmation.</p>
+      <div className="se-ok">{info.payment_instructions || "Please contact the RidesAI administrator for current payment details."}</div>
+      {info.latest_payment?.status === "pending" && <div className="se-ok">Your latest payment is awaiting administrator review.</div>}
+      {info.status === "payment_rejected" && <div className="ad-alert">Your last payment submission was not approved. Please contact the administrator or submit corrected details.</div>}
+      {info.status === "past_due" && <div className="ad-alert">Your renewal is overdue. You have a three-day grace period before dashboard access is suspended.</div>}
+      <form onSubmit={submitPayment} className="se-stack">
+        <div className="se-two"><div className="se-field"><label>Amount paid (optional)</label><input type="number" min="0" step="0.01" value={payment.amount} onChange={e=>setPayment({...payment,amount:e.target.value})} /></div><div className="se-field"><label>Currency</label><input value={payment.currency} onChange={e=>setPayment({...payment,currency:e.target.value.toUpperCase()})} maxLength={10}/></div></div>
+        <div className="se-field"><label>Transaction/reference number</label><input value={payment.payment_reference} onChange={e=>setPayment({...payment,payment_reference:e.target.value})} /></div>
+        <div className="se-field"><label>Payment proof (optional)</label><input type="file" accept="image/*,.pdf" onChange={e=>setProof(e.target.files?.[0] || null)} /></div>
+        <div className="se-field"><label>Additional notes</label><input value={payment.notes} onChange={e=>setPayment({...payment,notes:e.target.value})} /></div>
+        <div className="se-actions"><button className="ad-btn ad-btn-primary" disabled={busy || info.latest_payment?.status === "pending"}>{busy ? "Submitting..." : "Submit payment for review"}</button></div>
+      </form>
+    </section>
+    <section className="se-card">
+      <h3>Business Gmail setup</h3><p className="se-sub">Set up or connect the email account your business will use. RidesAI does not ask for or store your Google password.</p>
+      <div className="se-actions" style={{marginBottom:14}}><a className="ad-btn ad-btn-ghost" href="https://accounts.google.com/signup" target="_blank" rel="noreferrer">Create a Gmail account ↗</a><a className="ad-btn ad-btn-ghost" href="https://workspace.google.com/" target="_blank" rel="noreferrer">Google Workspace ↗</a></div>
+      <form onSubmit={saveEmail} className="se-stack">
+        <div className="se-field"><label>Business email address</label><input type="email" placeholder="yourbusiness@gmail.com or info@yourdomain.com" value={email.email_address} onChange={e=>setEmail({...email,email_address:e.target.value})}/></div>
+        <div className="se-two"><div className="se-field"><label>Business domain (if applicable)</label><input placeholder="yourbusiness.com" value={email.domain} onChange={e=>setEmail({...email,domain:e.target.value})}/></div><div className="se-field"><label>Setup status</label><select value={email.status} onChange={e=>setEmail({...email,status:e.target.value})}><option value="not_started">Not started</option><option value="in_progress">In progress</option><option value="completed">Completed</option></select></div></div>
+        <div className="se-actions"><button className="ad-btn ad-btn-primary" disabled={busy}>{busy ? "Saving..." : "Save business email details"}</button></div>
+      </form>
+      <p className="se-note">A custom address such as info@yourdomain.com requires a domain and Google Workspace. A free @gmail.com address can be created through Google directly.</p>
+    </section>
+  </div>;
+}
 
 export default function BillingTab({ suspended }) {
   const [info, setInfo] = useState(null);
@@ -89,13 +150,14 @@ export default function BillingTab({ suspended }) {
       : <div className="ad-skeleton" style={{ height: 360 }} />;
   }
 
+  if (info.mode === "manual") return <ManualClientPanel info={info} suspended={suspended || info.status === "suspended"} />;
 
   const st = STATUS[info.status] || { label: info.status, tone: "grey" };
   const trialPct =
     info.status === "trialing" && info.days_left != null
       ? Math.min(100, Math.max(0, (info.days_left / 30) * 100))
       : null;
-  const hasPortal = !info.can_subscribe;
+  const hasPortal = !info.can_subscribe && info.status !== "pending_approval";
 
   return (
     <div className="se-stack">
@@ -208,7 +270,7 @@ export default function BillingTab({ suspended }) {
                 <button
                   className="ad-btn ad-btn-ghost"
                   onClick={() => payNow(hasPortal)}
-                  disabled={busy}
+                  disabled={busy || info.status === "pending_approval"}
                 >
                   {hasPortal ? "Change card / Manage payment ↗" : "Add payment method"}
                 </button>
@@ -228,11 +290,6 @@ export default function BillingTab({ suspended }) {
           </section>
         </div>
       </div>
-      <section className="se-card" style={{ marginTop: 16 }}>
-        <h3>Payment history</h3>
-        {!info.payment_history?.length ? <p className="se-sub">No payments recorded yet.</p> : <div style={{ overflowX: "auto" }}><table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}><thead><tr><th style={{ textAlign: "left", padding: 10 }}>Date</th><th style={{ textAlign: "left", padding: 10 }}>Amount</th><th style={{ textAlign: "left", padding: 10 }}>Status</th></tr></thead><tbody>{info.payment_history.map((payment) => <tr key={payment.id}><td style={{ padding: 10, borderTop: "1px solid #eee" }}>{fmtDate(payment.created_at)}</td><td style={{ padding: 10, borderTop: "1px solid #eee" }}>{payment.amount ?? "-"} {payment.currency || ""}</td><td style={{ padding: 10, borderTop: "1px solid #eee", textTransform: "capitalize" }}>{payment.status}</td></tr>)}</tbody></table></div>}
-      </section>
-      {info.message_limit != null && <section className="se-card" style={{ marginTop: 16 }}><h3>AI message usage</h3><p className="se-sub">{info.messages_used || 0} used · {info.messages_remaining ?? info.message_limit} remaining of {info.message_limit} messages this period.</p></section>}
     </div>
   );
 }

@@ -118,7 +118,7 @@ export default function Register() {
       setVerificationEmail(email);
       setVerificationSent(data.verification_email_sent !== false);
       setRegistered(true);
-      navigate(`/verify-email?email=${encodeURIComponent(email)}&sent=${data.verification_email_sent === false ? "0" : "1"}`);
+      navigate(`/verify-email?email=${encodeURIComponent(email)}`);
     } catch (err) {
       const responseData = err?.response?.data;
       const backendErrors = {};

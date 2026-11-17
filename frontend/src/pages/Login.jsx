@@ -32,22 +32,20 @@ export default function Login() {
 
     try {
       const { data } = await authApi.login(form);
-      await signIn(data);
-
-      const isOverrideOrActive =
-        data?.user?.is_manual_override === true ||
-        data?.user?.company_details?.is_manual_override === true ||
-        data?.user?.subscription_status === "active" ||
-        data?.user?.company_details?.subscription_status === "active" ||
-        data?.is_manual_override === true ||
-        data?.subscription_status === "active";
-
-      const target =
-        isOverrideOrActive && (data?.redirect === "/select-plan" || data?.redirect === "/billing")
-          ? "/owner/dashboard"
-          : (data?.redirect || "/owner/dashboard");
-
-      navigate(target, { replace: true });
+      const me = await signIn(data);
+      const isOverrideOrActive = Boolean(
+        me?.is_manual_override ||
+        me?.subscription_status === "active" ||
+        me?.company_details?.is_manual_override ||
+        me?.company_details?.subscription_status === "active" ||
+        data?.is_manual_override ||
+        data?.subscription_status === "active"
+      );
+      if (isOverrideOrActive && (data.redirect === "/select-plan" || data.redirect === "/billing")) {
+        navigate("/owner/dashboard", { replace: true });
+      } else {
+        navigate(me?.redirect || data.redirect, { replace: true });
+      }
     } catch (err) {
       const responseData = err?.response?.data;
       setError(errorText(err));
@@ -118,31 +116,20 @@ export default function Login() {
             {error && <div className="au-alert" role="alert">{error}</div>}
 
             {verificationEmail && (
-              <div className="au-verification-actions">
-                <button
-                  type="button"
-                  className="au-resend"
-                  onClick={() => navigate(`/verify-email?email=${encodeURIComponent(verificationEmail)}`)}
-                >
-                  Enter verification code
-                </button>
-                <button
-                  type="button"
-                  className="au-resend"
-                  onClick={async () => {
-                    try {
-                      const { data } = await authApi.resendVerification(verificationEmail);
-                      setError(data?.verification_email_sent === false
-                        ? "We couldn't send the email. Check the backend SMTP settings and try again."
-                        : "If this account is still unverified, a fresh verification email has been sent.");
-                    } catch (err) {
-                      setError(errorText(err));
-                    }
-                  }}
-                >
-                  Resend verification email
-                </button>
-              </div>
+              <button
+                type="button"
+                className="au-resend"
+                onClick={async () => {
+                  try {
+                    await authApi.resendVerification(verificationEmail);
+                    setError("If this account is still unverified, a fresh verification email has been sent.");
+                  } catch {
+                    setError("Could not resend the verification email. Please try again later.");
+                  }
+                }}
+              >
+                Resend verification email
+              </button>
             )}
 
             <div className="au-field">

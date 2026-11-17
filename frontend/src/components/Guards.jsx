@@ -8,22 +8,20 @@ const ROLE_HOME = {
   manager: "/manager/dashboard",
   kitchen: "/kitchen/dashboard",
   employee: "/employee/dashboard",
+  superadmin: "/admin/dashboard",
 };
 
 export const isUserOverrideOrActive = (user) =>
   Boolean(
-    user?.is_manual_override === true ||
-    user?.company_details?.is_manual_override === true ||
+    user?.is_manual_override ||
     user?.subscription_status === "active" ||
+    user?.company_details?.is_manual_override ||
     user?.company_details?.subscription_status === "active"
   );
 
 export const homeFor = (user) => {
   if (isUserOverrideOrActive(user)) {
-    return ROLE_HOME[user?.role] || "/owner/dashboard";
-  }
-  if (user?.redirect === "/select-plan" && isUserOverrideOrActive(user)) {
-    return ROLE_HOME[user?.role] || "/owner/dashboard";
+    return "/owner/dashboard";
   }
   return user?.redirect || ROLE_HOME[user?.role] || "/login";
 };
@@ -39,14 +37,14 @@ export function Guard({ roles, children }) {
   const { user, loading } = useAuth();
   if (loading) return <Loading />;
   if (!user) return <Navigate to="/login" replace />;
-  const normalizedRole = user.role === "Employee" ? "staff" : user.role;
 
-  const overrideActive = isUserOverrideOrActive(user);
+  if (user.role !== "superadmin") {
+    // Admin review has been removed. Keep billing suspension protection.
+    if (!isUserOverrideOrActive(user) && user.access_state === "suspended")
+      return <Navigate to="/billing" replace />;
+  }
 
-  if (user.access_state === "suspended" && !overrideActive)
-    return <Navigate to={normalizedRole === "owner" ? "/billing" : "/account-suspended"} replace />;
-
-  if (roles && !roles.includes(normalizedRole)) {
+  if (roles && !roles.includes(user.role)) {
     const target = homeFor(user);
     return <Navigate to={target === "/login" ? "/login" : target} replace />;
   }

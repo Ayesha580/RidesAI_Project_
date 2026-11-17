@@ -79,6 +79,7 @@
   border-radius: 9px;
   display: inline-flex;
   align-items: center;
+  color:#ffffff;
   justify-content: center;
   gap: 17px;
   font-size: 14px;
@@ -1429,7 +1430,7 @@
 
 .lp-btn-light {
   background: #fff;
-  color: #d34bd3 !important;
+  color: #fff !important;
   box-shadow: 0 10px 30px rgba(120, 35, 120, .17);
 }
 
@@ -1870,10 +1871,11 @@
   align-items:center;
   flex-shrink:0;
 }
-.lp-logo img{
-  width:145px;
-  height:90px;
-  object-fit:contain;
+.lp-logo img {
+  width: 75px;
+  height: 75px;          
+  object-fit: cover;     
+  border-radius: 50%;    
 }
 .lp-links{
   display:flex;

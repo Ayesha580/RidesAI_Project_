@@ -1,12 +1,12 @@
 import { Link } from "react-router-dom";
 import Navbar from "../components/Navbar";
 import Footer from "../components/Footer";
-import { PageCta } from "../components/page_hero";
+import { PageCta } from "../components/PageHero";
 import {
   STEP_DETAILS,
   ORDER_FLOW,
   CHANNELS,
-} from "../data/site_content";
+} from "../data/siteContent";
 
 import "../styles/landing.css";
 import "../styles/pages.css";

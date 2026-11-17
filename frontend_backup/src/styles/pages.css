@@ -1,0 +1,456 @@
+/* =========================================================
+   INNER PAGES (Features, How It Works, Industries, Plans,
+   Businesses). Uses the same tokens as landing.css.
+   ========================================================= */
+
+/* active link in the navbar */
+.lp-links > a.active {
+  color: #e84fe8;
+  font-weight: 600;
+}
+
+/* ---------- PAGE HERO ---------- */
+.lp-page-hero {
+  position: relative;
+  padding: 95px 0 75px;
+  text-align: center;
+  overflow: hidden;
+  background:
+    radial-gradient(ellipse at 80% 20%, rgba(255, 119, 255, .13), transparent 40%),
+    radial-gradient(ellipse at 10% 90%, rgba(255, 119, 255, .09), transparent 38%),
+    linear-gradient(135deg, #fff 0%, #fffaff 55%, #fff4ff 100%);
+  border-bottom: 1px solid #f5e7f5;
+}
+.lp-page-hero-inner {
+  position: relative;
+  z-index: 2;
+  max-width: 760px;
+}
+.lp-page-hero h1 {
+  margin: 0;
+  font-size: clamp(36px, 5vw, 58px);
+  line-height: 1.13;
+  letter-spacing: -2.4px;
+  font-weight: 850;
+}
+.lp-page-hero p {
+  max-width: 580px;
+  margin: 22px auto 0;
+  color: var(--lp-muted);
+  font-size: 15px;
+  line-height: 1.85;
+}
+.lp-page-hero-cta {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 13px;
+  margin-top: 30px;
+}
+
+/* ---------- SHARED LIST ---------- */
+.lp-check-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 11px;
+}
+.lp-check-list li {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  color: #615965;
+  font-size: 12px;
+  line-height: 1.7;
+}
+.lp-check-list li span {
+  flex-shrink: 0;
+  width: 19px;
+  height: 19px;
+  display: grid;
+  place-items: center;
+  margin-top: 1px;
+  border-radius: 50%;
+  background: #fff0ff;
+  color: #d94fd9;
+  font-size: 10px;
+  font-weight: 900;
+}
+
+/* ---------- FEATURES ---------- */
+.lp-detail-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 20px;
+}
+.lp-detail-card {
+  padding: 30px 28px;
+  background: #fff;
+  border: 1px solid #f1e6f1;
+  border-radius: 14px;
+  transition: .35s ease;
+}
+.lp-detail-card:hover {
+  transform: translateY(-6px);
+  border-color: #f2b8f2;
+  box-shadow: 0 18px 40px rgba(176, 92, 176, .11);
+}
+.lp-detail-card .lp-feature-icon {
+  margin-bottom: 18px;
+}
+.lp-detail-card h3 {
+  margin: 0 0 8px;
+  font-size: 18px;
+  font-weight: 800;
+}
+.lp-detail-intro {
+  margin: 0 0 18px;
+  color: #89818d;
+  font-size: 13px;
+  line-height: 1.7;
+}
+
+.lp-trust-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 16px;
+}
+.lp-trust-grid-3 {
+  grid-template-columns: repeat(3, 1fr);
+}
+.lp-trust-card {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 24px 22px;
+  background: #fff;
+  border: 1px solid #f0e5f1;
+  border-radius: 12px;
+  transition: .3s;
+}
+.lp-trust-card:hover {
+  transform: translateY(-5px);
+  border-color: #f0b9f0;
+  box-shadow: 0 12px 28px rgba(180, 85, 180, .1);
+}
+.lp-trust-card strong {
+  font-size: 14px;
+}
+.lp-trust-card p {
+  margin: 0;
+  color: #89818d;
+  font-size: 12px;
+  line-height: 1.75;
+}
+
+/* ---------- HOW IT WORKS ---------- */
+.lp-timeline {
+  position: relative;
+  max-width: 820px;
+  margin: auto;
+  display: grid;
+  gap: 38px;
+}
+.lp-timeline::before {
+  content: "";
+  position: absolute;
+  top: 30px;
+  bottom: 30px;
+  left: 32px;
+  width: 1px;
+  background: linear-gradient(180deg, #ff77ff, #f2e5f2);
+}
+.lp-timeline-item {
+  position: relative;
+  display: flex;
+  gap: 26px;
+}
+.lp-timeline-item .lp-step-number {
+  position: relative;
+  z-index: 1;
+  flex-shrink: 0;
+  margin: 0;
+  background: #fff0ff;
+}
+.lp-timeline-body {
+  flex: 1;
+  min-width: 0;
+  padding: 22px 26px;
+  background: #fff;
+  border: 1px solid #f1e6f1;
+  border-radius: 14px;
+}
+.lp-timeline-body h3 {
+  margin: 0 0 7px;
+  font-size: 17px;
+}
+.lp-timeline-body > p {
+  margin: 0 0 16px;
+  color: #89818d;
+  font-size: 13px;
+  line-height: 1.75;
+}
+
+.lp-split {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  align-items: center;
+  gap: 65px;
+}
+.lp-split-title {
+  margin: 0;
+  font-size: clamp(30px, 3.6vw, 42px);
+  line-height: 1.2;
+  font-weight: 800;
+  letter-spacing: -1.5px;
+}
+.lp-split-text {
+  margin: 18px 0 0;
+  max-width: 440px;
+  color: var(--lp-muted);
+  font-size: 14px;
+  line-height: 1.9;
+}
+.lp-flow-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 12px;
+}
+.lp-flow-list li {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 14px 16px;
+  background: #fff;
+  border: 1px solid #f1e6f1;
+  border-radius: 12px;
+  color: #4f4753;
+  font-size: 13px;
+  line-height: 1.6;
+}
+.lp-flow-list li span {
+  flex-shrink: 0;
+  width: 30px;
+  height: 30px;
+  display: grid;
+  place-items: center;
+  border-radius: 9px;
+  background: linear-gradient(135deg, #ff77ff, #e45de4);
+  color: #fff;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+/* ---------- INDUSTRIES ---------- */
+.lp-industry-detail-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 16px;
+}
+.lp-industry-detail {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 20px 22px;
+  background: #fff;
+  border: 1px solid #f0e5f1;
+  border-radius: 12px;
+  transition: .3s;
+}
+.lp-industry-detail:hover {
+  transform: translateY(-4px);
+  border-color: #f0b9f0;
+  box-shadow: 0 12px 28px rgba(180, 85, 180, .1);
+}
+.lp-industry-detail .lp-industry-icon {
+  flex-shrink: 0;
+}
+.lp-industry-detail h3 {
+  margin: 0 0 4px;
+  font-size: 14px;
+}
+.lp-industry-detail p {
+  margin: 0;
+  color: #89818d;
+  font-size: 12px;
+  line-height: 1.65;
+}
+
+/* ---------- PLANS ---------- */
+.lp-plans-section {
+  padding-top: 70px;
+}
+.lp-faq {
+  max-width: 740px;
+  margin: auto;
+  display: grid;
+  gap: 12px;
+}
+.lp-faq-item {
+  background: #fff;
+  border: 1px solid #f0e5f1;
+  border-radius: 12px;
+  transition: border-color .25s, box-shadow .25s;
+}
+.lp-faq-item[open] {
+  border-color: #f0b9f0;
+  box-shadow: 0 10px 25px rgba(180, 85, 180, .08);
+}
+.lp-faq-item summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 18px 20px;
+  list-style: none;
+  cursor: pointer;
+  font-size: 14px;
+  font-weight: 700;
+}
+.lp-faq-item summary::-webkit-details-marker {
+  display: none;
+}
+.lp-faq-item summary::after {
+  content: "+";
+  flex-shrink: 0;
+  width: 26px;
+  height: 26px;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  background: #fff0ff;
+  color: #d94fd9;
+  font-size: 17px;
+  font-weight: 700;
+  transition: transform .25s;
+}
+.lp-faq-item[open] summary::after {
+  transform: rotate(45deg);
+}
+.lp-faq-item p {
+  margin: 0;
+  padding: 0 20px 20px;
+  color: #7d7581;
+  font-size: 13px;
+  line-height: 1.85;
+}
+
+/* ---------- BUSINESSES ---------- */
+.lp-search {
+  max-width: 440px;
+  margin: 0 auto 32px;
+}
+.lp-search input {
+  width: 100%;
+  height: 50px;
+  padding: 0 18px;
+  border: 1.5px solid #eee3f1;
+  border-radius: 12px;
+  background: #fbf8fc;
+  color: #2f2735;
+  font-family: inherit;
+  font-size: 13px;
+  outline: none;
+  transition: border-color .2s, box-shadow .2s, background .2s;
+}
+.lp-search input:focus {
+  border-color: #d94bd9;
+  background: #fff;
+  box-shadow: 0 0 0 4px rgba(217, 75, 217, .12);
+}
+
+/* ---------- RESPONSIVE ---------- */
+@media (max-width: 1050px) {
+  .lp-trust-grid {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}
+
+@media (max-width: 850px) {
+  .lp-page-hero {
+    padding: 70px 0 55px;
+  }
+  .lp-split {
+    grid-template-columns: 1fr;
+    gap: 32px;
+  }
+}
+
+@media (max-width: 600px) {
+  .lp-page-hero {
+    padding: 55px 0 45px;
+  }
+  .lp-page-hero h1 {
+    letter-spacing: -1.4px;
+  }
+  .lp-page-hero p {
+    font-size: 13px;
+  }
+  .lp-page-hero-cta {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  /* keep two columns on mobile where it fits */
+  .lp-detail-grid {
+    grid-template-columns: 1fr;
+    gap: 14px;
+  }
+  .lp-detail-card {
+    padding: 24px 20px;
+  }
+  .lp-trust-grid,
+  .lp-trust-grid-3 {
+    grid-template-columns: repeat(2, 1fr);
+    gap: 10px;
+  }
+  .lp-trust-card {
+    padding: 18px 14px;
+  }
+  .lp-trust-card p {
+    font-size: 11px;
+  }
+  .lp-industry-detail-grid {
+    grid-template-columns: repeat(2, 1fr);
+    gap: 10px;
+  }
+  .lp-industry-detail {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 10px;
+    padding: 16px 14px;
+  }
+  .lp-industry-detail h3 {
+    font-size: 12px;
+  }
+  .lp-industry-detail p {
+    font-size: 10px;
+  }
+
+  .lp-timeline {
+    gap: 24px;
+  }
+  .lp-timeline::before {
+    left: 26px;
+  }
+  .lp-timeline-item {
+    gap: 14px;
+  }
+  .lp-timeline-item .lp-step-number {
+    width: 52px;
+    height: 52px;
+    font-size: 17px;
+    border-radius: 14px;
+  }
+  .lp-timeline-body {
+    padding: 18px 16px;
+  }
+  .lp-flow-list li {
+    font-size: 12px;
+    padding: 12px;
+  }
+}

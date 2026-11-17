@@ -1,7 +1,19 @@
 /* =========================================================
    AUTH PAGES (Login + Register) - split card design
-   Theme: pink / purple. Works with the existing JSX as-is.
+   Theme: Rides AI logo pink only (pink + white). No purple.
+   Works with the existing JSX as-is.
    ========================================================= */
+
+.au-main, .au-login-layout, .au-register-layout {
+  --pink: #ff77ff;
+  --pink-d: #ff5fd2;   /* logo lettering pink */
+  --pink-text: #d84fd8; /* pink for text on white */
+  --pink-l: #fff0ff;
+  --pink-s: #ffe3ff;
+  --line: #f6d9f6;
+  --ink: #2b1f2e;
+  --muted: #8a7f8e;
+}
 
 /* ---------- PAGE BACKGROUND ---------- */
 .au-main{
@@ -11,9 +23,9 @@
   align-items:center;
   justify-content:center;
   background:
-    radial-gradient(600px 380px at 8% 12%, #f9d7fb 0%, transparent 70%),
-    radial-gradient(640px 420px at 95% 90%, #e7d3fb 0%, transparent 70%),
-    #f8f1fb;
+    radial-gradient(600px 380px at 8% 12%, #ffd6ff 0%, transparent 70%),
+    radial-gradient(640px 420px at 95% 90%, #ffe0ff 0%, transparent 70%),
+    #fff7ff;
 }
 
 /* ---------- SPLIT CARD SHELL ---------- */
@@ -27,12 +39,12 @@
   align-items:stretch;
   gap:0;
   background:#fff;
-  border-radius:22px;
+  border-radius:24px;
   overflow:hidden;
-  box-shadow:0 30px 80px rgba(110,40,150,.16), 0 4px 14px rgba(110,40,150,.06);
+  box-shadow:0 30px 80px rgba(255,95,210,.22), 0 4px 14px rgba(255,95,210,.08);
 }
 
-/* ---------- LEFT GRADIENT PANEL ---------- */
+/* ---------- LEFT PINK PANEL ---------- */
 .au-intro,
 .au-register-heading{
   position:relative;
@@ -43,7 +55,8 @@
   flex-direction:column;
   justify-content:center;
   color:#fff;
-  background:linear-gradient(158deg,#3a1570 0%,#7427b5 52%,#d548d5 100%);
+  background:linear-gradient(158deg,#ff5fd2 0%,#ff77ff 58%,#ff9cff 100%);
+  text-shadow:0 1px 14px rgba(160,20,140,.22);
 }
 .au-intro > *,
 .au-register-heading > *{
@@ -51,18 +64,19 @@
   z-index:1;
 }
 
-/* soft floating circles, like the reference */
+/* soap-bubble circles, like the mascot's bubbles */
 .au-intro::before,
 .au-register-heading::before{
   content:"";
   position:absolute;
   top:-60px;
   right:-50px;
-  width:190px;
-  height:190px;
+  width:200px;
+  height:200px;
   border-radius:50%;
-  background:linear-gradient(145deg,#ff9bff 0%,#7b4de8 100%);
-  opacity:.45;
+  background:radial-gradient(circle at 32% 30%, rgba(255,255,255,.75) 0%, rgba(255,255,255,.18) 38%, rgba(255,255,255,.08) 100%);
+  border:1.5px solid rgba(255,255,255,.45);
+  animation:au-bubble 7s ease-in-out infinite alternate;
 }
 .au-intro::after,
 .au-register-heading::after{
@@ -70,17 +84,22 @@
   position:absolute;
   bottom:-50px;
   left:-40px;
-  width:150px;
-  height:150px;
+  width:160px;
+  height:160px;
   border-radius:50%;
-  background:linear-gradient(145deg,#ff77ff 0%,#a42fd6 100%);
-  opacity:.4;
+  background:radial-gradient(circle at 32% 30%, rgba(255,255,255,.7) 0%, rgba(255,255,255,.16) 38%, rgba(255,255,255,.06) 100%);
+  border:1.5px solid rgba(255,255,255,.4);
+  animation:au-bubble 9s ease-in-out infinite alternate-reverse;
+}
+@keyframes au-bubble{
+  from{ transform:translateY(0) scale(1); }
+  to{ transform:translateY(-14px) scale(1.06); }
 }
 
 .au-eyebrow{
   display:inline-block;
   margin-bottom:18px;
-  color:#ffd2ff;
+  color:#fff;
   font-size:11px;
   font-weight:700;
   letter-spacing:1.6px;
@@ -99,7 +118,7 @@
 .au-register-heading > p{
   max-width:400px;
   margin:0;
-  color:rgba(255,255,255,.8);
+  color:#fff;
   font-size:14px;
   line-height:1.85;
 }
@@ -115,7 +134,7 @@
   width:100%;
   height:auto;
   overflow:visible;
-  filter:drop-shadow(0 16px 24px rgba(30,5,60,.35));
+  filter:drop-shadow(0 16px 24px rgba(150,20,130,.28));
 }
 .au-vector-register{ max-width:300px; }
 
@@ -129,7 +148,7 @@
   display:flex;
   align-items:center;
   gap:12px;
-  color:rgba(255,255,255,.92);
+  color:#fff;
   font-size:13px;
 }
 .au-intro-points span{
@@ -140,25 +159,26 @@
   align-items:center;
   justify-content:center;
   border-radius:50%;
-  background:rgba(255,255,255,.18);
-  color:#fff;
+  background:#fff;
+  color:var(--pink-text);
   font-size:12px;
-  font-weight:700;
+  font-weight:800;
+  text-shadow:none;
 }
 .au-intro-note{
   display:flex;
   align-items:center;
   gap:10px;
   margin-top:26px;
-  color:rgba(255,255,255,.7);
+  color:#fff;
   font-size:12px;
 }
 .au-note-dot{
   width:8px;
   height:8px;
   border-radius:50%;
-  background:#ff9bff;
-  box-shadow:0 0 0 5px rgba(255,155,255,.22);
+  background:#fff;
+  box-shadow:0 0 0 5px rgba(255,255,255,.3);
 }
 
 /* register steps */
@@ -179,11 +199,12 @@
   display:flex;
   align-items:center;
   justify-content:center;
-  border-radius:10px;
-  background:rgba(255,255,255,.16);
-  color:#fff;
+  border-radius:12px;
+  background:#fff;
+  color:var(--pink-text);
   font-size:12px;
-  font-weight:700;
+  font-weight:800;
+  text-shadow:none;
 }
 .au-step > div{
   display:flex;
@@ -195,7 +216,8 @@
   font-size:13px;
 }
 .au-step small{
-  color:rgba(255,255,255,.68);
+  color:#fff;
+  opacity:.92;
   font-size:11px;
   line-height:1.5;
 }
@@ -221,14 +243,14 @@
 .au-card-label{
   display:block;
   margin-bottom:10px;
-  color:#c93fc9;
+  color:var(--pink-text);
   font-size:10px;
   font-weight:700;
   letter-spacing:1.5px;
 }
 .au-card-head h2{
   margin:0 0 8px;
-  color:#241e29;
+  color:var(--ink);
   font-size:26px;
   font-weight:700;
   letter-spacing:-.6px;
@@ -240,11 +262,11 @@
   height:4px;
   margin-top:11px;
   border-radius:4px;
-  background:linear-gradient(90deg,#7b3fe4,#ff77ff);
+  background:linear-gradient(90deg,var(--pink-d),var(--pink));
 }
 .au-card-head p{
   margin:0;
-  color:#8a838e;
+  color:var(--muted);
   font-size:13px;
   line-height:1.7;
 }
@@ -258,7 +280,7 @@
   margin-bottom:18px;
 }
 .au-field > label{
-  color:#3b3340;
+  color:#3d3040;
   font-size:12px;
   font-weight:600;
 }
@@ -267,27 +289,27 @@
   width:100%;
   height:48px;
   padding:0 14px;
-  border:1.5px solid #eee3f1;
-  border-radius:10px;
+  border:1.5px solid var(--line);
+  border-radius:12px;
   outline:none;
-  background:#fbf8fc;
-  color:#2f2735;
+  background:#fffafe;
+  color:var(--ink);
   font-family:inherit;
   font-size:13px;
   transition:border-color .2s, box-shadow .2s, background .2s;
 }
 .au-field input::placeholder{
-  color:#b7aebb;
+  color:#bfaec2;
 }
 .au-field input:hover,
 .au-field select:hover{
-  border-color:#e2cfe8;
+  border-color:#f1bdf1;
 }
 .au-field input:focus,
 .au-field select:focus{
-  border-color:#d94bd9;
+  border-color:var(--pink-d);
   background:#fff;
-  box-shadow:0 0 0 4px rgba(217,75,217,.12);
+  box-shadow:0 0 0 4px rgba(255,95,210,.16);
 }
 .au-field input[aria-invalid="true"],
 .au-field select[aria-invalid="true"]{
@@ -299,7 +321,7 @@
   -webkit-appearance:none;
   padding-right:36px;
   cursor:pointer;
-  background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8' fill='none'%3E%3Cpath d='M1 1.5L6 6.5L11 1.5' stroke='%23b66bd1' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8' fill='none'%3E%3Cpath d='M1 1.5L6 6.5L11 1.5' stroke='%23ff5fd2' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
   background-repeat:no-repeat;
   background-position:right 14px center;
 }
@@ -321,14 +343,14 @@
   justify-content:center;
   gap:8px;
   border:0;
-  border-radius:10px;
-  background:linear-gradient(90deg,#7b3fe4 0%,#d94bd9 60%,#ff77ff 100%);
-  color:#fff;
-  font-size:13px;
-  font-weight:600;
-  letter-spacing:.3px;
+  border-radius:999px;
+  background:linear-gradient(90deg,var(--pink-d) 0%,var(--pink) 100%);
+  color:var(--ink);
+  font-size:14px;
+  font-weight:700;
+  letter-spacing:.2px;
   cursor:pointer;
-  box-shadow:0 10px 24px rgba(180,60,200,.28);
+  box-shadow:0 10px 24px rgba(255,95,210,.38);
   transition:transform .2s, box-shadow .2s, filter .2s;
 }
 .au-card .au-submit::after{
@@ -339,12 +361,16 @@
   transition:transform .2s;
 }
 .au-card .au-submit:hover{
-  transform:translateY(-1px);
+  transform:translateY(-2px);
   filter:brightness(1.04);
-  box-shadow:0 14px 30px rgba(180,60,200,.34);
+  box-shadow:0 14px 30px rgba(255,95,210,.46);
 }
 .au-card .au-submit:hover::after{
   transform:translateX(3px);
+}
+.au-card .au-submit:focus-visible{
+  outline:3px solid var(--pink-d);
+  outline-offset:3px;
 }
 .au-card .au-submit:disabled{
   opacity:.65;
@@ -356,12 +382,12 @@
 .au-switch{
   margin:22px 0 0;
   text-align:center;
-  color:#8d8591;
+  color:var(--muted);
   font-size:12px;
 }
 .au-switch a{
-  color:#c93fc9;
-  font-weight:600;
+  color:var(--pink-text);
+  font-weight:700;
   text-decoration:none;
 }
 .au-switch a:hover{
@@ -373,7 +399,7 @@
   padding:12px 14px;
   margin-bottom:20px;
   border:1px solid #f2caca;
-  border-radius:10px;
+  border-radius:12px;
   background:#fff6f6;
   color:#a43b3b;
   font-size:12px;
@@ -389,29 +415,16 @@
   width:100%;
   padding:12px;
   margin-bottom:18px;
-  border:1px solid #f0d5f0;
-  border-radius:10px;
-  background:#fff7ff;
-  color:#c744c7;
+  border:1px solid var(--line);
+  border-radius:12px;
+  background:var(--pink-l);
+  color:var(--pink-text);
   font-size:12px;
-  font-weight:600;
+  font-weight:700;
   cursor:pointer;
   transition:background .2s;
 }
-.au-resend:hover{ background:#ffedff; }
-.au-verification-actions{
-  display:grid;
-  grid-template-columns:1fr 1fr;
-  gap:10px;
-  margin-bottom:18px;
-}
-.au-verification-actions .au-resend{
-  margin:0;
-  min-height:44px;
-}
-@media(max-width:520px){
-  .au-verification-actions{ grid-template-columns:1fr; }
-}
+.au-resend:hover{ background:var(--pink-s); }
 
 /* ---------- REGISTER PAGE ---------- */
 .au-register-main{
@@ -446,17 +459,17 @@
   width:100%;
   padding:0 0 12px;
   margin-bottom:17px;
-  border-bottom:1px solid #f1e8f3;
-  color:#2d2632;
+  border-bottom:1px solid #f8e6f8;
+  color:var(--ink);
   font-size:14px;
   font-weight:700;
 }
 .au-section legend::before{
   content:"";
-  width:8px;
-  height:8px;
+  width:9px;
+  height:9px;
   border-radius:50%;
-  background:linear-gradient(135deg,#7b3fe4,#ff77ff);
+  background:radial-gradient(circle at 32% 30%, #fff 0%, var(--pink) 45%, var(--pink-d) 100%);
 }
 
 /* two columns on desktop AND mobile */
@@ -468,7 +481,7 @@
 .au-grid .au-field{ margin-bottom:17px; }
 .au-hint{
   margin:0 0 16px;
-  color:#948c99;
+  color:#9a8f9e;
   font-size:11px;
   line-height:1.7;
 }
@@ -478,19 +491,19 @@
   gap:10px;
   margin:4px 0 20px;
   padding:12px 14px;
-  border:1.5px solid #eee3f1;
-  border-radius:10px;
-  background:#fbf8fc;
-  color:#4f4753;
+  border:1.5px solid var(--line);
+  border-radius:12px;
+  background:#fffafe;
+  color:#4f4253;
   font-size:12px;
   cursor:pointer;
   transition:border-color .2s, background .2s;
 }
-.au-check:hover{ border-color:#e2cfe8; background:#fff7ff; }
+.au-check:hover{ border-color:#f1bdf1; background:var(--pink-l); }
 .au-check input{
   width:16px;
   height:16px;
-  accent-color:#d94bd9;
+  accent-color:var(--pink-d);
   cursor:pointer;
 }
 
@@ -505,16 +518,16 @@
   display:flex;
   align-items:center;
   gap:9px;
-  border:1.5px dashed #e0cde5;
-  border-radius:10px;
-  background:#fdf9ff;
+  border:1.5px dashed #f1bdf1;
+  border-radius:12px;
+  background:#fffafe;
   cursor:pointer;
   transition:border-color .2s, background .2s;
 }
 .au-file:hover,
 .au-file.has-file{
-  border-color:#d94bd9;
-  background:#fff4ff;
+  border-color:var(--pink-d);
+  background:var(--pink-l);
 }
 .au-file.file-error{
   border-color:#e36a6a;
@@ -528,8 +541,8 @@
   justify-content:center;
   flex-shrink:0;
   border-radius:8px;
-  background:linear-gradient(135deg,#f6dcf8,#e9d7fb);
-  color:#a93ac4;
+  background:var(--pink-s);
+  color:var(--pink-text);
   font-size:14px;
   font-weight:700;
 }
@@ -538,7 +551,7 @@
   overflow:hidden;
   white-space:nowrap;
   text-overflow:ellipsis;
-  color:#7b7280;
+  color:#7b6f80;
   font-size:11px;
 }
 .au-file-input{ display:none; }
@@ -564,10 +577,10 @@
   .au-login-layout,
   .au-register-layout{
     grid-template-columns:1fr;
-    border-radius:18px;
+    border-radius:20px;
   }
 
-  /* gradient panel becomes a compact header */
+  /* pink panel becomes a compact header */
   .au-intro,
   .au-register-heading{
     padding:30px 22px 26px;
@@ -617,7 +630,7 @@
   .au-card-head h2{ font-size:22px; }
   .au-card-head p{ font-size:12px; }
 
-  /* keep the SAME two-column layout as desktop */
+  /* SAME two-column rows as desktop */
   .au-grid{
     grid-template-columns:repeat(2,minmax(0,1fr));
     gap:0 10px;
@@ -630,7 +643,7 @@
     height:44px;
     padding:0 11px;
     font-size:12px;
-    border-radius:9px;
+    border-radius:10px;
   }
   .au-field select{ padding-right:30px; background-position:right 11px center; }
 
@@ -639,7 +652,7 @@
     gap:0 10px;
   }
   .au-grid-docs .au-field:last-child:nth-child(odd){ grid-column:1 / -1; }
-  .au-file{ min-height:44px; padding:0 9px; gap:7px; border-radius:9px; }
+  .au-file{ min-height:44px; padding:0 9px; gap:7px; border-radius:10px; }
   .au-file-icon{ width:24px; height:24px; font-size:13px; }
   .au-file-text{ font-size:10px; }
 
@@ -661,4 +674,10 @@
   .au-field select{ padding:0 8px; font-size:11px; }
   .au-field > label{ font-size:10px; }
   .au-steps{ gap:6px; }
+}
+
+@media (prefers-reduced-motion: reduce){
+  .au-intro::before, .au-intro::after,
+  .au-register-heading::before, .au-register-heading::after{ animation:none; }
+  .au-card .au-submit, .au-field input, .au-field select{ transition:none; }
 }

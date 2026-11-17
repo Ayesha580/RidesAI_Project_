@@ -1,9 +1,9 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
-import { publicApi } from "../api/public_api";
+import { publicApi } from "../api/publicApi";
 import Navbar from "../components/Navbar";
 import Footer from "../components/Footer";
-import { PageCta } from "../components/page_hero";
+import { PageCta } from "../components/PageHero";
 import "../styles/landing.css";
 import "../styles/pages.css";
 import "../styles/business.css";

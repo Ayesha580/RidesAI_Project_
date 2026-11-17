@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import OwnerLayout from "../components/OwnerLayout";
 import { errorText } from "../../api/axiosClient";
-import { roleApi, staffApi } from "../../api/staff_api";
+import { roleApi, staffApi } from "../../api/staffApi";
 
 const EMPTY = { first_name: "", last_name: "", username: "", phone: "", email: "", password: "", role_id: "" };
 

@@ -1,8 +1,8 @@
 import { Link } from "react-router-dom";
 import Navbar from "../components/Navbar";
 import Footer from "../components/Footer";
-import { PageHero, PageCta } from "../components/page_hero";
-import { INDUSTRIES } from "../data/site_content";
+import { PageHero, PageCta } from "../components/PageHero";
+import { INDUSTRIES } from "../data/siteContent";
 import "../styles/landing.css";
 import "../styles/pages.css";
 

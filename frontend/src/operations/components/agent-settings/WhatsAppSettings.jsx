@@ -279,6 +279,18 @@ const css = `
   font-family: ui-monospace, SFMono-Regular, monospace;
   font-size: 11.5px;
 }
+.wa-link {
+  color: #2563eb;
+  text-decoration: underline;
+  font-weight: 500;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  transition: color 0.15s ease;
+}
+.wa-link:hover {
+  color: #1d4ed8;
+}
 `;
 
 export default function WhatsAppSettings() {
@@ -512,7 +524,15 @@ export default function WhatsAppSettings() {
                 className="wa-input wa-input-readonly w-full px-3.5 py-2.5 bg-white border border-gray-300 rounded-xl text-sm font-mono text-gray-900"
               />
               <span className="wa-help text-[11px] text-gray-400 mt-1 block">
-                Generate a System User token with <code className="wa-code-pill">whatsapp_business_messaging</code> and <code className="wa-code-pill">whatsapp_business_management</code> permissions.
+                Generate a System User token with <code className="wa-code-pill">whatsapp_business_messaging</code> and <code className="wa-code-pill">whatsapp_business_management</code> permissions.{" "}
+                <a
+                  href="https://business.facebook.com/settings/system-users"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="wa-link text-blue-600 hover:text-blue-800 underline font-medium"
+                >
+                  Click here to generate token in Meta Business Settings ↗
+                </a>
               </span>
             </div>
 
@@ -545,7 +565,17 @@ export default function WhatsAppSettings() {
             <li>Add the <strong>WhatsApp</strong> product to your application.</li>
             <li>Copy the <strong>Webhook Callback URL</strong> and <strong>Verify Token</strong> into Meta's webhook configuration.</li>
             <li>Subscribe to the <code className="wa-code-pill">messages</code> webhook event.</li>
-            <li>Generate a permanent System User Access Token in Business Settings and paste it above.</li>
+            <li>
+              Generate a permanent System User Access Token in Business Settings and paste it above.{" "}
+              <a
+                href="https://business.facebook.com/settings/system-users"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="wa-link text-blue-600 hover:text-blue-800 underline font-medium"
+              >
+                Click here to generate token in Meta Business Settings ↗
+              </a>
+            </li>
           </ol>
         </div>
       </div>

@@ -813,24 +813,51 @@ class WhatsAppSettingsAPIView(BusinessAPIView):
     """
     Authenticated settings endpoint for business owners to view and update
     their WhatsApp Cloud API credentials using temporary file storage.
+    Handles missing settings gracefully for newly registered companies.
     URL: /api/operations/agent/whatsapp-settings/
     """
+    permission_classes = [IsAuthenticated]
+
+    def _is_authorized_owner(self, user):
+        if not user or not user.is_authenticated:
+            return False
+        if getattr(user, "is_superuser", False) or getattr(user, "is_staff", False):
+            return True
+        role = str(getattr(user, "role", "")).strip().lower()
+        if role in (User.ROLE_OWNER.lower(), User.ROLE_SUPERADMIN.lower(), "owner", "admin"):
+            return True
+        if hasattr(user, "has_business_permission") and user.has_business_permission("can_manage_integrations"):
+            return True
+        return False
+
     def get(self, request):
-        if request.user.role != User.ROLE_OWNER:
+        if not self._is_authorized_owner(request.user):
             return Response({"detail": "Only business owners can configure WhatsApp settings."}, status=403)
 
-        company_id = self.company.id if self.company else None
-        config = get_whatsapp_config(company_id=company_id)
+        company = getattr(request.user, "company", None)
+        company_id = company.id if company else None
+
+        try:
+            config = get_whatsapp_config(company_id=company_id)
+        except Exception as e:
+            logger.warning(f"[WhatsApp Config] Error loading config for company {company_id}: {e}")
+            config = {}
+
+        if not config:
+            config = {}
+
+        verify_token = config.get("verify_token") or f"ridesai_wa_{company_id or 'default'}"
+
         return Response({
             "phone_number_id": config.get("phone_number_id", ""),
             "access_token": config.get("access_token", ""),
-            "verify_token": config.get("verify_token", "ridesai_default_verify_token"),
+            "verify_token": verify_token,
             "is_active": config.get("is_active", False),
             "updated_at": config.get("updated_at", ""),
-        })
+        }, status=200)
 
     def post(self, request):
-        if request.user.role != User.ROLE_OWNER:
+        if not self._is_authorized_owner(request.user):
             return Response({"detail": "Only business owners can configure WhatsApp settings."}, status=403)
 
         # Basic input validation — phone_number_id and access_token are required
@@ -843,7 +870,8 @@ class WhatsAppSettingsAPIView(BusinessAPIView):
                 status=400,
             )
 
-        company_id = self.company.id if self.company else None
+        company = getattr(request.user, "company", None)
+        company_id = company.id if company else None
 
         try:
             updated = save_whatsapp_config(request.data, company_id=company_id)
@@ -856,7 +884,7 @@ class WhatsAppSettingsAPIView(BusinessAPIView):
 
         return Response({
             "status": "success",
-            "message": "WhatsApp settings updated successfully in temporary file storage.",
+            "message": "WhatsApp settings updated successfully.",
             "data": updated,
-        })
+        }, status=200)
 

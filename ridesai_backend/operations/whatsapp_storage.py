@@ -72,6 +72,7 @@ def _save_all_configs(configs: dict) -> bool:
 def get_whatsapp_config(company_id=None) -> dict:
     """
     Retrieves the WhatsApp configuration for a specific company or the default.
+    Handles missing settings gracefully by auto-creating an empty configuration.
     """
     with _file_lock:
         configs = _load_all_configs()
@@ -82,13 +83,24 @@ def get_whatsapp_config(company_id=None) -> dict:
             cfg.update(configs[key])
             return cfg
 
-        # Fallback to default if company specific doesn't exist yet
+        # Auto-create empty configuration for this specific company if not present
+        if company_id:
+            new_cfg = dict(DEFAULT_CONFIG)
+            new_cfg["verify_token"] = f"ridesai_wa_{company_id}"
+            configs[key] = new_cfg
+            _save_all_configs(configs)
+            return new_cfg
+
+        # Fallback to default if no company_id specified
         if "default" in configs and isinstance(configs["default"], dict):
             cfg = dict(DEFAULT_CONFIG)
             cfg.update(configs["default"])
             return cfg
 
-        return dict(DEFAULT_CONFIG)
+        new_cfg = dict(DEFAULT_CONFIG)
+        configs["default"] = new_cfg
+        _save_all_configs(configs)
+        return new_cfg
 
 
 def save_whatsapp_config(data: dict, company_id=None) -> dict:

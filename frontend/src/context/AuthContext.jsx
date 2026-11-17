@@ -13,12 +13,12 @@ export function AuthProvider({ children }) {
     try {
       const { data } = await authApi.me();
       if (data) {
-        const isOverrideOrActive =
-          data.is_manual_override === true ||
-          data.company_details?.is_manual_override === true ||
+        const isOverrideOrActive = Boolean(
+          data.is_manual_override ||
           data.subscription_status === "active" ||
-          data.company_details?.subscription_status === "active";
-
+          data.company_details?.is_manual_override ||
+          data.company_details?.subscription_status === "active"
+        );
         if (isOverrideOrActive) {
           if (data.redirect === "/select-plan" || data.redirect === "/billing") {
             data.redirect = "/owner/dashboard";

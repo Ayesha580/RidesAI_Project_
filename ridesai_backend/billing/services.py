@@ -153,6 +153,18 @@ def approve_company(company, start_trial=True, notify=True):
 
     return company
 def get_access_state(company):
+    if not company:
+        return "payment_required"
+
+    # Phase 2: Manual override or active subscription status
+    if getattr(company, "is_manual_override", False) or getattr(company, "subscription_status", "") == "active":
+        return "ok"
+
+    now = timezone.now()
+    trial_ends = getattr(company, "trial_ends_at", None)
+    if trial_ends and now < trial_ends:
+        return "ok"
+
     if not company.is_approved:
         return "email_verification_required"
 

@@ -9,14 +9,10 @@ import "../styles/verify-email.css";
 
 export default function VerifyEmail() {
   const [params] = useSearchParams();
-  const [email, setEmail] = useState(params.get("email") || "");
+  const email = params.get("email") || "";
   const [otp, setOtp] = useState("");
-  const [message, setMessage] = useState(
-    params.get("sent") === "0"
-      ? "Your account was created, but the verification email could not be delivered. Configure Gmail SMTP, then use Resend code."
-      : ""
-  );
   const [busy, setBusy] = useState(false);
+  const [message, setMessage] = useState("");
   const [error, setError] = useState("");
 
   async function verify(e) {
@@ -41,10 +37,8 @@ export default function VerifyEmail() {
     setError("");
     setMessage("");
     try {
-      const { data } = await authApi.resendVerification(email);
-      setMessage(data?.verification_email_sent === false
-        ? "We couldn't send the email. Please check the backend SMTP configuration and try again."
-        : "If the account is unverified, a new six-digit code has been sent.");
+      await authApi.resendVerification(email);
+      setMessage("If the account is unverified, a new six-digit code has been sent.");
     } catch (e) {
       setError(errorText(e));
     } finally {
@@ -72,33 +66,19 @@ export default function VerifyEmail() {
           <span className="ve-eyebrow">EMAIL VERIFICATION</span>
           <h1>Verify your email address</h1>
           <p className="ve-description">
-Enter the six-digit code sent to your business email. If you haven't received it, check Spam or use Resend code below.
+            We've sent a six-digit verification code to your business email. Enter the code below to activate your account.
           </p>
 
           <div className="ve-email">
             <span className="ve-email-icon">✉</span>
             <div>
               <span>VERIFICATION EMAIL</span>
-              <strong>{email || "Enter your email address below"}</strong>
+              <strong>{email || "Email address not provided"}</strong>
             </div>
           </div>
 
           {message && <div className="ve-success" role="status">{message}</div>}
           {error && <div className="ve-error" role="alert">{error}</div>}
-
-          <div className="ve-field">
-            <label htmlFor="ve-email">Email address</label>
-            <input
-              id="ve-email"
-              name="email"
-              type="email"
-              autoComplete="email"
-              placeholder="you@example.com"
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              required
-            />
-          </div>
 
           <div className="ve-field">
             <label htmlFor="ve-otp">Enter verification code</label>

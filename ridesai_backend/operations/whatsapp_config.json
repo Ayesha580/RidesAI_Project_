@@ -12,5 +12,12 @@
     "verify_token": "ridesai_default_verify_token",
     "is_active": true,
     "updated_at": "2026-11-16T13:45:39.350188Z"
+  },
+  "6": {
+    "phone_number_id": "",
+    "access_token": "",
+    "verify_token": "ridesai_wa_6",
+    "is_active": false,
+    "updated_at": ""
   }
 }

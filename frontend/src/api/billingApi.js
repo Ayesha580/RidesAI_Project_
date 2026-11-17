@@ -2,6 +2,12 @@ import axiosClient from "./axiosClient";
 
 export const billingApi = {
   plans: () => axiosClient.get("/billing/plans/"),
+  submitManualPayment: (formData) => axiosClient.post("/billing/manual-payment/", formData),
+  businessEmail: () => axiosClient.get("/billing/business-email/"),
+  saveBusinessEmail: (data) => axiosClient.put("/billing/business-email/", data),
+  consumeMessage: () => axiosClient.post("/billing/messages/consume/"),
+  adminManualPayments: () => axiosClient.get("/billing/admin/manual-payments/"),
+  adminManualPaymentAction: (id, action, admin_note = "") => axiosClient.post(`/billing/admin/manual-payments/${id}/`, { action, admin_note }),
   overview: () => axiosClient.get("/billing/overview/"),
   customerSession: (portal = false) =>
     axiosClient.post("/billing/customer-session/", { portal }),

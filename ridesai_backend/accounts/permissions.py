@@ -19,6 +19,9 @@ class IsCompanyPaymentActive(BasePermission):
         if not company:
             return False
 
+        if getattr(company, "is_manual_override", False) or getattr(company, "subscription_status", "") == "active":
+            return True
+
         state = get_access_state(company)
 
         if state == "email_verification_required":

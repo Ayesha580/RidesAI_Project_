@@ -25,8 +25,9 @@ export default function Layout({ title, children }) {
   const navigate = useNavigate();
 
   const logout = () => {
+    const isAdmin = user?.role === "superadmin";
     signOut();
-    navigate("/login");
+    navigate(isAdmin ? "/admin-login" : "/login");
   };
 
   return (

@@ -6,16 +6,16 @@ import Catalog from "./components/catalog/Catalog";
 import { moduleIcon, moduleLabel } from "./constants/modules";
 // public / shared
 import AccountSuspended from "./pages/AccountSuspended";
+import AdminCompanies from "./pages/AdminCompanies";
+import AdminLogin from "./pages/AdminLogin";
 import Billing from "./pages/Billing";
 import Landing from "./pages/Landing";
 import Login from "./pages/Login";
 import PaymentSuccess from "./pages/PaymentSuccess";
-import MockPayment from "./pages/MockPayment";
+import PendingApproval from "./pages/PendingApproval";
 import Register from "./pages/Register";
 import VerifyEmail from "./pages/VerifyEmail";
-import OwnerPlaceholder from "./owner/pages/OwnerPlaceholder";
 import OwnerSettings from "./owner/pages/OwnerSettings";
-import BusinessWorkspace from "./owner/pages/BusinessWorkspace";
 
 // owner
 import OwnerDashboard from "./owner/pages/OwnerDashboard";
@@ -32,6 +32,7 @@ import How from "./pages/Howitworks";
 import Industries from "./pages/Industries";
 import Businesses from "./pages/Businesses";
 import Pricing from "./pages/Plans";
+
 import OrdersDashboard from "./operations/OrdersDashboard";
 import RiderDeliveries from "./operations/RiderDeliveries";
 import AgentConsole from "./operations/AgentConsole";
@@ -78,22 +79,23 @@ export default function App() {
     <Routes>
       <Route path="/" element={<Home />} />
       <Route path="/login" element={<Login />} />
-      <Route path="/agent/:publicId" element={<PublicAgentPage />} />
       <Route path="/register" element={<Register />} />
       <Route path="/verify-email" element={<VerifyEmail />} />
-      <Route path="/select-plan" element={<Guard roles={["owner"]}><SelectPlan /></Guard>} />
-      <Route path="/checkout" element={<Guard roles={["owner"]}><Checkout /></Guard>} />
+      <Route path="/admin-login" element={<AdminLogin />} />
+      <Route path="/select-plan" element={<SelectPlan />} />
+      <Route path="/checkout" element={<Checkout />} />
       {/* <Route path="/select-plan" element={<AuthOnly><SelectPlan /></AuthOnly>} />
       <Route path="/checkout" element={<AuthOnly><Checkout /></AuthOnly>} /> */}
+      <Route path="/pending-approval" element={<AuthOnly><PendingApproval /></AuthOnly>} />
       <Route path="/account-suspended" element={<AuthOnly><AccountSuspended /></AuthOnly>} />
-      <Route path="/payment-success" element={<Guard roles={["owner"]}><PaymentSuccess /></Guard>} />
-      <Route path="/mock-payment" element={<Guard roles={["owner"]}><MockPayment /></Guard>} />
-      <Route path="/billing" element={<Guard roles={["owner"]}><Billing /></Guard>} />
+      <Route path="/payment-success" element={<AuthOnly><PaymentSuccess /></AuthOnly>} />
+      <Route path="/billing" element={<AuthOnly><Billing /></AuthOnly>} />
       <Route path="/features" element={<Features />} />
       <Route path="/how" element={<How />} />
       <Route path="/industries" element={<Industries />} />
       <Route path="/businesses" element={<Businesses />} />
       <Route path="/pricing" element={<Pricing />} />
+      <Route path="/admin/dashboard" element={<Guard roles={["superadmin"]}><AdminCompanies /></Guard>} />
 
       <Route path="/owner/dashboard" element={<Guard roles={["owner"]}><OwnerDashboard /></Guard>} />
       <Route path="/owner/staff" element={<Guard roles={["owner"]}><OwnerStaff /></Guard>} />
@@ -108,21 +110,30 @@ export default function App() {
         }
       />
 
-      {["ai-agent", "conversations", "knowledge", "channels"].map((p) => (
+      <Route path="/agent/:publicId" element={<PublicAgentPage />} />
+
+      {["ai-agent", "conversations", "knowledge", "channels", "whatsapp"].map((p) => (
         <Route
           key={p}
           path={`/owner/${p}`}
           element={
             <Guard roles={["owner"]}>
-              {p === "ai-agent" ? <AgentConsole /> : p === "conversations" ? <AgentConversations /> : p === "knowledge" ? <KnowledgeBaseForm /> : <WhatsAppSettings />}
+              {p === "ai-agent" ? (
+                <AgentConsole />
+              ) : p === "conversations" ? (
+                <AgentConversations />
+              ) : p === "knowledge" ? (
+                <KnowledgeBaseForm />
+              ) : (
+                <WhatsAppSettings />
+              )}
             </Guard>
           }
         />
       ))}
 
-      <Route path="/owner/business-workspace" element={<Guard roles={["owner"]}><BusinessWorkspace /></Guard>} />
       <Route path="/owner/catalog" element={<Guard roles={["owner"]}><Catalog /></Guard>} />
-      <Route path="/owner/settings" element={<Guard roles={["owner"]}><OwnerSettings /></Guard>} />
+      <Route path="/owner/settings" element={<AuthOnly><OwnerSettings /></AuthOnly>} />
       <Route path="/owner/billing" element={<Navigate to="/owner/settings?tab=billing" replace />} />
 
       <Route path="/staff/dashboard" element={<Guard roles={["staff"]}><StaffDashboard /></Guard>} />

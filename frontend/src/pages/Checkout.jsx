@@ -1,33 +1,31 @@
 import { useEffect, useState } from "react";
 import { Link, Navigate, useNavigate } from "react-router-dom";
-import { useAuth } from "../context/AuthContext";
-import { isUserOverrideOrActive } from "../components/Guards";
 import { billingApi } from "../api/billingApi";
 import { errorText } from "../api/axiosClient";
+import { useAuth } from "../context/AuthContext";
+import { isUserOverrideOrActive } from "../components/Guards";
 import Footer from "../components/Footer";
 import Navbar from "../components/Navbar";
 import "../styles/landing.css";
 import "../styles/checkout.css";
 
 export default function Checkout() {
-  const { user } = useAuth();
   const navigate = useNavigate();
+  const { user } = useAuth();
   const [data, setData] = useState(null);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
 
-  const overrideActive = isUserOverrideOrActive(user);
-
   useEffect(() => {
-    if (overrideActive) {
+    if (isUserOverrideOrActive(user)) {
       navigate("/owner/dashboard", { replace: true });
       return;
     }
 
     billingApi.getPlanPage()
       .then(({ data }) => {
-        if (data.already_active || overrideActive) {
-          window.location.replace(data.redirect || "/owner/dashboard");
+        if (data.already_active) {
+          window.location.replace(data.redirect);
           return;
         }
         if (!data.selected_plan_id) {
@@ -37,9 +35,9 @@ export default function Checkout() {
         setData(data);
       })
       .catch((e) => setError(errorText(e)));
-  }, [overrideActive, navigate]);
+  }, [user, navigate]);
 
-  if (overrideActive) {
+  if (isUserOverrideOrActive(user)) {
     return <Navigate to="/owner/dashboard" replace />;
   }
 

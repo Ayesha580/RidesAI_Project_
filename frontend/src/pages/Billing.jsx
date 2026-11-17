@@ -8,7 +8,7 @@ import Footer from "../components/Footer";
 import Navbar from "../components/Navbar";
 import OwnerLayout from "../owner/components/OwnerLayout";
 import { useAuth } from "../context/AuthContext";
-import "../styles/landing.css";
+import "../styles/Landing.css";
 import "../styles/auth.css";
 
 const STATUS = {
@@ -19,6 +19,7 @@ const STATUS = {
   past_due: { label: "Payment due", tone: "amber" },
   canceled: { label: "Canceled", tone: "red" },
   revoked: { label: "Ended", tone: "red" },
+  pending_approval: { label: "Approval pending", tone: "grey" },
 };
 
 const INCLUDED = [
@@ -64,7 +65,7 @@ export default function Billing() {
             <div className="au-pending-icon"><span>🔒</span></div>
             <h2>Subscription problem</h2>
             <p className="au-pending-text">
-              Your business subscription needs attention. Please contact your business owner.
+              Your restaurant's subscription needs attention. Please contact your restaurant owner.
             </p>
             <div className="au-pending-actions">
               <button className="lp-btn ghost" onClick={() => { signOut(); navigate("/login"); }}>Logout</button>
@@ -172,7 +173,7 @@ export default function Billing() {
                   {busy ? "Please wait..." : `Pay now ($${info.amount_due})`}
                 </button>
               )}
-              {!info.can_subscribe && (
+              {!info.can_subscribe && info.status !== "pending_approval" && (
                 <button className="ad-btn ad-btn-ghost" onClick={payNow} disabled={busy}>
                   Manage subscription ↗
                 </button>
@@ -201,7 +202,6 @@ export default function Billing() {
           </aside>
         </div>
       )}
-      {info && <section className="ad-card" style={{ marginTop: 18, padding: 18 }}><h3>Payment history</h3>{!info.payment_history?.length ? <p>No payments recorded yet.</p> : <div style={{ overflowX: "auto" }}><table style={{ width: "100%", borderCollapse: "collapse" }}><thead><tr><th style={{ textAlign: "left", padding: 10 }}>Date</th><th style={{ textAlign: "left", padding: 10 }}>Amount</th><th style={{ textAlign: "left", padding: 10 }}>Status</th></tr></thead><tbody>{info.payment_history.map((p) => <tr key={p.id}><td style={{ padding: 10, borderTop: "1px solid #eee" }}>{fmtDate(p.created_at)}</td><td style={{ padding: 10, borderTop: "1px solid #eee" }}>{p.amount ?? "-"} {p.currency || ""}</td><td style={{ padding: 10, borderTop: "1px solid #eee", textTransform: "capitalize" }}>{p.status}</td></tr>)}</tbody></table></div>}</section>}
     </OwnerLayout>
   );
 }

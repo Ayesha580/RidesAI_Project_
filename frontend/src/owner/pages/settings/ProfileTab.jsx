@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { errorText } from "../../../api/axiosClient";
-import { profileApi } from "../../../api/profile_api";
+import { profileApi } from "../../../api/profileApi";
 import { useAuth } from "../../../context/AuthContext";
 
 const EMPTY_PW = { current_password: "", new_password: "", confirm: "" };
@@ -8,7 +8,7 @@ const EMPTY_PW = { current_password: "", new_password: "", confirm: "" };
 export default function ProfileTab() {
   const { refreshUser } = useAuth();
   const [info, setInfo] = useState(null);
-  const [form, setForm] = useState({ first_name: "", last_name: "", phone: "", address: "", business_name: "", business_type: "", business_email: "" });
+  const [form, setForm] = useState({ first_name: "", last_name: "", phone: "", address: "" });
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [ok, setOk] = useState("");
@@ -23,7 +23,7 @@ export default function ProfileTab() {
     profileApi.get()
       .then(({ data }) => {
         setInfo(data);
-        setForm({ first_name: data.first_name, last_name: data.last_name, phone: data.phone, address: data.address, business_name: data.business_name || "", business_type: data.business_type || "", business_email: data.business_email || "" });
+        setForm({ first_name: data.first_name, last_name: data.last_name, phone: data.phone, address: data.address });
       })
       .catch((e) => setError(errorText(e)))
       .finally(() => setLoading(false));
@@ -94,16 +94,9 @@ export default function ProfileTab() {
             <input id="phone" name="phone" value={form.phone} onChange={change} placeholder="03XXXXXXXXX" />
           </div>
           <div className="se-field">
-            <label htmlFor="business_name">Business name</label>
-            <input id="business_name" name="business_name" value={form.business_name} onChange={change} required />
-          </div>
-          <div className="se-field">
-            <label htmlFor="business_type">Business category</label>
-            <select id="business_type" name="business_type" value={form.business_type} onChange={change}><option value="restaurant">Restaurant</option><option value="hospital">Hospital</option><option value="clinic">Clinic</option><option value="pharmacy">Pharmacy</option><option value="retail">Retail</option><option value="grocery">Grocery</option><option value="general">Other / General</option></select>
-          </div>
-          <div className="se-field">
-            <label htmlFor="business_email">Business contact email</label>
-            <input id="business_email" name="business_email" type="email" value={form.business_email} onChange={change} />
+            <label htmlFor="business_name">Business</label>
+            <input id="business_name" value={`${info?.business_name || ""}`} readOnly />
+            <small>Business type: {info?.business_type || "-"}</small>
           </div>
         </div>
 

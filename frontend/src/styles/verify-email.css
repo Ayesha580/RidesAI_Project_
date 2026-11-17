@@ -144,14 +144,6 @@
 .ve-field input::placeholder{
   color:#d9d0dc;
 }
-.ve-field input[type="email"]{
-  height:46px;
-  padding:0 13px;
-  font-size:14px;
-  font-weight:500;
-  letter-spacing:normal;
-  text-align:left;
-}
 .ve-field input:focus{
   border-color:#e16de1;
   box-shadow:0 0 0 3px rgba(225,109,225,.1);

@@ -2,16 +2,15 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import OwnerLayout from "../components/OwnerLayout";
 import { errorText } from "../../api/axiosClient";
-import { roleApi } from "../../api/staff_api";
+import { roleApi } from "../../api/staffApi";
 import { moduleIcon } from "../../constants/modules";
 
-const EMPTY = { name: "", modules: [], permissions: [] };
+const EMPTY = { name: "", modules: [] };
 
 export default function OwnerRoles() {
   const [roles, setRoles] = useState([]);
   const [catalog, setCatalog] = useState([]);
   const [templates, setTemplates] = useState([]);
-  const [permissionCatalog, setPermissionCatalog] = useState([]);
   const [businessLabel, setBusinessLabel] = useState("");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -33,7 +32,6 @@ export default function OwnerRoles() {
       const payload = m.data;
       setCatalog(Array.isArray(payload) ? payload : payload.modules || []);
       setTemplates(Array.isArray(payload) ? [] : payload.templates || []);
-      setPermissionCatalog(Array.isArray(payload) ? [] : payload.permissions || []);
       setBusinessLabel(Array.isArray(payload) ? "" : payload.business_label || "");
     } catch (e) {
       setError(errorText(e));
@@ -46,31 +44,13 @@ export default function OwnerRoles() {
   const openNew = () => { setForm(EMPTY); setFormError(""); setEditing("new"); };
   const openEdit = (r) => {
     const allowed = new Set(catalog.map((m) => m.key));
-    setForm({ name: r.name, modules: r.modules.filter((k) => allowed.has(k)), permissions: r.permissions || [] });
+    setForm({ name: r.name, modules: r.modules.filter((k) => allowed.has(k)) });
     setFormError("");
     setEditing(r);
   };
   const close = () => setEditing(null);
 
-  const applyTemplate = (t) => {
-    const key = t.name.toLowerCase();
-    const defaults = key.includes("rider") || key.includes("delivery boy")
-      ? ["deliveries.view_assigned", "deliveries.update_status"]
-      : key.includes("kitchen")
-        ? ["orders.view", "orders.update_status"]
-        : key.includes("cashier")
-          ? ["orders.view", "orders.create", "customers.view"]
-          : key.includes("manager")
-            ? ["orders.view", "orders.create", "orders.update_status", "deliveries.view", "deliveries.view_assigned", "deliveries.update_status", "deliveries.assign", "catalog.view", "catalog.manage", "customers.view", "agent.view", "agent.handover"]
-            : [];
-    setForm({ name: t.name, modules: [...t.modules], permissions: defaults });
-  };
-
-  const togglePermission = (key) =>
-    setForm((f) => ({
-      ...f,
-      permissions: f.permissions.includes(key) ? f.permissions.filter((p) => p !== key) : [...f.permissions, key],
-    }));
+  const applyTemplate = (t) => setForm({ name: t.name, modules: [...t.modules] });
 
   const toggleModule = (key) =>
     setForm((f) => ({
@@ -234,17 +214,6 @@ export default function OwnerRoles() {
                   <div className="ow-mods">{businessMods.map(renderMod)}</div>
                 </>
               )}
-
-              <span className="ow-label">Backend permissions</span>
-              <p className="ow-muted">These controls are enforced by the backend, not just hidden from the dashboard. A rider should normally receive only assigned-delivery viewing and delivery-status updates.</p>
-              <div className="ow-mods">
-                {permissionCatalog.map((permission) => (
-                  <label key={permission.key} className={`ow-mod ${form.permissions.includes(permission.key) ? "on" : ""}`}>
-                    <input type="checkbox" checked={form.permissions.includes(permission.key)} onChange={() => togglePermission(permission.key)} />
-                    <span>🔐</span>{permission.label}
-                  </label>
-                ))}
-              </div>
 
               <div className="ow-modal-actions">
                 <button className="ad-btn ad-btn-primary" disabled={saving}>{saving ? "Saving..." : "Save role"}</button>

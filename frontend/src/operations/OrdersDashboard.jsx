@@ -4,7 +4,7 @@ import StaffLayout from "../staff/components/StaffLayout";
 import { useAuth } from "../context/AuthContext";
 import { operationsApi } from "../api/operationsApi";
 import { errorText } from "../api/axiosClient";
-import { staffApi } from "../api/staff_api";
+import { staffApi } from "../api/StaffApi";
 
 const STATUSES = ["new", "confirmed", "preparing", "ready", "assigned", "picked_up", "on_the_way", "delivered", "cancelled"];
 const can = (user, permission) => user?.role === "owner" || (user?.permissions || []).includes("*") || (user?.permissions || []).includes(permission);

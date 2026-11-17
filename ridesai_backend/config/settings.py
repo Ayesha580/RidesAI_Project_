@@ -27,11 +27,11 @@ SECRET_KEY = os.environ.get("DJANGO_SECRET_KEY", "dev-only-change-this-secret-be
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = os.environ.get("DJANGO_DEBUG", "True").lower() in ("1", "true", "yes")
 
-#ALLOWED_HOSTS = [host.strip() for host in os.environ.get("DJANGO_ALLOWED_HOSTS", "localhost,127.0.0.1").split(",") if host.strip()]
-ALLOWED_HOSTS = ["localhost", "127.0.0.1", ".ngrok-free.dev", "*"]
+ALLOWED_HOSTS = [host.strip() for host in os.environ.get("DJANGO_ALLOWED_HOSTS", "localhost,127.0.0.1").split(",") if host.strip()]
+
 INSTALLED_APPS = [
-    "django.contrib.auth",
     "django.contrib.admin",
+    "django.contrib.auth",
     "django.contrib.contenttypes",
     "django.contrib.sessions",
     "django.contrib.messages",
@@ -42,8 +42,9 @@ INSTALLED_APPS = [
     "accounts",
     "billing",
     "companies",
-    "operations"
-]
+    "operations",
+    "employee"
+    ]
 
 MIDDLEWARE = [
     "corsheaders.middleware.CorsMiddleware",
@@ -96,7 +97,6 @@ REST_FRAMEWORK = {
     "DEFAULT_AUTHENTICATION_CLASSES": (
         "rest_framework_simplejwt.authentication.JWTAuthentication",
     ),
-    "DEFAULT_THROTTLE_RATES": {"agent_public": "30/min"},
     "DEFAULT_PERMISSION_CLASSES": (
         "rest_framework.permissions.IsAuthenticated",
         "accounts.permissions.IsCompanyPaymentActive",
@@ -120,14 +120,20 @@ SIMPLE_JWT = {
 SITE_URL = os.environ.get("SITE_URL", "http://localhost:5173")
 TRIAL_DAYS = 30
 BILLING_GRACE_DAYS = 3
-DEFAULT_MESSAGE_LIMIT = int(os.environ.get("DEFAULT_MESSAGE_LIMIT", "1000"))
+# This deliverable is tailored for one client; plans/Polar checkout are disabled.
+RIDESAI_SINGLE_CLIENT_MODE = False
+DEFAULT_CLIENT_MESSAGE_LIMIT = int(os.environ.get("DEFAULT_CLIENT_MESSAGE_LIMIT", "1000"))
+MANUAL_PAYMENT_INSTRUCTIONS = os.environ.get("MANUAL_PAYMENT_INSTRUCTIONS", "Please contact the RidesAI administrator for current bank transfer details.")
+DEFAULT_PLAN_NAME = "Standard"
+DEFAULT_PLAN_BILLING = "monthly"
+DEFAULT_PLAN_PRICE = "90.86"
+BILLING_EXEMPT_EMAILS = ["ayeshaarshed145@gmail.com"]
+POLAR_PRODUCTS = {
+    "Standard": {"monthly": "6e52f9e2-b729-4ced-a9ad-df7d58f86329"},
+}
 POLAR_API_URL = os.environ.get("POLAR_API_URL", "https://sandbox-api.polar.sh")
 POLAR_ACCESS_TOKEN = os.environ.get("POLAR_ACCESS_TOKEN", "")
 POLAR_WEBHOOK_SECRET = os.environ.get("POLAR_WEBHOOK_SECRET", "")
-# Local-only payment simulator. The billing views also require DEBUG=True.
-POLAR_MOCK_MODE = os.environ.get("POLAR_MOCK_MODE", "False").lower() in ("1", "true", "yes")
-OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "")
-OPENAI_MODEL = os.environ.get("OPENAI_MODEL", "gpt-4o-mini")
 DEFAULT_FROM_EMAIL = os.environ.get("DEFAULT_FROM_EMAIL", "noreply@example.com")
 EMAIL_BACKEND = os.environ.get("EMAIL_BACKEND", "django.core.mail.backends.console.EmailBackend")
 EMAIL_HOST = os.environ.get("EMAIL_HOST", "")
