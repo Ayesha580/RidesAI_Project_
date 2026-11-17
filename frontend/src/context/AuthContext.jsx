@@ -12,6 +12,22 @@ export function AuthProvider({ children }) {
   const loadMe = useCallback(async () => {
     try {
       const { data } = await authApi.me();
+      if (data) {
+        const isOverrideOrActive =
+          data.is_manual_override === true ||
+          data.company_details?.is_manual_override === true ||
+          data.subscription_status === "active" ||
+          data.company_details?.subscription_status === "active";
+
+        if (isOverrideOrActive) {
+          if (data.redirect === "/select-plan" || data.redirect === "/billing") {
+            data.redirect = "/owner/dashboard";
+          }
+          if (data.access_state === "payment_required" || data.access_state === "suspended") {
+            data.access_state = "ok";
+          }
+        }
+      }
       setUser(data);
       return data;
     } catch {

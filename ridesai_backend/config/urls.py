@@ -1,9 +1,11 @@
 from django.conf import settings
 from django.conf.urls.static import static
 from django.urls import include, path
+from django.contrib import admin
 
 urlpatterns = [
     path("api/accounts/", include("accounts.urls")),
+    path('admin/', admin.site.urls),
     path("api/billing/", include("billing.urls")),
     path("api/companies/", include("companies.urls")),
     path("api/operations/", include("operations.urls")),

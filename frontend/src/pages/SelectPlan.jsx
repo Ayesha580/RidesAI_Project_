@@ -1,5 +1,7 @@
 import { useEffect, useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { Navigate, useNavigate } from "react-router-dom";
+import { useAuth } from "../context/AuthContext";
+import { isUserOverrideOrActive } from "../components/Guards";
 import { billingApi } from "../api/billingApi";
 import { errorText } from "../api/axiosClient";
 import Navbar from "../components/Navbar";
@@ -16,24 +18,36 @@ const FEATURES = [
 ];
 
 export default function SelectPlan() {
+  const { user } = useAuth();
   const navigate = useNavigate();
   const [data, setData] = useState(null);
   const [selected, setSelected] = useState(null);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
 
+  const overrideActive = isUserOverrideOrActive(user);
+
   useEffect(() => {
+    if (overrideActive) {
+      navigate("/owner/dashboard", { replace: true });
+      return;
+    }
+
     billingApi.getPlanPage()
       .then(({ data }) => {
-        if (data.already_active) {
-          window.location.replace(data.redirect);
+        if (data.already_active || overrideActive) {
+          window.location.replace(data.redirect || "/owner/dashboard");
           return;
         }
         setData(data);
         setSelected(data.selected_plan_id || data.plans[0]?.id || null);
       })
       .catch((e) => setError(errorText(e)));
-  }, []);
+  }, [overrideActive, navigate]);
+
+  if (overrideActive) {
+    return <Navigate to="/owner/dashboard" replace />;
+  }
 
   async function proceed() {
     if (!selected || busy) return;

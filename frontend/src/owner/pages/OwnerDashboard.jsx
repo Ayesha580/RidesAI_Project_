@@ -3,6 +3,7 @@ import { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import OwnerLayout from "../components/OwnerLayout";
 import { useAuth } from "../../context/AuthContext";
+import { isUserOverrideOrActive } from "../../components/Guards";
 import { billingApi, roleApi, staffApi } from "../../api/staff_api";
 
 const PALETTE = ["#ff77ff", "#8054d9", "#3a0a3a", "#f4a6d7", "#a78bfa", "#f5b942", "#38b99a"];
@@ -182,7 +183,7 @@ export default function OwnerDashboard() {
           </div>
         </header>
 
-        {billing?.status === "trial_expired" && (
+        {billing?.status === "trial_expired" && !isUserOverrideOrActive(user) && (
           <div className="dx-banner">
             <div className="dx-banner-icon">!</div>
             <div>

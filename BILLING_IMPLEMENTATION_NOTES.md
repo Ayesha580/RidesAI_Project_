@@ -1,10 +1,28 @@
-# Billing implementation notes
+# Rides AI - Phase 2 Billing Architecture (Stripe + PostgreSQL Ready)
+
+## 1. Standard Flow
+- 3-day free trial on registration.
+- After 3 days, dashboard locks until a card is attached via Stripe.
+- Automated monthly deductions.
+
+## 2. Manual Override (Ayesha's Case)
+- Hardcoded check for specific email(s).
+- Bypasses 3-day trial and checkout. Grants immediate 1-month active access.
+- After 1 month, override expires, dashboard locks, and prompts to attach a card for future Stripe automation.
+
+## 3. Payment Failure & Grace Period
+- If automated payment fails, grant a 3-day grace period with a red dashboard warning.
+- If unresolved after grace period, pause the AI agent and lock dashboard.
+
+---
+
+## Legacy Billing Notes (Deprecated)
 
 This delivery uses multi-business self-service Polar billing by default. For local development only, `POLAR_MOCK_MODE=True` with `DJANGO_DEBUG=True` enables a clearly labelled local test checkout. It records a `paid_test` transaction and a `mock_sub_...` subscription without contacting Polar or charging money. The mock route is blocked when DEBUG is false. It is not a substitute for signed Polar webhooks or production payment verification.
 
-The remainder of this file describes the legacy single-client manual billing design and is not the active configuration.
+The remainder of this section describes the legacy single-client manual billing design and is not the active configuration.
 
-# Single-client manual billing notes
+### Single-client manual billing notes
 
 This package defaults to `RIDESAI_SINGLE_CLIENT_MODE=True`. In this mode, the public plans endpoint returns an empty list, registration accepts no plan, verification does not start Polar checkout, and Polar checkout/cancel/resume endpoints are disabled.
 

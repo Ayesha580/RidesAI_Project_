@@ -42,6 +42,18 @@ class Company(models.Model):
         (PAYMENT_SUSPENDED, "Suspended"),
     ]
 
+    # Phase 2 Billing & Subscription choices (Stripe + PostgreSQL Ready)
+    SUBSCRIPTION_TRIAL = "trial"
+    SUBSCRIPTION_ACTIVE = "active"
+    SUBSCRIPTION_PAST_DUE = "past_due"
+    SUBSCRIPTION_CANCELED = "canceled"
+    SUBSCRIPTION_STATUS_CHOICES = [
+        (SUBSCRIPTION_TRIAL, "trial"),
+        (SUBSCRIPTION_ACTIVE, "active"),
+        (SUBSCRIPTION_PAST_DUE, "past_due"),
+        (SUBSCRIPTION_CANCELED, "canceled"),
+    ]
+
     # Business
     name = models.CharField(max_length=200, unique=True)
     business_type = models.CharField(max_length=100, blank=True)
@@ -65,9 +77,21 @@ class Company(models.Model):
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default=STATUS_PENDING)
     is_approved = models.BooleanField(default=False)
     approved_at = models.DateTimeField(null=True, blank=True)
-    trial_ends_at = models.DateTimeField(null=True, blank=True)
 
-    # Billing (Polar)
+    # Phase 2 Billing & Subscription Fields (Stripe + PostgreSQL Ready)
+    subscription_status = models.CharField(
+        max_length=20,
+        choices=SUBSCRIPTION_STATUS_CHOICES,
+        default=SUBSCRIPTION_TRIAL,
+    )
+    trial_ends_at = models.DateTimeField(null=True, blank=True)
+    is_manual_override = models.BooleanField(default=False)
+    manual_override_expires_at = models.DateTimeField(null=True, blank=True)
+    stripe_customer_id = models.CharField(max_length=255, null=True, blank=True)
+    stripe_subscription_id = models.CharField(max_length=255, null=True, blank=True)
+    grace_period_ends_at = models.DateTimeField(null=True, blank=True)
+
+    # Legacy Billing (Polar)
     polar_subscription_id = models.CharField(max_length=100, blank=True)
     payment_status = models.CharField(max_length=20, choices=PAYMENT_CHOICES, default=PAYMENT_OK)
     payment_failed_at = models.DateTimeField(null=True, blank=True)

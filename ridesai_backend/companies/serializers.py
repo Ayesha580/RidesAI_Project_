@@ -1,5 +1,42 @@
 from rest_framework import serializers
-from .models import CatalogCategory, CatalogItem, ItemVariant, Inventory, StockMovement, ItemBatch, Deal, DealItem
+from .models import (
+    Company,
+    CatalogCategory,
+    CatalogItem,
+    ItemVariant,
+    Inventory,
+    StockMovement,
+    ItemBatch,
+    Deal,
+    DealItem,
+)
+
+
+class CompanySerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Company
+        fields = [
+            "id",
+            "name",
+            "business_type",
+            "address",
+            "is_registered",
+            "registration_number",
+            "cnic",
+            "email",
+            "phone",
+            "status",
+            "is_approved",
+            "approved_at",
+            "subscription_status",
+            "trial_ends_at",
+            "is_manual_override",
+            "manual_override_expires_at",
+            "stripe_customer_id",
+            "stripe_subscription_id",
+            "grace_period_ends_at",
+        ]
+        read_only_fields = ["id", "approved_at"]
 
 
 class CatalogCategorySerializer(serializers.ModelSerializer):

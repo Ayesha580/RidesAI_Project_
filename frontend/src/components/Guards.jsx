@@ -10,7 +10,23 @@ const ROLE_HOME = {
   employee: "/employee/dashboard",
 };
 
-export const homeFor = (user) => user?.redirect || ROLE_HOME[user?.role] || "/login";
+export const isUserOverrideOrActive = (user) =>
+  Boolean(
+    user?.is_manual_override === true ||
+    user?.company_details?.is_manual_override === true ||
+    user?.subscription_status === "active" ||
+    user?.company_details?.subscription_status === "active"
+  );
+
+export const homeFor = (user) => {
+  if (isUserOverrideOrActive(user)) {
+    return ROLE_HOME[user?.role] || "/owner/dashboard";
+  }
+  if (user?.redirect === "/select-plan" && isUserOverrideOrActive(user)) {
+    return ROLE_HOME[user?.role] || "/owner/dashboard";
+  }
+  return user?.redirect || ROLE_HOME[user?.role] || "/login";
+};
 
 export function AuthOnly({ children }) {
   const { user, loading } = useAuth();
@@ -25,7 +41,9 @@ export function Guard({ roles, children }) {
   if (!user) return <Navigate to="/login" replace />;
   const normalizedRole = user.role === "Employee" ? "staff" : user.role;
 
-  if (user.access_state === "suspended")
+  const overrideActive = isUserOverrideOrActive(user);
+
+  if (user.access_state === "suspended" && !overrideActive)
     return <Navigate to={normalizedRole === "owner" ? "/billing" : "/account-suspended"} replace />;
 
   if (roles && !roles.includes(normalizedRole)) {

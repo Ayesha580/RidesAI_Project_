@@ -33,7 +33,21 @@ export default function Login() {
     try {
       const { data } = await authApi.login(form);
       await signIn(data);
-      navigate(data.redirect, { replace: true });
+
+      const isOverrideOrActive =
+        data?.user?.is_manual_override === true ||
+        data?.user?.company_details?.is_manual_override === true ||
+        data?.user?.subscription_status === "active" ||
+        data?.user?.company_details?.subscription_status === "active" ||
+        data?.is_manual_override === true ||
+        data?.subscription_status === "active";
+
+      const target =
+        isOverrideOrActive && (data?.redirect === "/select-plan" || data?.redirect === "/billing")
+          ? "/owner/dashboard"
+          : (data?.redirect || "/owner/dashboard");
+
+      navigate(target, { replace: true });
     } catch (err) {
       const responseData = err?.response?.data;
       setError(errorText(err));

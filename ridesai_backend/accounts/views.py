@@ -73,10 +73,18 @@ def _resolve_redirect(user):
 def _business_info(user):
     if not user.company:
         return {"owner_nav": [], "business_label": ""}
-    bt = user.company.business_type
+    c = user.company
+    bt = c.business_type
     return {
         "owner_nav": owner_nav_for(bt),
         "business_label": BUSINESS_TYPES[business_key(bt)]["label"],
+        "subscription_status": c.subscription_status,
+        "trial_ends_at": c.trial_ends_at,
+        "is_manual_override": c.is_manual_override,
+        "manual_override_expires_at": c.manual_override_expires_at,
+        "stripe_customer_id": c.stripe_customer_id,
+        "stripe_subscription_id": c.stripe_subscription_id,
+        "grace_period_ends_at": c.grace_period_ends_at,
     }
 
 

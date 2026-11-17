@@ -3,17 +3,19 @@ import re
 from rest_framework import serializers
 
 from .models import User
+from companies.serializers import CompanySerializer
 
 
 class MeSerializer(serializers.ModelSerializer):
     company_name = serializers.CharField(source="company.name", read_only=True)
+    company_details = CompanySerializer(source="company", read_only=True)
     full_name = serializers.SerializerMethodField()
 
     class Meta:
         model = User
         fields = [
             "id", "username", "email", "first_name", "last_name", "full_name",
-            "role", "company", "company_name", "phone", "email_verified",
+            "role", "company", "company_name", "company_details", "phone", "email_verified",
         ]
 
     def get_full_name(self, obj):
