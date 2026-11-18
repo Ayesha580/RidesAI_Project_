@@ -14,7 +14,7 @@ from decimal import Decimal
 from typing import Optional
 
 from django.core.paginator import Paginator, EmptyPage
-from django.db.models import Q
+from django.db.models import Q, Avg
 from django.shortcuts import get_object_or_404
 from rest_framework import status
 from rest_framework.permissions import AllowAny
@@ -22,7 +22,10 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from companies.models import Company
-from operations.models import AgentConversation, AgentMessage, Order, OrderItem, OrderEvent
+from operations.models import (
+    AgentConversation, AgentMessage, Order, OrderItem, OrderEvent,
+    VoiceCall, CallEvent
+)
 from operations.whatsapp_service import WhatsAppService
 
 logger = logging.getLogger("operations.dashboard")
@@ -443,3 +446,119 @@ class DashboardOrderStatusAPIView(APIView):
             "status": order.status,
             "status_display": order.get_status_display(),
         })
+
+
+class DashboardCallsAPIView(APIView):
+    """
+    GET /api/dashboard/calls/
+    Returns tenant-scoped WhatsApp voice calls and aggregated KPI statistics.
+    """
+    permission_classes = [AllowAny]
+
+    def get(self, request):
+        company = _get_request_company(request)
+        if not company:
+            return Response({"detail": "No active company found."}, status=404)
+
+        base_qs = VoiceCall.objects.filter(company=company)
+
+        # Tenant-wide KPI stats
+        total_calls = base_qs.count()
+        active_calls = base_qs.filter(status__in=["initiated", "ringing", "accepted"]).count()
+        missed_or_failed = base_qs.filter(status__in=["rejected", "failed"]).count()
+        avg_dur_val = base_qs.filter(status="terminated").aggregate(avg=Avg("duration_seconds"))["avg"]
+        avg_duration_seconds = round(avg_dur_val, 1) if avg_dur_val is not None else 0
+
+        qs = base_qs.order_by("-created_at")
+
+        # Filters
+        status_filter = request.GET.get("status")
+        if status_filter:
+            qs = qs.filter(status=status_filter.strip().lower())
+
+        direction_filter = request.GET.get("direction")
+        if direction_filter:
+            qs = qs.filter(direction=direction_filter.strip().lower())
+
+        search_query = request.GET.get("search", "").strip()
+        if search_query:
+            qs = qs.filter(
+                Q(customer_phone__icontains=search_query) |
+                Q(call_id__icontains=search_query)
+            )
+
+        calls_list = []
+        for c in qs:
+            calls_list.append({
+                "id": c.id,
+                "call_id": c.call_id,
+                "customer_phone": c.customer_phone,
+                "direction": c.direction,
+                "status": c.status,
+                "status_display": c.get_status_display(),
+                "duration_seconds": c.duration_seconds,
+                "started_at": c.started_at.isoformat() if c.started_at else None,
+                "ended_at": c.ended_at.isoformat() if c.ended_at else None,
+                "error_code": c.error_code,
+                "error_message": c.error_message,
+                "created_at": c.created_at.isoformat(),
+                "formatted_date": c.created_at.strftime("%b %d, %Y %I:%M %p"),
+            })
+
+        return Response({
+            "is_calling_enabled": bool(company.is_calling_enabled),
+            "stats": {
+                "active_calls": active_calls,
+                "total_calls": total_calls,
+                "missed_or_failed": missed_or_failed,
+                "avg_duration_seconds": avg_duration_seconds,
+            },
+            "calls": calls_list,
+        })
+
+
+class DashboardCallEventsAPIView(APIView):
+    """
+    GET /api/dashboard/calls/<int:call_pk>/events/
+    Returns chronological CallEvents for a specific tenant-owned VoiceCall.
+    """
+    permission_classes = [AllowAny]
+
+    def get(self, request, call_pk):
+        company = _get_request_company(request)
+        if not company:
+            return Response({"detail": "No active company found."}, status=404)
+
+        call_obj = get_object_or_404(VoiceCall, pk=call_pk, company=company)
+        events = call_obj.events.all().order_by("created_at")
+
+        events_list = [
+            {
+                "id": ev.id,
+                "event_type": ev.event_type,
+                "raw_payload": ev.raw_payload,
+                "created_at": ev.created_at.isoformat(),
+                "formatted_date": ev.created_at.strftime("%b %d, %Y %I:%M:%S %p"),
+            }
+            for ev in events
+        ]
+
+        return Response({
+            "call": {
+                "id": call_obj.id,
+                "call_id": call_obj.call_id,
+                "customer_phone": call_obj.customer_phone,
+                "direction": call_obj.direction,
+                "status": call_obj.status,
+                "status_display": call_obj.get_status_display(),
+                "duration_seconds": call_obj.duration_seconds,
+                "started_at": call_obj.started_at.isoformat() if call_obj.started_at else None,
+                "ended_at": call_obj.ended_at.isoformat() if call_obj.ended_at else None,
+                "error_code": call_obj.error_code,
+                "error_message": call_obj.error_message,
+                "created_at": call_obj.created_at.isoformat(),
+                "formatted_date": call_obj.created_at.strftime("%b %d, %Y %I:%M %p"),
+            },
+            "events": events_list,
+        })
+

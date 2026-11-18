@@ -862,6 +862,149 @@ class WhatsAppCallingFoundationTests(TestCase):
         self.assertEqual(VoiceCall.objects.filter(call_id="call_disabled_99").count(), 0)
 
 
+class DashboardCallsAPITests(TestCase):
+    def setUp(self):
+        self.client = APIClient()
+        self.company_a = Company.objects.create(
+            name="Tenant Calls A",
+            business_type="restaurant",
+            is_approved=True,
+            is_calling_enabled=True,
+        )
+        self.company_b = Company.objects.create(
+            name="Tenant Calls B",
+            business_type="restaurant",
+            is_approved=True,
+            is_calling_enabled=False,
+        )
+        self.owner_a = User.objects.create_user(
+            username="owner_calls_a", password="Pass12345!",
+            email="owner-calls-a@example.com", company=self.company_a, role=User.ROLE_OWNER
+        )
+        self.owner_b = User.objects.create_user(
+            username="owner_calls_b", password="Pass12345!",
+            email="owner-calls-b@example.com", company=self.company_b, role=User.ROLE_OWNER
+        )
+
+        # Create calls for Company A
+        self.call_a1 = VoiceCall.objects.create(
+            company=self.company_a,
+            call_id="call_a_active",
+            customer_phone="+923001112233",
+            direction="inbound",
+            status="accepted",
+            duration_seconds=0,
+        )
+        self.call_a2 = VoiceCall.objects.create(
+            company=self.company_a,
+            call_id="call_a_term",
+            customer_phone="+923004445566",
+            direction="outbound",
+            status="terminated",
+            duration_seconds=120,
+        )
+        self.call_a3 = VoiceCall.objects.create(
+            company=self.company_a,
+            call_id="call_a_failed",
+            customer_phone="+923007778899",
+            direction="inbound",
+            status="failed",
+            error_code="131047",
+            error_message="Window expired",
+        )
+
+        # Call Event for call_a1
+        self.event_a1 = CallEvent.objects.create(
+            call=self.call_a1,
+            event_type="connect",
+            raw_payload={"id": "call_a_active", "event": "connect"},
+        )
+        self.event_a2 = CallEvent.objects.create(
+            call=self.call_a1,
+            event_type="accepted",
+            raw_payload={"id": "call_a_active", "event": "accepted"},
+        )
+
+        # Create calls for Company B
+        self.call_b1 = VoiceCall.objects.create(
+            company=self.company_b,
+            call_id="call_b_isolated",
+            customer_phone="+15559998888",
+            direction="inbound",
+            status="initiated",
+        )
+
+    def test_dashboard_calls_stats_and_tenant_isolation(self):
+        # Authenticate as owner of Company A
+        self.client.force_authenticate(self.owner_a)
+        response = self.client.get("/api/dashboard/calls/")
+        self.assertEqual(response.status_code, 200)
+
+        data = response.data
+        self.assertTrue(data["is_calling_enabled"])
+
+        # Check KPI Stats
+        stats = data["stats"]
+        self.assertEqual(stats["total_calls"], 3)
+        self.assertEqual(stats["active_calls"], 1)  # call_a1 is accepted
+        self.assertEqual(stats["missed_or_failed"], 1)  # call_a3 is failed
+        self.assertEqual(stats["avg_duration_seconds"], 120.0)  # only call_a2 is terminated with 120s
+
+        # Check that only Company A's calls are returned
+        call_ids = [c["call_id"] for c in data["calls"]]
+        self.assertIn("call_a_active", call_ids)
+        self.assertIn("call_a_term", call_ids)
+        self.assertIn("call_a_failed", call_ids)
+        self.assertNotIn("call_b_isolated", call_ids)
+
+        # Authenticate as owner of Company B
+        self.client.force_authenticate(self.owner_b)
+        response_b = self.client.get("/api/dashboard/calls/")
+        self.assertEqual(response_b.status_code, 200)
+        self.assertFalse(response_b.data["is_calling_enabled"])
+        self.assertEqual(response_b.data["stats"]["total_calls"], 1)
+        self.assertEqual(len(response_b.data["calls"]), 1)
+        self.assertEqual(response_b.data["calls"][0]["call_id"], "call_b_isolated")
+
+    def test_dashboard_calls_filters(self):
+        self.client.force_authenticate(self.owner_a)
+
+        # Status filter
+        res_status = self.client.get("/api/dashboard/calls/?status=accepted")
+        self.assertEqual(res_status.status_code, 200)
+        self.assertEqual(len(res_status.data["calls"]), 1)
+        self.assertEqual(res_status.data["calls"][0]["call_id"], "call_a_active")
+
+        # Direction filter
+        res_dir = self.client.get("/api/dashboard/calls/?direction=outbound")
+        self.assertEqual(res_dir.status_code, 200)
+        self.assertEqual(len(res_dir.data["calls"]), 1)
+        self.assertEqual(res_dir.data["calls"][0]["call_id"], "call_a_term")
+
+        # Search filter by customer phone
+        res_search = self.client.get("/api/dashboard/calls/?search=7778899")
+        self.assertEqual(res_search.status_code, 200)
+        self.assertEqual(len(res_search.data["calls"]), 1)
+        self.assertEqual(res_search.data["calls"][0]["call_id"], "call_a_failed")
+
+    def test_dashboard_call_events_endpoint_and_isolation(self):
+        self.client.force_authenticate(self.owner_a)
+
+        # Owner A fetches events for call_a1
+        res = self.client.get(f"/api/dashboard/calls/{self.call_a1.id}/events/")
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.data["call"]["call_id"], "call_a_active")
+        self.assertEqual(len(res.data["events"]), 2)
+        self.assertEqual(res.data["events"][0]["event_type"], "connect")
+        self.assertEqual(res.data["events"][1]["event_type"], "accepted")
+
+        # Owner B tries to access call_a1 events -> Must return 404
+        self.client.force_authenticate(self.owner_b)
+        res_cross = self.client.get(f"/api/dashboard/calls/{self.call_a1.id}/events/")
+        self.assertEqual(res_cross.status_code, 404)
+
+
+
 
 
 

@@ -126,6 +126,7 @@ export default function OwnerLayout({ title, subtitle, action, locked = false, c
         items: [
           { to: "/owner/ai-agent", icon: "🤖", label: "AI agent" },
           { to: "/owner/conversations", icon: "💬", label: "Conversations" },
+          { to: "/owner/calls", icon: "📞", label: "Calls" },
           { to: "/owner/knowledge", icon: "📚", label: "Knowledge base" },
           { to: "/owner/channels", icon: "🔗", label: "Channels & links" },
         ],

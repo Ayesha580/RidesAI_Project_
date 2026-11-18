@@ -37,6 +37,7 @@ import OrdersDashboard from "./operations/OrdersDashboard";
 import RiderDeliveries from "./operations/RiderDeliveries";
 import AgentConsole from "./operations/AgentConsole";
 import AgentConversations from "./operations/AgentConversations";
+import CallsDashboard from "./operations/CallsDashboard";
 import PublicAgentPage from "./operations/PublicAgentPage";
 import DeliveriesDashboard from "./operations/DeliveriesDashboard";
 import WhatsAppSettings from "./operations/components/agent-settings/WhatsAppSettings";
@@ -50,6 +51,7 @@ function Home() {
 function OwnerModulePage() {
   const { moduleKey } = useParams();
   if (moduleKey === "orders" || moduleKey === "deliveries") return <OrdersDashboard />;
+  if (moduleKey === "calls") return <CallsDashboard />;
   return <Catalog moduleKey={moduleKey} />;
 }
 function ModuleGuard({ children }) {
@@ -112,7 +114,7 @@ export default function App() {
 
       <Route path="/agent/:publicId" element={<PublicAgentPage />} />
 
-      {["ai-agent", "conversations", "knowledge", "channels", "whatsapp"].map((p) => (
+      {["ai-agent", "conversations", "calls", "knowledge", "channels", "whatsapp"].map((p) => (
         <Route
           key={p}
           path={`/owner/${p}`}
@@ -122,6 +124,8 @@ export default function App() {
                 <AgentConsole />
               ) : p === "conversations" ? (
                 <AgentConversations />
+              ) : p === "calls" ? (
+                <CallsDashboard />
               ) : p === "knowledge" ? (
                 <KnowledgeBaseForm />
               ) : (

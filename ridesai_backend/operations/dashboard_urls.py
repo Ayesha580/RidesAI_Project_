@@ -11,6 +11,8 @@ from .dashboard_views import (
     DashboardConversationReplyAPIView,
     DashboardOrdersAPIView,
     DashboardOrderStatusAPIView,
+    DashboardCallsAPIView,
+    DashboardCallEventsAPIView,
 )
 
 urlpatterns = [
@@ -19,4 +21,6 @@ urlpatterns = [
     path("conversations/<uuid:conversation_key>/reply/", DashboardConversationReplyAPIView.as_view(), name="dashboard-conversation-reply"),
     path("orders/", DashboardOrdersAPIView.as_view(), name="dashboard-orders"),
     path("orders/<int:order_id>/status/", DashboardOrderStatusAPIView.as_view(), name="dashboard-order-status"),
+    path("calls/", DashboardCallsAPIView.as_view(), name="dashboard-calls"),
+    path("calls/<int:call_pk>/events/", DashboardCallEventsAPIView.as_view(), name="dashboard-call-events"),
 ]
