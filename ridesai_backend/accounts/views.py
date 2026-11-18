@@ -29,6 +29,7 @@ REDIRECT_MAP = {
     User.ROLE_STAFF: "/staff/dashboard",
     User.ROLE_MANAGER: "/manager/dashboard",
     User.ROLE_KITCHEN: "/kitchen/dashboard",
+    User.ROLE_RIDER: "/rider/dashboard",
     User.ROLE_EMPLOYEE: "/employee/dashboard",
 }
 EMAIL_VERIFICATION_REDIRECT = "/login"
@@ -67,6 +68,10 @@ def _resolve_redirect(user):
         if user.role == User.ROLE_OWNER:
             return state, SUSPENDED_REDIRECT
         return state, STAFF_SUSPENDED_REDIRECT
+    if getattr(user, "is_kitchen", False):
+        return state, "/kitchen/dashboard"
+    if getattr(user, "is_rider", False):
+        return state, "/rider/dashboard"
     return state, REDIRECT_MAP.get(user.role, "/dashboard")
 
 

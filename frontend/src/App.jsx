@@ -42,6 +42,8 @@ import PublicAgentPage from "./operations/PublicAgentPage";
 import DeliveriesDashboard from "./operations/DeliveriesDashboard";
 import WhatsAppSettings from "./operations/components/agent-settings/WhatsAppSettings";
 import KnowledgeBaseForm from "./operations/components/agent-settings/KnowledgeBaseForm";
+import KitchenDashboard from "./operations/KitchenDashboard";
+import RiderDashboard from "./operations/RiderDashboard";
 function Home() {
   const { user, loading } = useAuth();
   if (loading) return <Loading />;
@@ -141,6 +143,8 @@ export default function App() {
       <Route path="/owner/billing" element={<Navigate to="/owner/settings?tab=billing" replace />} />
 
       <Route path="/staff/dashboard" element={<Guard roles={["staff"]}><StaffDashboard /></Guard>} />
+      <Route path="/kitchen/dashboard" element={<Guard roles={["kitchen", "owner"]}><KitchenDashboard /></Guard>} />
+      <Route path="/rider/dashboard" element={<Guard roles={["rider", "owner"]}><RiderDashboard /></Guard>} />
       <Route
         path="/staff/:moduleKey"
         element={

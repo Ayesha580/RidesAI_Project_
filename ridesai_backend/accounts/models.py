@@ -45,13 +45,15 @@ class User(AbstractUser):
     ROLE_SUPERADMIN = "superadmin"
     ROLE_MANAGER = "manager"
     ROLE_KITCHEN = "kitchen"
+    ROLE_RIDER = "rider"
     ROLE_EMPLOYEE = "employee"
 
     ROLE_CHOICES = [
         (ROLE_OWNER, "Business Owner"),
         (ROLE_STAFF, "Employee"),
         (ROLE_MANAGER, "Manager (legacy)"),
-        (ROLE_KITCHEN, "Kitchen Staff (legacy)"),
+        (ROLE_KITCHEN, "Kitchen Staff"),
+        (ROLE_RIDER, "Delivery Rider"),
         (ROLE_EMPLOYEE, "Employee (legacy)"),
         (ROLE_SUPERADMIN, "Super Admin"),
     ]
@@ -74,6 +76,22 @@ class User(AbstractUser):
         if self.is_superuser:
             self.role = self.ROLE_SUPERADMIN
         super().save(*args, **kwargs)
+
+    @property
+    def is_rider(self):
+        if self.role == self.ROLE_RIDER:
+            return True
+        if self.staff_role and self.staff_role.name.strip().lower() in ("rider", "delivery boy", "delivery"):
+            return True
+        return False
+
+    @property
+    def is_kitchen(self):
+        if self.role == self.ROLE_KITCHEN:
+            return True
+        if self.staff_role and "kitchen" in self.staff_role.name.strip().lower():
+            return True
+        return False
 
     def get_permissions(self):
         if not self.company:

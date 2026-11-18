@@ -468,27 +468,53 @@ export default function ThermalReceiptModal({
           border: 1px solid #fecaca;
         }
 
-        /* 80mm Print Media Query */
+        /* 80mm Print Media Query (Strict Single Sheet Continuous Thermal Print) */
         @media print {
+          @page {
+            size: 80mm auto; /* 80mm width, auto height */
+            margin: 0mm; /* Remove default browser margins */
+          }
+          html, body {
+            margin: 0 !important;
+            padding: 0 !important;
+            height: max-content !important;
+            min-height: max-content !important;
+            overflow: visible !important;
+            background: #ffffff !important;
+          }
           body * {
             visibility: hidden !important;
+          }
+          .trm-backdrop, .trm-modal {
+            position: static !important;
+            background: transparent !important;
+            padding: 0 !important;
+            margin: 0 !important;
+            width: auto !important;
+            height: auto !important;
+            min-height: 0 !important;
+            max-height: none !important;
+            overflow: visible !important;
+            box-shadow: none !important;
+            border: none !important;
           }
           #thermal-print-area, #thermal-print-area * {
             visibility: visible !important;
           }
-          #thermal-print-area {
+          #thermal-print-area, .receipt-print-container {
             position: absolute !important;
             left: 0 !important;
             top: 0 !important;
-            width: 80mm !important;
+            width: 78mm !important;
+            max-width: 80mm !important;
             margin: 0 !important;
-            padding: 4mm !important;
+            padding: 2mm 3mm !important;
             border: none !important;
             box-shadow: none !important;
-          }
-          @page {
-            size: 80mm auto;
-            margin: 0mm;
+            page-break-after: avoid !important;
+            page-break-before: avoid !important;
+            page-break-inside: avoid !important;
+            break-inside: avoid !important;
           }
         }
       `}</style>
@@ -547,7 +573,7 @@ export default function ThermalReceiptModal({
                 <div>⏳ Generating 80mm slip preview...</div>
               </div>
             ) : (
-              <div id="thermal-print-area" className="trm-paper" ref={printAreaRef}>
+              <div id="thermal-print-area" className="trm-paper receipt-print-container" ref={printAreaRef}>
                 {/* INVOICE VIEW */}
                 {slipType === "invoice" ? (
                   <>

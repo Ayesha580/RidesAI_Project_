@@ -337,7 +337,7 @@ class DashboardOrdersAPIView(APIView):
                 "results": [],
             })
 
-        qs = Order.objects.filter(company=company).prefetch_related("items").order_by("-created_at")
+        qs = Order.objects.filter(company=company).select_related("assigned_rider").prefetch_related("items").order_by("-created_at")
 
         # Filters
         search = request.GET.get("search", "").strip()
@@ -401,6 +401,11 @@ class DashboardOrdersAPIView(APIView):
                 "formatted_date": o.created_at.strftime("%b %d, %Y %I:%M %p"),
                 "items": items_list,
                 "items_count": len(items_list),
+                "assigned_rider": {
+                    "id": o.assigned_rider.id,
+                    "name": o.assigned_rider.get_full_name() or o.assigned_rider.username,
+                    "phone": o.assigned_rider.phone or "",
+                } if o.assigned_rider else None,
             })
 
         return Response({

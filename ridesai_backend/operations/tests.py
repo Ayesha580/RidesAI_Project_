@@ -1300,6 +1300,197 @@ class ThermalReceiptPrintingTests(TestCase):
         self.assertEqual(OrderPrintLog.objects.filter(order=order).count(), 1)
 
 
+class KitchenAndRiderWorkflowTests(TestCase):
+    """
+    KDS & Rider Dashboards + Auto-Assignment Tests.
+    Verifies load-balanced rider assignment on 'prepared' status transition,
+    and role-based API permissions & isolation.
+    """
+
+    def setUp(self):
+        self.client = APIClient()
+
+        # Company A
+        self.company_a = Company.objects.create(
+            name="Burger Hub Dispatch",
+            phone="+923001234567",
+            address="Commercial Area, Block A",
+        )
+        self.owner_a = User.objects.create_user(
+            username="owner_dispatch",
+            email="owner_dispatch@burgerhub.com",
+            password="testpassword123",
+            company=self.company_a,
+            role=User.ROLE_OWNER,
+        )
+
+        # 2 Riders for Company A
+        self.rider_1 = User.objects.create_user(
+            username="rider_speedy",
+            email="rider1@burgerhub.com",
+            password="testpassword123",
+            company=self.company_a,
+            role=User.ROLE_RIDER,
+        )
+        self.rider_2 = User.objects.create_user(
+            username="rider_flash",
+            email="rider2@burgerhub.com",
+            password="testpassword123",
+            company=self.company_a,
+            role=User.ROLE_RIDER,
+        )
+
+        # Kitchen Staff for Company A
+        self.kitchen_user = User.objects.create_user(
+            username="chef_gordon",
+            email="chef@burgerhub.com",
+            password="testpassword123",
+            company=self.company_a,
+            role=User.ROLE_KITCHEN,
+        )
+
+        # Company B (Isolated tenant)
+        self.company_b = Company.objects.create(
+            name="Isolated Pizza B",
+            phone="+923009999999",
+        )
+        self.rider_b = User.objects.create_user(
+            username="rider_b_tenant",
+            email="riderb@pizza.com",
+            password="testpassword123",
+            company=self.company_b,
+            role=User.ROLE_RIDER,
+        )
+
+    def test_auto_assign_best_rider(self):
+        # 1. Assign 1 active order to Rider 1 so Rider 1 workload = 1, Rider 2 workload = 0
+        order_active_1 = Order.objects.create(
+            company=self.company_a,
+            order_number="ORD-DISP-001",
+            customer_name="Customer One",
+            customer_phone="+923001111111",
+            status="prepared",
+            assigned_rider=self.rider_1,
+            total=Decimal("20.00"),
+        )
+
+        # 2. Create a new order in 'preparing' with no rider assigned
+        order_new = Order.objects.create(
+            company=self.company_a,
+            order_number="ORD-DISP-002",
+            customer_name="Customer Two",
+            customer_phone="+923002222222",
+            status="preparing",
+            assigned_rider=None,
+            total=Decimal("35.00"),
+        )
+        self.assertIsNone(order_new.assigned_rider)
+
+        # 3. Kitchen marks order as 'prepared'
+        order_new.status = "prepared"
+        order_new.save()
+
+        # 4. Assert load balancing: auto-assigned to Rider 2 (workload 0 vs Rider 1's 1)
+        order_new.refresh_from_db()
+        self.assertIsNotNone(order_new.assigned_rider)
+        self.assertEqual(order_new.assigned_rider, self.rider_2)
+
+    def test_kitchen_and_rider_api_permissions(self):
+        # Create an order in 'preparing' for kitchen
+        order_kitchen = Order.objects.create(
+            company=self.company_a,
+            order_number="ORD-KITCHEN-001",
+            customer_name="Diner Customer",
+            status="preparing",
+            total=Decimal("18.00"),
+        )
+        OrderItem.objects.create(
+            order=order_kitchen,
+            item_name="Spicy Burger",
+            quantity=Decimal("2"),
+            unit_price=Decimal("9.00"),
+            line_total=Decimal("18.00"),
+        )
+
+        # Create Order X assigned to Rider 1
+        order_rider_1 = Order.objects.create(
+            company=self.company_a,
+            order_number="ORD-RIDER-1",
+            customer_name="Client Alpha",
+            status="prepared",
+            assigned_rider=self.rider_1,
+            total=Decimal("22.00"),
+        )
+
+        # Create Order Y assigned to Rider 2
+        order_rider_2 = Order.objects.create(
+            company=self.company_a,
+            order_number="ORD-RIDER-2",
+            customer_name="Client Beta",
+            status="prepared",
+            assigned_rider=self.rider_2,
+            total=Decimal("30.00"),
+        )
+
+        # 1. Kitchen Staff API Access
+        self.client.force_authenticate(self.kitchen_user)
+        res_k_get = self.client.get("/api/kitchen/orders/")
+        self.assertEqual(res_k_get.status_code, 200)
+        self.assertTrue(any(o["id"] == order_kitchen.id for o in res_k_get.data["orders"]))
+
+        # Kitchen marks order_kitchen as prepared
+        res_k_patch = self.client.patch(
+            f"/api/kitchen/orders/{order_kitchen.id}/status/",
+            {"status": "prepared"},
+            format="json",
+        )
+        self.assertEqual(res_k_patch.status_code, 200)
+        self.assertEqual(res_k_patch.data["status"], "prepared")
+        self.assertIsNotNone(res_k_patch.data["assigned_rider"])
+
+        # 2. Rider 1 API Access & Isolation
+        self.client.force_authenticate(self.rider_1)
+        res_r_get = self.client.get("/api/rider/orders/")
+        self.assertEqual(res_r_get.status_code, 200)
+        # Rider 1 sees Order X, but CANNOT see Order Y
+        rider_order_ids = [o["id"] for o in res_r_get.data["orders"]]
+        self.assertIn(order_rider_1.id, rider_order_ids)
+        self.assertNotIn(order_rider_2.id, rider_order_ids)
+
+        # Rider 1 attempts to update Order Y (assigned to Rider 2) -> Must return 404
+        res_cross_patch = self.client.patch(
+            f"/api/rider/orders/{order_rider_2.id}/status/",
+            {"status": "delivered"},
+            format="json",
+        )
+        self.assertEqual(res_cross_patch.status_code, 404)
+
+        # Rider 1 updates their own Order X -> 200 OK
+        res_own_patch = self.client.patch(
+            f"/api/rider/orders/{order_rider_1.id}/status/",
+            {"status": "out_for_delivery"},
+            format="json",
+        )
+        self.assertEqual(res_own_patch.status_code, 200)
+        self.assertEqual(res_own_patch.data["status"], "out_for_delivery")
+
+        # Rider 1 completes delivery -> 200 OK
+        res_deliv = self.client.patch(
+            f"/api/rider/orders/{order_rider_1.id}/status/",
+            {"status": "delivered"},
+            format="json",
+        )
+        self.assertEqual(res_deliv.status_code, 200)
+        self.assertEqual(res_deliv.data["status"], "delivered")
+
+        # Now Order X is delivered, so it is excluded from Rider 1's active orders
+        res_r_after = self.client.get("/api/rider/orders/")
+        self.assertEqual(res_r_after.status_code, 200)
+        after_ids = [o["id"] for o in res_r_after.data["orders"]]
+        self.assertNotIn(order_rider_1.id, after_ids)
+
+
+
 
 
 

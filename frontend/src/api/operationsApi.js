@@ -28,3 +28,13 @@ export const dashboardApi = {
   getCalls: (params = {}) => api.get("/dashboard/calls/", { params }),
   getCallEvents: (callId) => api.get(`/dashboard/calls/${callId}/events/`),
 };
+
+export const kitchenApi = {
+  getOrders: () => api.get("/kitchen/orders/"),
+  updateOrderStatus: (orderId, status) => api.patch(`/kitchen/orders/${orderId}/status/`, { status }),
+};
+
+export const riderApi = {
+  getOrders: () => api.get("/rider/orders/"),
+  updateOrderStatus: (orderId, status) => api.patch(`/rider/orders/${orderId}/status/`, { status }),
+};

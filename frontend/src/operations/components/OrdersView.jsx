@@ -658,6 +658,15 @@ export default function OrdersView() {
                         <span className={`ov-status-badge ${statusClass}`}>
                           {o.status_display}
                         </span>
+                        {o.assigned_rider ? (
+                          <div style={{ fontSize: 11.5, color: "#2563eb", fontWeight: 700, marginTop: 4 }}>
+                            🛵 {o.assigned_rider.name}
+                          </div>
+                        ) : (
+                          <div style={{ fontSize: 11, color: "#94a3b8", marginTop: 4 }}>
+                            Unassigned
+                          </div>
+                        )}
                       </td>
                       <td style={{ fontSize: 12, color: "#787081", whiteSpace: "nowrap" }}>
                         {o.formatted_date || new Date(o.created_at).toLocaleString([], { dateStyle: "short", timeStyle: "short" })}

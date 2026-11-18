@@ -6,18 +6,21 @@ from django.utils import timezone
 
 class Order(models.Model):
     STATUS_NEW = "new"
+    STATUS_PENDING = "pending"
     STATUS_CONFIRMED = "confirmed"
     STATUS_PREPARING = "preparing"
+    STATUS_PREPARED = "prepared"
     STATUS_READY = "ready"
     STATUS_ASSIGNED = "assigned"
     STATUS_PICKED_UP = "picked_up"
     STATUS_ON_THE_WAY = "on_the_way"
+    STATUS_OUT_FOR_DELIVERY = "out_for_delivery"
     STATUS_DELIVERED = "delivered"
     STATUS_CANCELLED = "cancelled"
     STATUS_CHOICES = [(x, x.replace("_", " ").title()) for x in (
-        STATUS_NEW, STATUS_CONFIRMED, STATUS_PREPARING, STATUS_READY,
-        STATUS_ASSIGNED, STATUS_PICKED_UP, STATUS_ON_THE_WAY,
-        STATUS_DELIVERED, STATUS_CANCELLED,
+        STATUS_NEW, STATUS_PENDING, STATUS_CONFIRMED, STATUS_PREPARING,
+        STATUS_PREPARED, STATUS_READY, STATUS_ASSIGNED, STATUS_PICKED_UP,
+        STATUS_ON_THE_WAY, STATUS_OUT_FOR_DELIVERY, STATUS_DELIVERED, STATUS_CANCELLED,
     )]
 
     company = models.ForeignKey("companies.Company", on_delete=models.CASCADE, related_name="orders")
@@ -34,6 +37,13 @@ class Order(models.Model):
     source = models.CharField(max_length=20, default="dashboard", choices=[("dashboard", "Dashboard"), ("agent", "AI Agent"), ("api", "API")])
     created_by = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL, related_name="created_orders")
     assigned_to = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL, related_name="assigned_business_orders")
+    assigned_rider = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="assigned_deliveries",
+    )
     assigned_team = models.CharField(max_length=80, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -64,7 +74,7 @@ class DeliveryAssignment(models.Model):
     company = models.ForeignKey("companies.Company", on_delete=models.CASCADE, related_name="delivery_assignments")
     order = models.OneToOneField(Order, on_delete=models.CASCADE, related_name="delivery")
     rider = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name="delivery_assignments")
-    assigned_by = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL, related_name="assigned_deliveries")
+    assigned_by = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL, related_name="dispatched_deliveries")
     status = models.CharField(max_length=20, choices=Order.STATUS_CHOICES, default=Order.STATUS_ASSIGNED)
     assigned_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)

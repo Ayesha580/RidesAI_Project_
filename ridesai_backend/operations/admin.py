@@ -30,9 +30,9 @@ class CallEventAdmin(admin.ModelAdmin):
 
 @admin.register(Order)
 class OrderAdmin(admin.ModelAdmin):
-    list_display = ("order_number", "company", "customer_name", "customer_phone", "status", "total", "source", "created_at")
-    list_filter = ("status", "source", "company")
-    search_fields = ("order_number", "customer_name", "customer_phone")
+    list_display = ("order_number", "company", "customer_name", "customer_phone", "status", "assigned_rider", "total", "source", "created_at")
+    list_filter = ("status", "source", "company", "assigned_rider")
+    search_fields = ("order_number", "customer_name", "customer_phone", "assigned_rider__username")
 
 
 @admin.register(AgentConversation)

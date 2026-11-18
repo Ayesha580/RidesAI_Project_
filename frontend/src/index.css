@@ -36,6 +36,28 @@ input[type="checkbox"] { width: auto; }
 .table td { padding: 8px 0; border-bottom: 1px solid #f0f0f0; }
 .docs { display: flex; gap: 14px; margin: 12px 0; flex-wrap: wrap; }
 
+/* Global 80mm Continuous Thermal Receipt Print Rules */
+@media print {
+  @page {
+    size: 80mm auto;
+    margin: 0mm;
+  }
+  html, body {
+    margin: 0 !important;
+    padding: 0 !important;
+    height: max-content !important;
+    min-height: max-content !important;
+    overflow: visible !important;
+    background: #ffffff !important;
+  }
+  .receipt-print-container {
+    page-break-after: avoid !important;
+    page-break-before: avoid !important;
+    page-break-inside: avoid !important;
+    break-inside: avoid !important;
+  }
+}
+
 
 
 
