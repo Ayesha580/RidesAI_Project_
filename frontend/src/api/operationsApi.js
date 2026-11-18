@@ -16,3 +16,11 @@ export const operationsApi = {
   conversations: () => api.get("/operations/agent/conversations/"),
   updateConversation: (data) => api.patch("/operations/agent/conversations/", data),
 };
+
+export const dashboardApi = {
+  getConversations: (params = {}) => api.get("/dashboard/conversations/", { params }),
+  getConversationDetail: (conversationKey) => api.get(`/dashboard/conversations/${conversationKey}/`),
+  sendConversationReply: (conversationKey, data) => api.post(`/dashboard/conversations/${conversationKey}/reply/`, data),
+  getOrders: (params = {}) => api.get("/dashboard/orders/", { params }),
+  updateOrderStatus: (orderId, data) => api.patch(`/dashboard/orders/${orderId}/status/`, data),
+};

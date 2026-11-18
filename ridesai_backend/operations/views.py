@@ -758,13 +758,51 @@ class WhatsAppWebhookAPIView(APIView):
             for entry in entries:
                 changes = entry.get("changes", [])
                 for change in changes:
+                    field = change.get("field", "messages")
                     value = change.get("value", {})
                     metadata = value.get("metadata", {})
                     phone_number_id = str(metadata.get("phone_number_id", "")).strip()
 
-                    # Ignore status delivery events (sent, delivered, read)
+                    # Phase 2 Calling Webhook: route field == "calls"
+                    if field == "calls":
+                        from .calling import handle_calling_webhook_event
+                        from companies.models import Company
+                        cfg = get_config_by_phone_number_id(phone_number_id) or {}
+                        company_id = cfg.get("company_id")
+                        company_obj = Company.objects.filter(id=company_id).first() if company_id else None
+                        handle_calling_webhook_event(value, company=company_obj)
+                        continue
+
+                    # Process status delivery events (sent, delivered, read, failed)
+                    statuses = value.get("statuses", [])
+                    if statuses:
+                        for st in statuses:
+                            wamid = st.get("id", "unknown_wamid")
+                            st_val = st.get("status", "unknown")
+                            recipient_id = str(st.get("recipient_id", "")).strip()
+                            masked_recipient = f"...{recipient_id[-4:]}" if len(recipient_id) >= 4 else recipient_id
+
+                            if st_val == "failed":
+                                errors = st.get("errors", [])
+                                logger.error(
+                                    f"[WhatsApp Webhook Status ERROR] Message delivery failed! "
+                                    f"wamid={wamid} | Recipient={masked_recipient} | Errors={json.dumps(errors)}"
+                                )
+                                print(
+                                    f"[WhatsApp Delivery FAILED] wamid={wamid} | "
+                                    f"Recipient={masked_recipient} | Errors={json.dumps(errors)}"
+                                )
+                            else:
+                                logger.info(
+                                    f"[WhatsApp Webhook Status] Message status update: "
+                                    f"wamid={wamid} | Status={st_val} | Recipient={masked_recipient}"
+                                )
+                                print(
+                                    f"[WhatsApp Status] wamid={wamid} | Status={st_val} | Recipient={masked_recipient}"
+                                )
+
+                    # If this payload contains only status updates and no messages, continue to next change
                     if "statuses" in value and "messages" not in value:
-                        logger.debug("[WhatsApp Webhook] Received status event acknowledgment.")
                         continue
 
                     messages = value.get("messages", [])
@@ -775,8 +813,9 @@ class WhatsAppWebhookAPIView(APIView):
                         sender_phone = str(msg.get("from", "")).strip()
                         msg_type = msg.get("type")
 
-                        # Extract content from text or interactive button/list selections
+                        # Extract content from text, interactive choices, or audio/voice media
                         content = ""
+                        media_id = None
                         if msg_type == "text":
                             content = msg.get("text", {}).get("body", "").strip()
                         elif msg_type == "interactive":
@@ -786,19 +825,29 @@ class WhatsAppWebhookAPIView(APIView):
                                 or interactive.get("list_reply", {}).get("title")
                                 or ""
                             )
+                        elif msg_type == "audio":
+                            audio_data = msg.get("audio", {})
+                            media_id = str(audio_data.get("id", "")).strip()
+                            mime_type = audio_data.get("mime_type", "audio/ogg")
+                            logger.info(
+                                f"[WhatsApp Webhook Audio] Inbound voice note id={media_id}, mime={mime_type} "
+                                f"from {sender_name} ({sender_phone})"
+                            )
+                            content = "[Voice Note]"
                         else:
                             content = f"[{msg_type} message]"
 
                         logger.info(
-                            f"[WhatsApp Message] Phone ID: {phone_number_id} | "
-                            f"From: {sender_name} ({sender_phone}) | Content: '{content}'"
+                            f"[WhatsApp Message] Phone ID: {phone_number_id} | Type: {msg_type} | "
+                            f"From: {sender_name} ({sender_phone}) | Content: '{content}' | Media: {media_id}"
                         )
 
                         # Trigger background processing so Meta receives instant HTTP 200 within timeout window
-                        if sender_phone and content:
+                        if sender_phone and (content or media_id):
                             worker = threading.Thread(
                                 target=process_incoming_whatsapp_message,
                                 args=(sender_phone, content, phone_number_id, sender_name),
+                                kwargs={"media_id": media_id, "msg_type": msg_type},
                                 daemon=True,
                             )
                             worker.start()

@@ -5,6 +5,7 @@ import OwnerLayout from "../components/OwnerLayout";
 import { useAuth } from "../../context/AuthContext";
 import { isUserOverrideOrActive } from "../../components/Guards";
 import { billingApi, roleApi, staffApi } from "../../api/staffApi";
+import ConversationsAndOrdersDashboard from "../../operations/components/ConversationsAndOrdersDashboard";
 
 const PALETTE = ["#ff77ff", "#8054d9", "#3a0a3a", "#f4a6d7", "#a78bfa", "#f5b942", "#38b99a"];
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
@@ -90,6 +91,7 @@ function Donut({ slices, total }) {
 
 export default function OwnerDashboard() {
   const { user } = useAuth();
+  const [dashboardTab, setDashboardTab] = useState("conversations");
   const [staff, setStaff] = useState([]);
   const [roles, setRoles] = useState([]);
   const [billing, setBilling] = useState(null);
@@ -194,7 +196,49 @@ export default function OwnerDashboard() {
           </div>
         )}
 
-        <section className="dx-stats">
+        {/* Main Dashboard Navigation Tabs */}
+        <div style={{ display: "flex", gap: 10, margin: "10px 0 16px", flexWrap: "wrap", borderBottom: "1px solid #ede8f2", paddingBottom: 14 }}>
+          <button
+            onClick={() => setDashboardTab("conversations")}
+            style={{
+              padding: "10px 20px",
+              borderRadius: "10px",
+              border: "none",
+              fontSize: "14px",
+              fontWeight: 700,
+              cursor: "pointer",
+              background: dashboardTab === "conversations" ? "#302b38" : "#ffffff",
+              color: dashboardTab === "conversations" ? "#ffffff" : "#6b6474",
+              boxShadow: dashboardTab === "conversations" ? "0 4px 12px rgba(48,43,56,0.18)" : "0 1px 4px rgba(0,0,0,0.04)",
+              transition: "all 0.2s ease",
+            }}
+          >
+            💬 AI Conversations & Orders
+          </button>
+          <button
+            onClick={() => setDashboardTab("overview")}
+            style={{
+              padding: "10px 20px",
+              borderRadius: "10px",
+              border: "none",
+              fontSize: "14px",
+              fontWeight: 700,
+              cursor: "pointer",
+              background: dashboardTab === "overview" ? "#302b38" : "#ffffff",
+              color: dashboardTab === "overview" ? "#ffffff" : "#6b6474",
+              boxShadow: dashboardTab === "overview" ? "0 4px 12px rgba(48,43,56,0.18)" : "0 1px 4px rgba(0,0,0,0.04)",
+              transition: "all 0.2s ease",
+            }}
+          >
+            📊 Team & Analytics Overview
+          </button>
+        </div>
+
+        {dashboardTab === "conversations" ? (
+          <ConversationsAndOrdersDashboard />
+        ) : (
+          <>
+            <section className="dx-stats">
           <article className="dx-stat">
             <div className="dx-stat-top">
               <span className="dx-stat-icon pink-icon">♙</span>
@@ -376,6 +420,8 @@ export default function OwnerDashboard() {
             <Link to={BILLING}>Manage subscription <span>→</span></Link>
           </article>
         </section>
+        </>
+        )}
       </div>
     </OwnerLayout>
   );

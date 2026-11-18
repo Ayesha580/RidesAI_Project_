@@ -114,3 +114,98 @@ class AgentActionLog(models.Model):
     request_data = models.JSONField(default=dict, blank=True)
     result_data = models.JSONField(default=dict, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
+
+
+# ============================================================================
+# Phase 2: WhatsApp Live Calling Models
+# ============================================================================
+
+class VoiceCall(models.Model):
+    DIRECTION_CHOICES = [
+        ("inbound", "Inbound"),
+        ("outbound", "Outbound"),
+    ]
+    STATUS_CHOICES = [
+        ("initiated", "Initiated"),
+        ("ringing", "Ringing"),
+        ("accepted", "Accepted"),
+        ("rejected", "Rejected"),
+        ("terminated", "Terminated"),
+        ("failed", "Failed"),
+    ]
+
+    company = models.ForeignKey(
+        "companies.Company",
+        on_delete=models.CASCADE,
+        related_name="voice_calls",
+    )
+    call_id = models.CharField(max_length=128, unique=True, db_index=True)
+    customer_phone = models.CharField(max_length=32, db_index=True)
+    direction = models.CharField(max_length=16, choices=DIRECTION_CHOICES, default="inbound")
+    status = models.CharField(max_length=24, choices=STATUS_CHOICES, default="initiated")
+    sdp_offer = models.TextField(blank=True, default="")
+    started_at = models.DateTimeField(null=True, blank=True)
+    ended_at = models.DateTimeField(null=True, blank=True)
+    duration_seconds = models.PositiveIntegerField(default=0)
+    error_code = models.CharField(max_length=32, blank=True, default="")
+    error_message = models.TextField(blank=True, default="")
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ("-created_at",)
+        indexes = [
+            models.Index(fields=["company", "status", "-created_at"], name="op_call_comp_status_idx"),
+            models.Index(fields=["customer_phone", "-created_at"], name="op_call_phone_idx"),
+        ]
+
+    def __str__(self):
+        return f"Call {self.call_id} ({self.status}) - {self.customer_phone}"
+
+
+class CallPermission(models.Model):
+    PERMISSION_TYPE_CHOICES = [
+        ("template_request", "Template Request"),
+        ("profile_opt_in", "Profile Opt-In"),
+        ("inbound_call", "Inbound Call"),
+    ]
+
+    company = models.ForeignKey(
+        "companies.Company",
+        on_delete=models.CASCADE,
+        related_name="call_permissions",
+    )
+    customer_phone = models.CharField(max_length=32, db_index=True)
+    permission_type = models.CharField(
+        max_length=32,
+        choices=PERMISSION_TYPE_CHOICES,
+        default="template_request",
+    )
+    is_granted = models.BooleanField(default=False)
+    granted_at = models.DateTimeField(null=True, blank=True)
+    expires_at = models.DateTimeField(null=True, blank=True)
+    revoked_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        unique_together = ("company", "customer_phone")
+        ordering = ("-created_at",)
+
+    def __str__(self):
+        status_text = "Granted" if self.is_granted else "Denied"
+        return f"CallPermission {self.customer_phone} ({status_text}) - {self.company.name}"
+
+
+class CallEvent(models.Model):
+    call = models.ForeignKey(VoiceCall, on_delete=models.CASCADE, related_name="events")
+    event_type = models.CharField(max_length=64)
+    raw_payload = models.JSONField(default=dict, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ("created_at",)
+
+    def __str__(self):
+        return f"CallEvent {self.event_type} on {self.call.call_id} @ {self.created_at}"
+

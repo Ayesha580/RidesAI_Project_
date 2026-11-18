@@ -108,6 +108,7 @@ class Company(models.Model):
 
     # AI Agent actions are opt-in and scoped to this business.
     agent_enabled = models.BooleanField(default=False)
+    is_calling_enabled = models.BooleanField(default=False)
     agent_public_id = models.UUIDField(default=uuid.uuid4, db_index=True, editable=False)
     agent_allowed_actions = models.JSONField(default=list, blank=True)
     agent_greeting = models.TextField(blank=True)

@@ -1,47 +1,444 @@
 """
-WhatsApp AI Agent & Dynamic Order Processing Workflow.
+WhatsApp AI Agent & Dynamic Order Processing Workflow (Phase 3).
 
 Dynamically parses customer inquiries and order requests using the OpenAI API (gpt-4o-mini).
 Grounds responses in tenant-specific business data (Company, CatalogItem, BusinessKnowledge,
-and BusinessHours), and dispatches responses via Meta WhatsApp Cloud API using WhatsAppService.
+and BusinessHours), executes database transactions via strict Tool Calling (Function Calling),
+and dispatches voice/text responses via Meta WhatsApp Cloud API using WhatsAppService.
 """
 
 import json
 import logging
 import os
+from decimal import Decimal
 from typing import Optional, Dict, Any, List
 
 from django.conf import settings
-from django.db import close_old_connections
+from django.db import close_old_connections, transaction
 from openai import OpenAI
 
 from .whatsapp_service import WhatsAppService
 from .whatsapp_storage import get_config_by_phone_number_id
+from .audio_service import transcribe_audio, synthesize_speech
+from operations.models import Order, OrderItem, OrderEvent
+from companies.models import Company, CatalogItem, BusinessKnowledge, BusinessHours, Inventory, StockMovement
 
 logger = logging.getLogger("operations.whatsapp")
+
+
+# ============================================================================
+# OpenAI / Groq Tool Schemas (Phase 3 Tool Calling)
+# ============================================================================
+
+AGENT_TOOLS = [
+    {
+        "type": "function",
+        "function": {
+            "name": "get_catalog_items",
+            "description": (
+                "Fetches real-time available menu/catalog items, stock availability, "
+                "descriptions, and prices for the current business store."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "search_query": {
+                        "type": "string",
+                        "description": "Optional keyword or category to search for specific items (e.g. 'burger', 'drink').",
+                    }
+                },
+                "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "create_order",
+            "description": (
+                "Executes a confirmed order transaction in the store database. "
+                "Call this ONLY when the customer has clearly confirmed they want to order "
+                "and has provided their delivery address."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "delivery_address": {
+                        "type": "string",
+                        "description": "The customer's complete delivery address or table/pickup location.",
+                    },
+                    "items": {
+                        "type": "array",
+                        "description": "List of items and quantities being ordered.",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "item_name": {
+                                    "type": "string",
+                                    "description": "Name of the catalog item.",
+                                },
+                                "quantity": {
+                                    "type": "integer",
+                                    "description": "Number of units to order (minimum 1).",
+                                },
+                                "special_instructions": {
+                                    "type": "string",
+                                    "description": "Optional preparation notes (e.g. 'no onions', 'extra spicy').",
+                                },
+                            },
+                            "required": ["item_name", "quantity"],
+                        },
+                    },
+                    "customer_name": {
+                        "type": "string",
+                        "description": "Name of the customer placing the order.",
+                    },
+                    "notes": {
+                        "type": "string",
+                        "description": "General delivery instructions or notes for the kitchen/staff.",
+                    },
+                },
+                "required": ["delivery_address", "items"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "check_order_status",
+            "description": (
+                "Queries the real-time status and details of recent orders for the customer "
+                "by order number or customer phone number."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "order_number": {
+                        "type": "string",
+                        "description": "Optional order reference number (e.g., 'RA-261117-XXXX').",
+                    },
+                },
+                "required": [],
+            },
+        },
+    },
+]
+
+
+# ============================================================================
+# Tool Execution Functions (Atomic Database Transactions & Multi-Tenant Guarded)
+# ============================================================================
+
+def execute_get_catalog_items(company: Company, search_query: Optional[str] = None) -> Dict[str, Any]:
+    """
+    Fetches active catalog items strictly isolated to the specified tenant company.
+    """
+    try:
+        qs = CatalogItem.objects.filter(company=company, is_available=True).select_related("category")
+        if search_query and search_query.strip():
+            q = search_query.strip()
+            qs = qs.filter(name__icontains=q) | qs.filter(description__icontains=q)
+
+        items_list = []
+        for item in qs[:40]:
+            stock_info = "in stock"
+            try:
+                inv = getattr(item, "inventory", None)
+                if inv and not inv.is_unlimited:
+                    stock_info = f"{inv.quantity} available"
+            except Exception:
+                pass
+
+            items_list.append({
+                "id": item.id,
+                "name": item.name,
+                "price": str(item.price),
+                "category": item.category.name if item.category else "General",
+                "description": item.description or "",
+                "stock": stock_info,
+            })
+
+        return {
+            "success": True,
+            "company_name": company.name,
+            "count": len(items_list),
+            "items": items_list,
+        }
+    except Exception as e:
+        logger.error(f"[Tool: get_catalog_items] Error: {e}", exc_info=True)
+        return {"success": False, "error": str(e), "items": []}
+
+
+def execute_create_order(
+    company: Company,
+    customer_name: str,
+    customer_phone: str,
+    items: List[Dict[str, Any]],
+    delivery_address: str,
+    notes: Optional[str] = None,
+) -> Dict[str, Any]:
+    """
+    Executes a multi-tenant isolated database transaction creating Order, OrderItem,
+    and OrderEvent records with inventory deduction and audit trail.
+    """
+    if not items:
+        return {"success": False, "error": "No items provided in order request."}
+    if not delivery_address or not delivery_address.strip():
+        return {"success": False, "error": "Delivery address is required to place an order."}
+
+    clean_name = (customer_name or "").strip() or "Valued Customer"
+    clean_phone = (customer_phone or "").strip()
+    clean_notes = (notes or "").strip()
+
+    try:
+        with transaction.atomic():
+            subtotal = Decimal("0.00")
+            resolved_items = []
+
+            # Pre-validate and match each requested item against tenant catalog
+            for raw_item in items:
+                name_req = str(raw_item.get("item_name") or "").strip()
+                qty_raw = raw_item.get("quantity", 1)
+                try:
+                    qty = Decimal(str(qty_raw))
+                except Exception:
+                    qty = Decimal("1")
+
+                if qty <= 0:
+                    return {"success": False, "error": f"Quantity for '{name_req}' must be at least 1."}
+
+                # Try matching by exact name, then icontains, then reverse substring
+                catalog_item = (
+                    CatalogItem.objects.select_for_update()
+                    .filter(company=company, is_available=True, name__iexact=name_req)
+                    .first()
+                )
+                if not catalog_item:
+                    catalog_item = (
+                        CatalogItem.objects.select_for_update()
+                        .filter(company=company, is_available=True, name__icontains=name_req)
+                        .first()
+                    )
+                if not catalog_item:
+                    # Reverse check: catalog item name in requested string (e.g. "Beef burger with cheese")
+                    all_avail = CatalogItem.objects.select_for_update().filter(company=company, is_available=True)
+                    for c_it in all_avail:
+                        if c_it.name.lower() in name_req.lower():
+                            catalog_item = c_it
+                            break
+
+                if not catalog_item:
+                    avail_names = list(CatalogItem.objects.filter(company=company, is_available=True).values_list("name", flat=True)[:10])
+                    avail_str = ", ".join(avail_names) if avail_names else "none"
+                    return {
+                        "success": False,
+                        "error": f"Item '{name_req}' was not found in our catalog. Currently available: {avail_str}.",
+                    }
+
+                # Check inventory if tracked
+                inv = Inventory.objects.select_for_update().filter(company=company, item=catalog_item).first()
+                if inv and not inv.is_unlimited:
+                    if qty > inv.quantity:
+                        return {
+                            "success": False,
+                            "error": f"Insufficient stock for '{catalog_item.name}'. Only {inv.quantity} left in stock.",
+                        }
+
+                line_total = qty * catalog_item.price
+                subtotal += line_total
+                resolved_items.append({
+                    "catalog_item": catalog_item,
+                    "item_name": catalog_item.name,
+                    "quantity": qty,
+                    "unit_price": catalog_item.price,
+                    "line_total": line_total,
+                    "inventory": inv,
+                    "notes": raw_item.get("special_instructions", ""),
+                })
+
+            # Create Order
+            order = Order.objects.create(
+                company=company,
+                customer_name=clean_name,
+                customer_phone=clean_phone,
+                delivery_address=delivery_address.strip(),
+                status=Order.STATUS_NEW,
+                subtotal=subtotal,
+                delivery_fee=Decimal("0.00"),
+                total=subtotal,
+                notes=clean_notes,
+                source="agent",
+            )
+
+            # Create OrderItems and adjust inventory
+            created_items_summary = []
+            for r in resolved_items:
+                OrderItem.objects.create(
+                    order=order,
+                    item=r["catalog_item"],
+                    item_name=r["item_name"],
+                    quantity=r["quantity"],
+                    unit_price=r["unit_price"],
+                    line_total=r["line_total"],
+                )
+                if r["inventory"] and not r["inventory"].is_unlimited:
+                    r["inventory"].quantity -= r["quantity"]
+                    r["inventory"].save(update_fields=["quantity", "updated_at"])
+                    StockMovement.objects.create(
+                        company=company,
+                        item=r["catalog_item"],
+                        movement_type="remove",
+                        quantity=r["quantity"],
+                        note=f"WhatsApp Agent Order {order.order_number}",
+                    )
+
+                created_items_summary.append({
+                    "name": r["item_name"],
+                    "quantity": str(r["quantity"]),
+                    "price": str(r["unit_price"]),
+                    "line_total": str(r["line_total"]),
+                })
+
+            # Audit Trail
+            OrderEvent.objects.create(
+                company=company,
+                order=order,
+                event_type="agent_order_created",
+                to_status=order.status,
+                note=f"Order auto-created by WhatsApp Voice/Chat Agent from {clean_phone or 'customer'}.",
+            )
+
+        logger.info(f"[Tool: create_order] Order {order.order_number} created successfully for {company.name}.")
+        return {
+            "success": True,
+            "order_number": order.order_number,
+            "status": order.status,
+            "customer_name": order.customer_name,
+            "delivery_address": order.delivery_address,
+            "items": created_items_summary,
+            "subtotal": f"${subtotal:.2f}",
+            "total": f"${order.total:.2f}",
+            "estimated_delivery_time": "30-45 minutes",
+        }
+
+    except Exception as e:
+        logger.error(f"[Tool: create_order] Failed to create order: {e}", exc_info=True)
+        return {"success": False, "error": f"Database transaction failed: {str(e)}"}
+
+
+def execute_check_order_status(
+    company: Company,
+    customer_phone: str,
+    order_number: Optional[str] = None,
+) -> Dict[str, Any]:
+    """
+    Queries real-time status of orders isolated to the specified tenant company.
+    """
+    try:
+        qs = Order.objects.filter(company=company)
+        if order_number and order_number.strip():
+            qs = qs.filter(order_number__icontains=order_number.strip())
+        elif customer_phone and customer_phone.strip():
+            clean = customer_phone.strip()
+            # Match last 10 digits to be resilient to country codes
+            suffix = clean[-10:] if len(clean) >= 10 else clean
+            qs = qs.filter(customer_phone__icontains=suffix)
+        else:
+            return {"found": False, "message": "No phone number or order number provided."}
+
+        orders = list(qs.prefetch_related("items").order_by("-created_at")[:5])
+        if not orders:
+            return {
+                "found": False,
+                "message": "No active or past orders found for your details.",
+            }
+
+        history = []
+        for o in orders:
+            history.append({
+                "order_number": o.order_number,
+                "status": o.status,
+                "status_display": o.get_status_display(),
+                "total": f"${o.total:.2f}",
+                "delivery_address": o.delivery_address,
+                "created_at": o.created_at.strftime("%Y-%m-%d %I:%M %p"),
+                "items": [f"{it.quantity}x {it.item_name}" for it in o.items.all()],
+            })
+
+        return {
+            "found": True,
+            "latest_order": history[0],
+            "total_orders": len(history),
+            "orders": history,
+        }
+    except Exception as e:
+        logger.error(f"[Tool: check_order_status] Error: {e}", exc_info=True)
+        return {"found": False, "error": str(e)}
+
+
+# ============================================================================
+# Business Context & Prompt Building (Multi-Tenant Hardened)
+# ============================================================================
+
+def get_business_context_for_company(company: Optional[Company]) -> Dict[str, Any]:
+    """
+    Constructs the grounded tenant business context (company, catalog, FAQs, hours)
+    for a given Company model instance.
+    """
+    context = {
+        "company": company,
+        "company_id": company.id if company else None,
+        "is_configured": bool(company),
+        "business_name": (company.name if company else "Rides AI Store") or "Our Store",
+        "greeting": (company.agent_greeting if company else "") or (f"Welcome to {company.name}!" if company else "Welcome to our store!"),
+        "tone": (company.agent_tone if company else "") or "friendly and helpful",
+        "phone": (company.phone or company.agent_support_phone if company else "") or "",
+        "address": (company.address if company else "") or "",
+        "catalog": [],
+        "knowledge": [],
+        "hours": [],
+    }
+
+    if not company:
+        return context
+
+    try:
+        # Fetch active catalog items (up to 40)
+        items = list(
+            CatalogItem.objects.filter(company=company, is_available=True)
+            .values("id", "name", "price", "description")[:40]
+        )
+        context["catalog"] = items
+
+        # Fetch approved FAQs and business knowledge
+        faqs = list(
+            BusinessKnowledge.objects.filter(company=company, is_active=True, is_approved=True)
+            .values("title", "content", "entry_type")[:40]
+        )
+        context["knowledge"] = faqs
+
+        # Fetch operating hours
+        hours = list(
+            BusinessHours.objects.filter(company=company)
+            .values("day_of_week", "opens_at", "closes_at", "is_closed")
+        )
+        context["hours"] = hours
+    except Exception as e:
+        logger.warning(f"[WhatsApp Agent] Could not load DB business context for company {company.id}: {e}", exc_info=True)
+
+    return context
 
 
 def _get_business_context(phone_number_id: str) -> Dict[str, Any]:
     """
     Retrieves the tenant business context (company, catalog, FAQs, hours)
     matching the destination WhatsApp phone_number_id.
+
+    STRICT MULTI-TENANT RULE:
+    If phone_number_id does not map to a registered Company, returns is_configured=False
+    and company=None. NEVER falls back to random Company.objects.first()!
     """
-    context = {
-        "company": None,
-        "company_id": None,
-        "business_name": "Rides AI Store",
-        "greeting": "Welcome to our store!",
-        "tone": "friendly",
-        "phone": "",
-        "address": "",
-        "catalog": [],
-        "knowledge": [],
-        "hours": [],
-    }
-
     try:
-        from companies.models import Company, CatalogItem, BusinessKnowledge, BusinessHours
-
         cfg = get_config_by_phone_number_id(phone_number_id)
         company = None
         if cfg and cfg.get("company_id"):
@@ -50,70 +447,31 @@ def _get_business_context(phone_number_id: str) -> Dict[str, Any]:
             except Exception:
                 company = None
 
+        # Fail closed: Do NOT fallback to random Company.objects.first()
         if not company:
-            # Fallback to the first active/approved company in the system
-            company = (
-                Company.objects.filter(status="active").first()
-                or Company.objects.filter(is_approved=True).first()
-                or Company.objects.first()
+            logger.warning(
+                f"[WhatsApp Agent] Destination phone_number_id '{phone_number_id}' "
+                "is not associated with any registered business. Failing closed."
             )
+            return get_business_context_for_company(None)
 
-        if company:
-            context["company"] = company
-            context["company_id"] = company.id
-            context["business_name"] = company.name or "Rides AI Store"
-            context["greeting"] = company.agent_greeting or f"Welcome to {company.name}!"
-            context["tone"] = company.agent_tone or "friendly and helpful"
-            context["phone"] = company.phone or company.agent_support_phone or ""
-            context["address"] = company.address or ""
-
-            # Fetch active catalog items
-            items = list(
-                CatalogItem.objects.filter(company=company, is_available=True)
-                .values("id", "name", "price", "description")[:30]
-            )
-            context["catalog"] = items
-
-            # Fetch approved FAQs and business knowledge
-            faqs = list(
-                BusinessKnowledge.objects.filter(company=company, is_active=True, is_approved=True)
-                .values("title", "content", "entry_type")[:40]
-            )
-            context["knowledge"] = faqs
-
-            # Fetch operating hours
-            hours = list(
-                BusinessHours.objects.filter(company=company)
-                .values("day_of_week", "opens_at", "closes_at", "is_closed")
-            )
-            context["hours"] = hours
+        return get_business_context_for_company(company)
 
     except Exception as e:
         logger.warning(f"[WhatsApp Agent] Could not load DB business context: {e}", exc_info=True)
-
-    # Sensible defaults for restaurants/retail if catalog is empty
-    if not context["catalog"]:
-        context["catalog"] = [
-            {"name": "Classic Beef Burger", "price": "8.99", "description": "Grilled beef patty, cheddar, lettuce & secret sauce"},
-            {"name": "Crispy Chicken Burger", "price": "7.99", "description": "Crispy fried chicken breast, pickles & spicy mayo"},
-            {"name": "Truffle Mushroom Burger", "price": "9.99", "description": "Swiss cheese, sautéed mushrooms & truffle aioli"},
-            {"name": "French Fries (Large)", "price": "3.50", "description": "Crispy golden salted fries"},
-            {"name": "Soft Drink (Can)", "price": "1.99", "description": "Coke, Sprite, or Fanta"},
-        ]
-
-    return context
+        return get_business_context_for_company(None)
 
 
 def _build_system_prompt(customer_name: str, context: Dict[str, Any]) -> str:
     """
     Constructs a detailed grounding system prompt for the LLM using tenant metadata,
-    catalog items, operating hours, and business knowledge base.
+    catalog items, operating hours, business knowledge, and tool-calling directives.
     """
     biz_name = context.get("business_name") or "our store"
     greeting = context.get("greeting") or f"Welcome to {biz_name}!"
     tone = context.get("tone") or "friendly and helpful"
-    phone = context.get("phone") or "our main support desk"
-    address = context.get("address") or "our central store location"
+    phone = context.get("phone") or "our support team"
+    address = context.get("address") or "our store location"
 
     # Format catalog items
     catalog_lines = []
@@ -121,7 +479,14 @@ def _build_system_prompt(customer_name: str, context: Dict[str, Any]) -> str:
         price = f"${float(item['price']):.2f}" if item.get("price") else "Price on request"
         desc = f" - {item['description']}" if item.get("description") else ""
         catalog_lines.append(f"• {item['name']}: {price}{desc}")
-    catalog_str = "\n".join(catalog_lines) if catalog_lines else "No specific catalog items available."
+    
+    if catalog_lines:
+        catalog_str = "\n".join(catalog_lines)
+    else:
+        catalog_str = (
+            "No catalog items are currently active. If a customer asks to view items or order, "
+            "politely inform them that the store catalog is currently being updated."
+        )
 
     # Format knowledge base FAQs
     kb_lines = []
@@ -143,7 +508,7 @@ def _build_system_prompt(customer_name: str, context: Dict[str, Any]) -> str:
     hours_str = "\n".join(hours_lines) if hours_lines else "• Monday - Sunday: 9:00 AM - 10:00 PM"
 
     return f"""You are the official AI Assistant for {biz_name} on WhatsApp.
-Your ONLY goal is to assist customers with the menu, ordering, catalog items, and business hours provided in your context.
+Your primary role is to assist customers with our menu/catalog, take orders directly into our database via tools, and provide operating hours and store information.
 
 BUSINESS DETAILS:
 - Business Name: {biz_name}
@@ -162,45 +527,32 @@ AVAILABLE MENU / CATALOG ITEMS:
 FREQUENTLY ASKED QUESTIONS & POLICIES:
 {kb_str}
 
-STRICT CONVERSATIONAL RULES & GUARDRAILS:
-1. Identity & Role:
-   - You are exclusively the official customer service assistant for {biz_name}.
-   - Your primary responsibility is assisting customers with viewing the menu/catalog, answering store inquiries, taking orders, and providing operating hours.
+STRICT TOOL CALLING RULES:
+1. Tool `get_catalog_items`:
+   - Use when the customer asks what you sell, asks to see the menu, asks for prices, or searches for a product.
+2. Tool `create_order`:
+   - Use ONLY when the customer has specified what they want to order AND provided their delivery address.
+   - If the customer lists items to order but has NOT provided an address yet: do NOT call `create_order`. Instead, list their selected items with prices, calculate the total, and ask them: "Please provide your delivery address to confirm and place your order."
+   - Once the delivery address is provided, immediately call `create_order`.
+   - After `create_order` succeeds, provide a cheerful confirmation containing the *order number*, items, total, and estimated delivery time (30-45 mins).
+3. Tool `check_order_status`:
+   - Use when the customer asks about order status, tracking, or previous orders.
 
-2. Handling Greetings & Small Talk:
-   - If the customer greets you (e.g., "Hi", "Hello", "Hey", "Good morning") or asks "How are you?":
-     Respond warmly and politely, state that you are doing well, and immediately ask how you can assist them with {biz_name}'s services or menu today.
-
-3. Out-Of-Domain (OOD) Guardrails (STRICT):
-   - Under NO circumstances should you provide financial advice, coding help, technical programming assistance, political opinions, homework answers, poems, or general trivia/knowledge answers.
-   - If a customer asks an unrelated or out-of-domain question (e.g., "how to save money", "write a python script", "what is the capital of France", "write a poem"):
-     Politely decline by stating that you are an AI assistant tailored specifically for {biz_name}, and immediately pivot the conversation back to {biz_name}'s menu, products, or services.
-     (Example: "I am specifically designed to assist with {biz_name}. I can't assist with general topics, but I'd be happy to show you our menu or help you place an order! What can I get for you today?")
-
-4. Tone & Anti-Hallucination:
-   - Keep all responses concise, friendly, and strictly professional.
-   - Keep answers compact and easily readable on a mobile screen.
-   - Ground all statements strictly in the provided catalog and FAQs above. Never invent or hallucinate items, prices, discounts, or policies that are not explicitly listed in your context.
-
-5. WhatsApp Formatting:
-   - Format text with WhatsApp markdown (*bold* for items/prices/emphasis, _italics_ where helpful, clean line breaks, bullet points, and appropriate emojis).
-
-6. Ordering & Handover Workflow:
-   - When a customer wants to place an order, list the items with prices, state the estimated total, and ask them to reply with *CONFIRM <Delivery Address>*.
-   - When a confirmation with address is received, confirm the order enthusiastically with an estimated 30-45 min delivery time.
-   - If the customer asks for a human manager or has an unresolved issue, provide the support phone: {phone}.
+STRICT CONVERSATIONAL RULES:
+- Under NO circumstances provide financial advice, programming code, political commentary, or general trivia. Politely decline and bring the conversation back to {biz_name}.
+- Keep replies concise, natural, and formatted nicely for WhatsApp (*bold* for highlights/order numbers, clear line breaks, and emojis).
+- Ground all facts strictly in the business context and tool outputs above. Never invent prices or items that do not exist in the store catalog.
 """
 
 
 def _build_fallback_reply(message_text: str, customer_name: str, context: Dict[str, Any]) -> str:
     """
-    Polite fallback response if OpenAI API call fails or times out.
+    Polite fallback response if LLM API call fails or times out.
     """
     biz_name = context.get("business_name") or "our store"
     phone = context.get("phone")
     greeting = context.get("greeting") or f"Hello {customer_name}! Welcome to *{biz_name}*."
-
-    support_line = f"\n\nIf you need immediate support, feel free to call us at *{phone}*." if phone else ""
+    support_line = f"\n\nFor immediate assistance, please call us directly at *{phone}*." if phone else ""
 
     return (
         f"{greeting}\n\n"
@@ -210,74 +562,313 @@ def _build_fallback_reply(message_text: str, customer_name: str, context: Dict[s
     )
 
 
-def _generate_agent_reply(message_text: str, customer_name: str, context: Dict[str, Any]) -> str:
+def record_conversation_turn(
+    company: Optional[Company],
+    sender_phone: str,
+    customer_name: str,
+    message_text: str,
+    reply_text: str,
+    is_voice: bool = False,
+    metadata: Optional[Dict[str, Any]] = None,
+):
     """
-    Generates a dynamic response using OpenAI's gpt-4o-mini model grounded in tenant data.
-    Falls back gracefully to a polite static message if the API fails or is not configured.
+    Persists customer message and assistant response into AgentConversation and AgentMessage.
     """
+    if not company or not sender_phone:
+        return
+    try:
+        from operations.models import AgentConversation, AgentMessage
+        clean_name = customer_name if customer_name and customer_name != "Valued Customer" else "Customer"
+        conv, _ = AgentConversation.objects.get_or_create(
+            company=company,
+            customer_phone=sender_phone,
+            defaults={"customer_name": clean_name, "status": "bot"},
+        )
+        if clean_name != "Customer" and (not conv.customer_name or conv.customer_name == "Customer"):
+            conv.customer_name = clean_name
+            conv.save(update_fields=["customer_name", "updated_at"])
+
+        AgentMessage.objects.create(
+            conversation=conv,
+            role="user",
+            content=message_text,
+            metadata=metadata or {},
+        )
+        AgentMessage.objects.create(
+            conversation=conv,
+            role="assistant",
+            content=reply_text,
+            metadata={"is_voice": is_voice},
+        )
+        conv.save(update_fields=["updated_at"])
+    except Exception as e:
+        logger.warning(f"[WhatsApp Agent] Could not record conversation turn: {e}")
+
+
+# ============================================================================
+# LLM Generation & Tool Execution Loop (OpenAI gpt-4o-mini)
+# ============================================================================
+
+def _generate_agent_reply(
+    message_text: Any,
+    customer_name: Any = "Valued Customer",
+    context: Any = None,
+    sender_phone: str = "",
+) -> str:
+    """
+    Generates a dynamic response using OpenAI's gpt-4o-mini model with full tool calling:
+    1. Sends user message with registered tools (get_catalog_items, create_order, check_order_status).
+    2. If the LLM requests tool execution, executes the function with multi-tenant isolation.
+    3. Feeds tool outputs back into the conversation for a second pass to produce natural confirmation.
+
+    Supports both standard call:
+        _generate_agent_reply(message_text, customer_name, context, sender_phone)
+    and test / convenience call:
+        _generate_agent_reply(company, sender_phone, message_text)
+    """
+    # Defensive normalization: Support test/convenience calls
+    if isinstance(message_text, Company):
+        company_obj = message_text
+        actual_phone = str(customer_name or "")
+        actual_message = str(context or "")
+        customer_name = "Valued Customer"
+        sender_phone = actual_phone
+        message_text = actual_message
+        context = get_business_context_for_company(company_obj)
+    elif isinstance(context, Company):
+        context = get_business_context_for_company(context)
+    elif not isinstance(context, dict):
+        if isinstance(customer_name, Company):
+            context = get_business_context_for_company(customer_name)
+            customer_name = "Valued Customer"
+        else:
+            context = get_business_context_for_company(None)
+
+    company = context.get("company")
+    if not company:
+        return _build_fallback_reply(message_text, customer_name, context)
+
     api_key = getattr(settings, "OPENAI_API_KEY", "") or os.environ.get("OPENAI_API_KEY", "")
     model = getattr(settings, "OPENAI_MODEL", "gpt-4o-mini")
 
     if api_key and len(api_key.strip()) > 10:
         try:
-            client = OpenAI(api_key=api_key.strip(), timeout=20.0)
+            client = OpenAI(api_key=api_key.strip(), timeout=25.0)
             system_prompt = _build_system_prompt(customer_name, context)
+
+            messages: List[Dict[str, Any]] = [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": message_text},
+            ]
 
             response = client.chat.completions.create(
                 model=model,
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": message_text},
-                ],
+                messages=messages,
+                tools=AGENT_TOOLS,
+                tool_choice="auto",
                 temperature=0.3,
-                max_tokens=350,
+                max_tokens=450,
             )
 
-            ai_reply = response.choices[0].message.content
-            if ai_reply and ai_reply.strip():
-                return ai_reply.strip()
+            response_msg = response.choices[0].message
+            tool_calls = getattr(response_msg, "tool_calls", None)
+
+            if tool_calls:
+                logger.info(f"[WhatsApp Agent] LLM triggered {len(tool_calls)} tool call(s).")
+                # Append the assistant's initial response (containing tool_calls) to conversation history
+                messages.append(response_msg)
+
+                for tc in tool_calls:
+                    fn_name = tc.function.name
+                    raw_args = tc.function.arguments or "{}"
+                    try:
+                        fn_args = json.loads(raw_args)
+                    except Exception:
+                        fn_args = {}
+
+                    logger.info(f"[WhatsApp Agent] Executing tool '{fn_name}' with args: {fn_args}")
+
+                    tool_result = {}
+                    if fn_name == "get_catalog_items":
+                        tool_result = execute_get_catalog_items(
+                            company=company,
+                            search_query=fn_args.get("search_query"),
+                        )
+                    elif fn_name == "create_order":
+                        tool_result = execute_create_order(
+                            company=company,
+                            customer_name=fn_args.get("customer_name") or customer_name,
+                            customer_phone=fn_args.get("customer_phone") or sender_phone,
+                            items=fn_args.get("items", []),
+                            delivery_address=fn_args.get("delivery_address", ""),
+                            notes=fn_args.get("notes", ""),
+                        )
+                    elif fn_name == "check_order_status":
+                        tool_result = execute_check_order_status(
+                            company=company,
+                            customer_phone=fn_args.get("customer_phone") or sender_phone,
+                            order_number=fn_args.get("order_number"),
+                        )
+                    else:
+                        tool_result = {"error": f"Tool '{fn_name}' is not recognized."}
+
+                    messages.append({
+                        "role": "tool",
+                        "tool_call_id": tc.id,
+                        "content": json.dumps(tool_result),
+                    })
+
+                # Second completion pass to generate customer-facing response based on tool results
+                second_response = client.chat.completions.create(
+                    model=model,
+                    messages=messages,
+                    temperature=0.3,
+                    max_tokens=400,
+                )
+                final_content = second_response.choices[0].message.content
+                if final_content and final_content.strip():
+                    reply = final_content.strip()
+                    record_conversation_turn(company, sender_phone, customer_name, message_text, reply)
+                    return reply
+
+            elif response_msg.content and response_msg.content.strip():
+                reply = response_msg.content.strip()
+                record_conversation_turn(company, sender_phone, customer_name, message_text, reply)
+                return reply
 
         except Exception as e:
-            logger.error(f"[WhatsApp Agent] OpenAI dynamic generation error: {e}", exc_info=True)
-            print(f"[WhatsApp Agent ERROR] OpenAI generation failed: {e}")
+            logger.error(f"[WhatsApp Agent] OpenAI tool-calling execution error: {e}", exc_info=True)
+            print(f"[WhatsApp Agent ERROR] Tool calling failed: {e}")
 
     # Fallback when OpenAI key is missing, invalid, or request fails
-    return _build_fallback_reply(message_text, customer_name, context)
+    fallback_reply = _build_fallback_reply(message_text, customer_name, context)
+    record_conversation_turn(company, sender_phone, customer_name, message_text, fallback_reply)
+    return fallback_reply
 
+
+# ============================================================================
+# Main Entrypoint: Process Incoming WhatsApp Message
+# ============================================================================
 
 def process_incoming_whatsapp_message(
     sender_phone: str,
     message_text: str,
     phone_number_id: str,
-    customer_name: Optional[str] = None
+    customer_name: Optional[str] = None,
+    media_id: Optional[str] = None,
+    msg_type: str = "text",
 ) -> Dict[str, Any]:
     """
     Main background entrypoint for processing an incoming WhatsApp customer message:
-    1. Loads tenant business context matching phone_number_id.
-    2. Generates dynamic AI Agent reply using OpenAI (gpt-4o-mini).
-    3. Sends reply via Meta Cloud API using WhatsAppService.
+    1. Multi-Tenant Guard: Validates that destination phone_number_id belongs to a registered company.
+    2. Voice Input (STT): If audio note (.ogg), downloads via Meta Graph API and transcribes via Groq/Whisper.
+    3. Tool-Calling Agent: Runs LLM with dynamic tool calling (get_catalog_items, create_order, check_order_status).
+    4. Voice Output (TTS): If customer sent audio, synthesizes speech (OpenAI tts-1) and uploads via Meta API.
+    5. Dispatches reply via Meta Cloud API using WhatsAppService.
     """
     close_old_connections()
     try:
         clean_name = customer_name or "Valued Customer"
+        service = WhatsAppService(phone_number_id=phone_number_id)
+
+        # Step 1: Multi-Tenant Isolation Check (Fail Closed)
+        context = _get_business_context(phone_number_id)
+        if not context.get("is_configured") or not context.get("company"):
+            logger.warning(
+                f"[WhatsApp Agent] Access rejected: phone_number_id '{phone_number_id}' "
+                "is not configured with an active company."
+            )
+            unconfigured_reply = (
+                "Thank you for reaching out! This WhatsApp business line is not yet active "
+                "or configured for online customer service. Please contact the business administrator."
+            )
+            service.send_text_message(to=sender_phone, text=unconfigured_reply)
+            return {
+                "success": False,
+                "error": "Unconfigured WhatsApp phone_number_id",
+                "reply_text": unconfigured_reply,
+            }
+
+        # Step 2: Audio / Voice Message Handling: Download and Transcribe (STT)
+        is_voice_message = (msg_type == "audio" or bool(media_id))
+        if is_voice_message and media_id:
+            logger.info(f"[WhatsApp Voice Agent] Downloading audio media {media_id} for {sender_phone}...")
+            print(f"[WhatsApp Voice Agent] Received voice note from {sender_phone} (Media ID: {media_id}). Downloading...")
+            audio_bytes = service.download_media_file(media_id)
+            if audio_bytes:
+                transcription = transcribe_audio(audio_bytes, filename="audio.ogg")
+                if transcription and transcription.strip():
+                    message_text = transcription.strip()
+                    logger.info(f"[WhatsApp Voice Agent] STT transcribed text: '{message_text}'")
+                    print(f"[WhatsApp Voice Agent STT] Customer voice note transcribed: '{message_text}'")
+                else:
+                    logger.warning("[WhatsApp Voice Agent] Voice transcription returned empty.")
+                    message_text = "I received your voice message but couldn't make out the words. Could you please send it again?"
+            else:
+                logger.error(f"[WhatsApp Voice Agent] Failed to download audio media {media_id}.")
+                message_text = "I received your voice note, but could not download the audio file. Please try sending your message again."
+
         logger.info(f"[WhatsApp Agent] Processing incoming message from {sender_phone} ({clean_name}): '{message_text}'")
         print(f"[WhatsApp Agent] Processing message from {sender_phone}: '{message_text}'")
 
-        # Step 1: Load tenant context
-        context = _get_business_context(phone_number_id)
+        # Step 3: Dynamic LLM Generation with Tool Calling Loop
+        reply_text = _generate_agent_reply(
+            message_text=message_text,
+            customer_name=clean_name,
+            context=context,
+            sender_phone=sender_phone,
+        )
 
-        # Step 2: Dynamic LLM Generation
-        reply_text = _generate_agent_reply(message_text, clean_name, context)
+        # Step 4: Outbound WhatsApp dispatch via WhatsAppService
+        dispatch_result = None
+        is_voice_dispatched = False
 
-        # Step 3: Outbound WhatsApp dispatch via WhatsAppService
-        service = WhatsAppService(phone_number_id=phone_number_id)
-        dispatch_result = service.send_text_message(to=sender_phone, text=reply_text)
+        # Voice-first response: If customer sent a voice note, synthesize and send a voice reply
+        if is_voice_message:
+            logger.info(f"[WhatsApp Voice Agent] Customer sent voice note. Synthesizing voice reply for {sender_phone}...")
+            print(f"[WhatsApp Voice Agent] Synthesizing TTS voice note for {sender_phone}...")
+
+            audio_bytes = synthesize_speech(reply_text)
+            if audio_bytes:
+                outbound_media_id = service.upload_media(audio_bytes, mime_type="audio/ogg")
+                if outbound_media_id:
+                    print(f"[WhatsApp Voice Agent] Uploaded voice note (Media ID: {outbound_media_id}). Dispatching audio...")
+                    audio_res = service.send_audio_message(to=sender_phone, media_id=outbound_media_id)
+                    if audio_res and audio_res.get("success"):
+                        dispatch_result = audio_res
+                        is_voice_dispatched = True
+                else:
+                    logger.warning("[WhatsApp Voice Agent] Media upload failed. Falling back to text message.")
+                    print("[WhatsApp Voice Agent Warning] Media upload failed. Falling back to text.")
+            else:
+                logger.warning("[WhatsApp Voice Agent] Speech synthesis failed. Falling back to text message.")
+                print("[WhatsApp Voice Agent Warning] TTS failed. Falling back to text.")
+
+        # Fallback to text message if voice response was not used or failed
+        if not dispatch_result or not dispatch_result.get("success"):
+            dispatch_result = service.send_text_message(to=sender_phone, text=reply_text)
+
+        # Step 5: Update message metadata if audio/voice dispatched
+        if is_voice_dispatched:
+            try:
+                from operations.models import AgentConversation, AgentMessage
+                company_obj = context.get("company")
+                conv = AgentConversation.objects.filter(company=company_obj, customer_phone=sender_phone).last()
+                if conv:
+                    last_msg = conv.messages.last()
+                    if last_msg:
+                        last_msg.metadata = dict(last_msg.metadata or {}, is_voice=True)
+                        last_msg.save(update_fields=["metadata"])
+            except Exception:
+                pass
 
         logger.info(f"[WhatsApp Agent] Dispatch result for {sender_phone}: {dispatch_result.get('success')}")
         return {
             "success": dispatch_result.get("success", False),
             "reply_text": reply_text,
-            "dispatch_result": dispatch_result
+            "transcribed_text": message_text if is_voice_message else None,
+            "is_voice_response": is_voice_dispatched,
+            "dispatch_result": dispatch_result,
         }
 
     except Exception as e:

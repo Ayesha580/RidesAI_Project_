@@ -5,12 +5,26 @@ import { useAuth } from "../context/AuthContext";
 import { operationsApi } from "../api/operationsApi";
 import { errorText } from "../api/axiosClient";
 import { staffApi } from "../api/StaffApi";
+import OrdersView from "./components/OrdersView";
 
 const STATUSES = ["new", "confirmed", "preparing", "ready", "assigned", "picked_up", "on_the_way", "delivered", "cancelled"];
 const can = (user, permission) => user?.role === "owner" || (user?.permissions || []).includes("*") || (user?.permissions || []).includes(permission);
 
 export default function OrdersDashboard({ staff = false }) {
   const { user } = useAuth();
+
+  // For business owners, render the dedicated Orders View
+  if (!staff) {
+    return (
+      <OwnerLayout
+        title="Orders"
+        subtitle={`Manage customer orders, track line items, and update delivery fulfillment status for ${user?.company_name || "your store"}.`}
+      >
+        <OrdersView />
+      </OwnerLayout>
+    );
+  }
+
   const [orders, setOrders] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");

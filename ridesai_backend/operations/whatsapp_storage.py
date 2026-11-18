@@ -167,11 +167,7 @@ def get_config_by_phone_number_id(phone_number_id: str) -> dict | None:
         # Check default config
         if "default" in configs and isinstance(configs["default"], dict):
             default_cfg = configs["default"]
-            if default_cfg.get("phone_number_id") == str(phone_number_id):
-                res = dict(default_cfg)
-                res["company_id"] = None
-                return res
-            if default_cfg.get("phone_number_id"):
+            if str(default_cfg.get("phone_number_id")) == str(phone_number_id):
                 res = dict(default_cfg)
                 res["company_id"] = None
                 return res
