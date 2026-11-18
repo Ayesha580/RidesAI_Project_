@@ -1,9 +1,23 @@
 from django.contrib import admin
 from .models import (
-    Order, OrderItem, DeliveryAssignment, OrderEvent,
+    Customer, Order, OrderItem, DeliveryAssignment, OrderEvent,
     AgentConversation, AgentMessage, AgentActionLog,
     VoiceCall, CallPermission, CallEvent, OrderPrintLog
 )
+
+
+@admin.register(Customer)
+class CustomerAdmin(admin.ModelAdmin):
+    list_display = (
+        "phone", "name", "company",
+        "daily_voice_count", "last_voice_date",
+        "daily_text_count", "last_text_date",
+        "daily_call_count", "last_call_date",
+        "updated_at"
+    )
+    list_filter = ("company", "last_voice_date", "last_text_date", "last_call_date")
+    search_fields = ("phone", "name", "company__name")
+    readonly_fields = ("created_at", "updated_at")
 
 
 @admin.register(VoiceCall)

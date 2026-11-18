@@ -92,12 +92,41 @@ class OrderEvent(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
 
 
+class Customer(models.Model):
+    company = models.ForeignKey("companies.Company", on_delete=models.CASCADE, related_name="customers")
+    phone = models.CharField(max_length=40, db_index=True)
+    name = models.CharField(max_length=160, blank=True)
+    daily_voice_count = models.IntegerField(default=0)
+    last_voice_date = models.DateField(null=True, blank=True)
+    daily_text_count = models.IntegerField(default=0)
+    last_text_date = models.DateField(null=True, blank=True)
+    daily_call_count = models.IntegerField(default=0)
+    last_call_date = models.DateField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        unique_together = ("company", "phone")
+        indexes = [
+            models.Index(fields=["company", "phone"], name="op_cust_comp_phone_idx"),
+        ]
+
+    def __str__(self):
+        return f"{self.name or self.phone} ({self.company.name})"
+
+
 class AgentConversation(models.Model):
     company = models.ForeignKey("companies.Company", on_delete=models.CASCADE, related_name="agent_conversations")
     conversation_key = models.UUIDField(default=uuid.uuid4, unique=True, editable=False)
     customer_name = models.CharField(max_length=160, blank=True)
     customer_email = models.EmailField(blank=True)
     customer_phone = models.CharField(max_length=40, blank=True)
+    daily_voice_count = models.IntegerField(default=0)
+    last_voice_date = models.DateField(null=True, blank=True)
+    daily_text_count = models.IntegerField(default=0)
+    last_text_date = models.DateField(null=True, blank=True)
+    daily_call_count = models.IntegerField(default=0)
+    last_call_date = models.DateField(null=True, blank=True)
     status = models.CharField(max_length=20, choices=[("bot", "Bot"), ("human", "Human handover"), ("closed", "Closed")], default="bot")
     assigned_to = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL, related_name="agent_handover_conversations")
     created_at = models.DateTimeField(auto_now_add=True)

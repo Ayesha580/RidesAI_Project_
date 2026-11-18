@@ -3,6 +3,7 @@ from .views import (OrderCatalogAPIView, OrderListCreateAPIView, OrderStatusAPIV
                     DeliveryAssignAPIView, DeliveryListAPIView, DeliveryRiderListAPIView, AgentSettingsAPIView, AgentChatAPIView,
                     AgentConversationListAPIView, OrderAssignAPIView, PublicAgentChatAPIView, PublicAgentCatalogAPIView, PublicAgentConversationAPIView,
                     WhatsAppWebhookAPIView, WhatsAppSettingsAPIView)
+from .calling_views import IncomingAICallWebhookView
 
 urlpatterns = [
     path("orders/catalog/", OrderCatalogAPIView.as_view(), name="order-catalog"),
@@ -18,6 +19,8 @@ urlpatterns = [
     path("agent/whatsapp_settings/", WhatsAppSettingsAPIView.as_view(), name="agent-whatsapp-settings-alt"),
     path("agent/chat/", AgentChatAPIView.as_view(), name="agent-chat"),
     path("whatsapp/webhook/", WhatsAppWebhookAPIView.as_view(), name="whatsapp-webhook"),
+    path("calling/webhook/", IncomingAICallWebhookView.as_view(), name="incoming-call-webhook"),
+    path("calls/incoming/", IncomingAICallWebhookView.as_view(), name="incoming-call-twiml"),
     path("public/agent/<uuid:public_id>/catalog/", PublicAgentCatalogAPIView.as_view(), name="public-agent-catalog"),
     path("public/agent/<uuid:public_id>/conversation/<uuid:conversation_id>/", PublicAgentConversationAPIView.as_view(), name="public-agent-conversation"),
     path("public/agent/<uuid:public_id>/chat/", PublicAgentChatAPIView.as_view(), name="public-agent-chat"),

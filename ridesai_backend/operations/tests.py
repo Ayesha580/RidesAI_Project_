@@ -4,8 +4,10 @@ from django.test import TestCase
 from rest_framework.test import APIClient
 from accounts.models import StaffRole, User
 from companies.models import Company
+from datetime import date, timedelta
+from django.utils import timezone
 from .models import (
-    Order, OrderItem, DeliveryAssignment, OrderEvent, AgentConversation, AgentMessage,
+    Customer, Order, OrderItem, DeliveryAssignment, OrderEvent, AgentConversation, AgentMessage,
     VoiceCall, CallPermission, CallEvent, OrderPrintLog
 )
 from .calling import WhatsAppCallingClient, handle_calling_webhook_event
@@ -1488,6 +1490,268 @@ class KitchenAndRiderWorkflowTests(TestCase):
         self.assertEqual(res_r_after.status_code, 200)
         after_ids = [o["id"] for o in res_r_after.data["orders"]]
         self.assertNotIn(order_rider_1.id, after_ids)
+
+
+from .whatsapp_agent import (
+    check_and_enforce_voice_limit,
+    check_and_enforce_text_limit,
+    process_incoming_whatsapp_message,
+    _build_system_prompt,
+    _generate_agent_reply,
+)
+from .calling_views import check_and_enforce_call_limit
+
+
+class VoiceCostOptimizationTests(TestCase):
+    def setUp(self):
+        self.company = Company.objects.create(
+            name="Pizza King Cost Test",
+            business_type="restaurant",
+            is_approved=True,
+            max_daily_voice_notes=2,
+        )
+        self.phone_number_id = "phone_id_cost_test_123"
+        self.customer_phone = "+923001234567"
+
+    @patch("operations.whatsapp_agent._get_business_context")
+    @patch("operations.whatsapp_agent.WhatsAppService")
+    @patch("operations.whatsapp_agent.transcribe_audio")
+    @patch("operations.whatsapp_agent.synthesize_speech")
+    @patch("operations.whatsapp_agent._generate_agent_reply")
+    def test_voice_rate_limit_enforced(
+        self,
+        mock_generate_reply,
+        mock_synthesize,
+        mock_transcribe,
+        mock_service_cls,
+        mock_get_context,
+    ):
+        mock_get_context.return_value = {
+            "is_configured": True,
+            "company": self.company,
+            "business_name": self.company.name,
+            "catalog": [],
+            "knowledge": [],
+            "hours": [],
+        }
+        mock_service = MagicMock()
+        mock_service.send_text_message.return_value = {"success": True}
+        mock_service.download_media_file.return_value = b"fake_ogg_data"
+        mock_service.upload_media.return_value = "outbound_media_999"
+        mock_service.send_audio_message.return_value = {"success": True}
+        mock_service_cls.return_value = mock_service
+
+        mock_transcribe.return_value = "I want a small pizza"
+        mock_generate_reply.return_value = "Order placed!"
+        mock_synthesize.return_value = b"fake_tts_audio"
+
+        # 1. First voice note - should succeed
+        res1 = process_incoming_whatsapp_message(
+            sender_phone=self.customer_phone,
+            message_text="",
+            phone_number_id=self.phone_number_id,
+            media_id="media_1",
+            msg_type="audio",
+        )
+        self.assertTrue(res1["success"])
+        self.assertFalse(res1.get("rate_limited", False))
+        self.assertEqual(mock_transcribe.call_count, 1)
+
+        customer = Customer.objects.get(company=self.company, phone=self.customer_phone)
+        self.assertEqual(customer.daily_voice_count, 1)
+
+        # 2. Second voice note - reaches the limit of 2
+        res2 = process_incoming_whatsapp_message(
+            sender_phone=self.customer_phone,
+            message_text="",
+            phone_number_id=self.phone_number_id,
+            media_id="media_2",
+            msg_type="audio",
+        )
+        self.assertTrue(res2["success"])
+        self.assertFalse(res2.get("rate_limited", False))
+        self.assertEqual(mock_transcribe.call_count, 2)
+
+        customer.refresh_from_db()
+        self.assertEqual(customer.daily_voice_count, 2)
+
+        # Reset call counts before 3rd attempt
+        mock_transcribe.reset_mock()
+        mock_synthesize.reset_mock()
+        mock_generate_reply.reset_mock()
+        mock_service.send_text_message.reset_mock()
+
+        # 3. Third voice note - exceeds the limit of 2
+        res3 = process_incoming_whatsapp_message(
+            sender_phone=self.customer_phone,
+            message_text="",
+            phone_number_id=self.phone_number_id,
+            media_id="media_3",
+            msg_type="audio",
+        )
+        self.assertTrue(res3.get("rate_limited", False))
+        warning_text = "⏳ You have reached the daily limit for voice messages. Please type your order or continue via text."
+        self.assertEqual(res3["reply_text"], warning_text)
+
+        # Verify external STT, TTS, and LLM APIs were NEVER called
+        mock_transcribe.assert_not_called()
+        mock_synthesize.assert_not_called()
+        mock_generate_reply.assert_not_called()
+
+        # Verify static warning text was dispatched to user
+        mock_service.send_text_message.assert_called_once_with(
+            to=self.customer_phone,
+            text=warning_text,
+        )
+
+        # Ensure counter is not incremented past the limit
+        customer.refresh_from_db()
+        self.assertEqual(customer.daily_voice_count, 2)
+
+    def test_voice_count_resets_next_day(self):
+        yesterday = timezone.now().date() - timedelta(days=1)
+        customer = Customer.objects.create(
+            company=self.company,
+            phone="+923009999999",
+            daily_voice_count=15,
+            last_voice_date=yesterday,
+        )
+
+        allowed, limit_msg, updated_customer = check_and_enforce_voice_limit(
+            company=self.company,
+            phone="+923009999999",
+        )
+
+        self.assertTrue(allowed)
+        self.assertIsNone(limit_msg)
+        self.assertEqual(updated_customer.daily_voice_count, 1)
+        self.assertEqual(updated_customer.last_voice_date, timezone.now().date())
+
+    def test_system_prompt_brevity_rules(self):
+        prompt = _build_system_prompt(
+            customer_name="John",
+            context={"business_name": "Fast Bites", "catalog": [], "knowledge": [], "hours": []},
+        )
+        self.assertIn("CRITICAL COST-SAVING RULES:", prompt)
+        self.assertIn("Answer in strictly 1 to 2 short sentences. Maximum 20 words per response.", prompt)
+        self.assertIn("NEVER use filler words, introductory pleasantries, or formatting like markdown/bullet points.", prompt)
+
+    @patch("operations.whatsapp_agent._get_business_context")
+    @patch("operations.whatsapp_agent.WhatsAppService")
+    @patch("operations.whatsapp_agent._generate_agent_reply")
+    def test_text_rate_limit_enforced(
+        self,
+        mock_generate_reply,
+        mock_service_cls,
+        mock_get_context,
+    ):
+        mock_get_context.return_value = {
+            "is_configured": True,
+            "company": self.company,
+            "business_name": self.company.name,
+            "catalog": [],
+            "knowledge": [],
+            "hours": [],
+        }
+        mock_service = MagicMock()
+        mock_service.send_text_message.return_value = {"success": True}
+        mock_service_cls.return_value = mock_service
+
+        # 1. Simulate customer hitting 50 texts today
+        customer = Customer.objects.create(
+            company=self.company,
+            phone=self.customer_phone,
+            daily_text_count=50,
+            last_text_date=timezone.now().date(),
+        )
+        conv = AgentConversation.objects.create(
+            company=self.company,
+            customer_phone=self.customer_phone,
+            status="bot",
+        )
+
+        # 2. Customer sends the 51st text
+        res = process_incoming_whatsapp_message(
+            sender_phone=self.customer_phone,
+            message_text="Hello what is your menu?",
+            phone_number_id=self.phone_number_id,
+            msg_type="text",
+        )
+
+        # 3. Verify rate limit response and LLM skip
+        self.assertTrue(res.get("rate_limited", False))
+        warning_msg = (
+            "⏳ You have reached the maximum message limit for today. "
+            "A human agent will assist you shortly."
+        )
+        self.assertEqual(res["reply_text"], warning_msg)
+
+        # LLM must NEVER be called
+        mock_generate_reply.assert_not_called()
+
+        # Static fallback dispatched to WhatsApp user
+        mock_service.send_text_message.assert_called_once_with(
+            to=self.customer_phone,
+            text=warning_msg,
+        )
+
+        # Conversation status transitioned to human handover
+        conv.refresh_from_db()
+        self.assertEqual(conv.status, "human")
+
+    def test_call_rate_limit_rejected(self):
+        # 1. Customer who already used their 3 calls today
+        Customer.objects.create(
+            company=self.company,
+            phone=self.customer_phone,
+            daily_call_count=3,
+            last_call_date=timezone.now().date(),
+        )
+
+        # 2. Simulate incoming call webhook hitting limit
+        response = self.client.post(
+            "/api/operations/calls/incoming/",
+            {
+                "From": self.customer_phone,
+                "CallSid": "call_quota_test_rejected_01",
+                "company_id": self.company.id,
+            },
+        )
+        self.assertEqual(response.status_code, 200)
+
+        content = response.content.decode("utf-8")
+        # Verify static audio rejection without AI stream
+        self.assertIn("<Say>Our AI lines are currently busy. Please text your order on WhatsApp.</Say>", content)
+        self.assertIn("<Hangup/>", content)
+        self.assertNotIn("<Stream", content)
+
+        # Verify VoiceCall was recorded as rejected
+        vcall = VoiceCall.objects.filter(call_id="call_quota_test_rejected_01").first()
+        self.assertIsNotNone(vcall)
+        self.assertEqual(vcall.status, "rejected")
+
+    def test_call_duration_limit_injected(self):
+        # Customer within quota (0 calls today)
+        response = self.client.post(
+            "/api/operations/calls/incoming/",
+            {
+                "From": "+923007777777",
+                "CallSid": "call_quota_test_allowed_01",
+                "company_id": self.company.id,
+            },
+        )
+        self.assertEqual(response.status_code, 200)
+
+        content = response.content.decode("utf-8")
+        # 3 minutes * 60 seconds = 180 seconds dynamically injected
+        self.assertIn("<Stream", content)
+        self.assertIn('timeLimit="180"', content)
+
+        # Verify customer's call count incremented
+        cust = Customer.objects.get(company=self.company, phone="+923007777777")
+        self.assertEqual(cust.daily_call_count, 1)
+
+
 
 
 

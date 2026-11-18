@@ -115,7 +115,19 @@ def handle_calling_webhook_event(value: Dict[str, Any], company: Optional[Compan
 
         # State Transitions
         if raw_event in ("connect", "offer", "initiated"):
-            voice_call.status = "initiated"
+            from operations.calling_views import check_and_enforce_call_limit
+            allowed, rejection_msg, customer = check_and_enforce_call_limit(
+                company=company,
+                phone=customer_phone,
+            )
+            if not allowed:
+                voice_call.status = "rejected"
+                voice_call.error_message = rejection_msg
+                logger.warning(
+                    f"[WhatsApp Calling] Call {call_id} rejected for {customer_phone}: {rejection_msg}"
+                )
+            else:
+                voice_call.status = "initiated"
 
         elif raw_event == "ringing":
             voice_call.status = "ringing"

@@ -15,12 +15,13 @@ from typing import Optional, Dict, Any, List
 
 from django.conf import settings
 from django.db import close_old_connections, transaction
+from django.utils import timezone
 from openai import OpenAI
 
 from .whatsapp_service import WhatsAppService
 from .whatsapp_storage import get_config_by_phone_number_id
 from .audio_service import transcribe_audio, synthesize_speech
-from operations.models import Order, OrderItem, OrderEvent
+from operations.models import Customer, Order, OrderItem, OrderEvent, AgentConversation, AgentMessage
 from companies.models import Company, CatalogItem, BusinessKnowledge, BusinessHours, Inventory, StockMovement
 
 logger = logging.getLogger("operations.whatsapp")
@@ -542,6 +543,12 @@ STRICT CONVERSATIONAL RULES:
 - Under NO circumstances provide financial advice, programming code, political commentary, or general trivia. Politely decline and bring the conversation back to {biz_name}.
 - Keep replies concise, natural, and formatted nicely for WhatsApp (*bold* for highlights/order numbers, clear line breaks, and emojis).
 - Ground all facts strictly in the business context and tool outputs above. Never invent prices or items that do not exist in the store catalog.
+
+CRITICAL COST-SAVING RULES:
+- You are a voice-first agent. Humans do not want to listen to long monologues.
+- NEVER use filler words, introductory pleasantries, or formatting like markdown/bullet points.
+- Answer in strictly 1 to 2 short sentences. Maximum 20 words per response.
+- Be highly direct and concise.
 """
 
 
@@ -661,13 +668,14 @@ def _generate_agent_reply(
                 {"role": "user", "content": message_text},
             ]
 
+            llm_max_tokens = int(getattr(settings, "OPENAI_MAX_TOKENS", 50))
             response = client.chat.completions.create(
                 model=model,
                 messages=messages,
                 tools=AGENT_TOOLS,
                 tool_choice="auto",
                 temperature=0.3,
-                max_tokens=450,
+                max_tokens=llm_max_tokens,
             )
 
             response_msg = response.choices[0].message
@@ -723,7 +731,7 @@ def _generate_agent_reply(
                     model=model,
                     messages=messages,
                     temperature=0.3,
-                    max_tokens=400,
+                    max_tokens=llm_max_tokens,
                 )
                 final_content = second_response.choices[0].message.content
                 if final_content and final_content.strip():
@@ -750,6 +758,88 @@ def _generate_agent_reply(
 # Main Entrypoint: Process Incoming WhatsApp Message
 # ============================================================================
 
+def check_and_enforce_voice_limit(
+    company: Company,
+    phone: str,
+    customer_name: Optional[str] = None,
+) -> tuple[bool, Optional[str], Customer]:
+    """
+    Checks if a customer has reached their daily voice note limit for the company.
+    Resets the count to 0 if last_voice_date is older than today.
+    Returns (False, limit_msg, customer) if limit exceeded.
+    Returns (True, None, customer) and increments daily_voice_count if within limit.
+    """
+    today = timezone.now().date()
+    customer, _ = Customer.objects.get_or_create(
+        company=company,
+        phone=phone,
+        defaults={
+            "name": customer_name or "",
+            "daily_voice_count": 0,
+            "last_voice_date": today,
+        },
+    )
+
+    if customer.last_voice_date != today:
+        customer.daily_voice_count = 0
+        customer.last_voice_date = today
+
+    max_limit = getattr(company, "max_daily_voice_notes", 15)
+    if customer.daily_voice_count >= max_limit:
+        customer.save(update_fields=["daily_voice_count", "last_voice_date"])
+        limit_msg = (
+            "⏳ You have reached the daily limit for voice messages. "
+            "Please type your order or continue via text."
+        )
+        return False, limit_msg, customer
+
+    customer.daily_voice_count += 1
+    customer.last_voice_date = today
+    customer.save(update_fields=["daily_voice_count", "last_voice_date"])
+    return True, None, customer
+
+
+def check_and_enforce_text_limit(
+    company: Company,
+    phone: str,
+    customer_name: Optional[str] = None,
+) -> tuple[bool, Optional[str], Customer]:
+    """
+    Checks if a customer has reached their daily text message limit for the company.
+    Resets the count to 0 if last_text_date is older than today.
+    Returns (False, limit_msg, customer) if limit exceeded.
+    Returns (True, None, customer) and increments daily_text_count if within limit.
+    """
+    today = timezone.now().date()
+    customer, _ = Customer.objects.get_or_create(
+        company=company,
+        phone=phone,
+        defaults={
+            "name": customer_name or "",
+            "daily_text_count": 0,
+            "last_text_date": today,
+        },
+    )
+
+    if customer.last_text_date != today:
+        customer.daily_text_count = 0
+        customer.last_text_date = today
+
+    max_limit = getattr(company, "max_daily_text_messages", 50)
+    if customer.daily_text_count >= max_limit:
+        customer.save(update_fields=["daily_text_count", "last_text_date"])
+        limit_msg = (
+            "⏳ You have reached the maximum message limit for today. "
+            "A human agent will assist you shortly."
+        )
+        return False, limit_msg, customer
+
+    customer.daily_text_count += 1
+    customer.last_text_date = today
+    customer.save(update_fields=["daily_text_count", "last_text_date"])
+    return True, None, customer
+
+
 def process_incoming_whatsapp_message(
     sender_phone: str,
     message_text: str,
@@ -761,10 +851,11 @@ def process_incoming_whatsapp_message(
     """
     Main background entrypoint for processing an incoming WhatsApp customer message:
     1. Multi-Tenant Guard: Validates that destination phone_number_id belongs to a registered company.
-    2. Voice Input (STT): If audio note (.ogg), downloads via Meta Graph API and transcribes via Groq/Whisper.
-    3. Tool-Calling Agent: Runs LLM with dynamic tool calling (get_catalog_items, create_order, check_order_status).
-    4. Voice Output (TTS): If customer sent audio, synthesizes speech (OpenAI tts-1) and uploads via Meta API.
-    5. Dispatches reply via Meta Cloud API using WhatsAppService.
+    2. Voice Rate Limit & Cost Guard: Checks customer voice usage vs max_daily_voice_notes.
+    3. Voice Input (STT): If audio note (.ogg), downloads via Meta Graph API and transcribes via Groq/Whisper.
+    4. Tool-Calling Agent: Runs LLM with dynamic tool calling (get_catalog_items, create_order, check_order_status).
+    5. Voice Output (TTS): If customer sent audio, synthesizes speech (OpenAI tts-1) and uploads via Meta API.
+    6. Dispatches reply via Meta Cloud API using WhatsAppService.
     """
     close_old_connections()
     try:
@@ -789,24 +880,77 @@ def process_incoming_whatsapp_message(
                 "reply_text": unconfigured_reply,
             }
 
-        # Step 2: Audio / Voice Message Handling: Download and Transcribe (STT)
+        # Step 2: Audio / Voice Message Cost & Rate Limiting Check
         is_voice_message = (msg_type == "audio" or bool(media_id))
-        if is_voice_message and media_id:
-            logger.info(f"[WhatsApp Voice Agent] Downloading audio media {media_id} for {sender_phone}...")
-            print(f"[WhatsApp Voice Agent] Received voice note from {sender_phone} (Media ID: {media_id}). Downloading...")
-            audio_bytes = service.download_media_file(media_id)
-            if audio_bytes:
-                transcription = transcribe_audio(audio_bytes, filename="audio.ogg")
-                if transcription and transcription.strip():
-                    message_text = transcription.strip()
-                    logger.info(f"[WhatsApp Voice Agent] STT transcribed text: '{message_text}'")
-                    print(f"[WhatsApp Voice Agent STT] Customer voice note transcribed: '{message_text}'")
+        if is_voice_message:
+            company_obj = context.get("company")
+            allowed, limit_msg, customer = check_and_enforce_voice_limit(
+                company=company_obj,
+                phone=sender_phone,
+                customer_name=clean_name if clean_name != "Valued Customer" else None,
+            )
+            if not allowed:
+                logger.warning(
+                    f"[WhatsApp Voice Agent] Customer {sender_phone} reached daily voice limit "
+                    f"for company '{company_obj.name}'. Rejecting audio processing and dispatching warning text."
+                )
+                print(f"[WhatsApp Voice Agent] Customer {sender_phone} exceeded voice limit. Blocking audio processing.")
+                dispatch_res = service.send_text_message(to=sender_phone, text=limit_msg)
+                return {
+                    "success": dispatch_res.get("success", False) if isinstance(dispatch_res, dict) else True,
+                    "reply_text": limit_msg,
+                    "rate_limited": True,
+                    "dispatch_result": dispatch_res,
+                }
+
+            if media_id:
+                logger.info(f"[WhatsApp Voice Agent] Downloading audio media {media_id} for {sender_phone}...")
+                print(f"[WhatsApp Voice Agent] Received voice note from {sender_phone} (Media ID: {media_id}). Downloading...")
+                audio_bytes = service.download_media_file(media_id)
+                if audio_bytes:
+                    transcription = transcribe_audio(audio_bytes, filename="audio.ogg")
+                    if transcription and transcription.strip():
+                        message_text = transcription.strip()
+                        logger.info(f"[WhatsApp Voice Agent] STT transcribed text: '{message_text}'")
+                        print(f"[WhatsApp Voice Agent STT] Customer voice note transcribed: '{message_text}'")
+                    else:
+                        logger.warning("[WhatsApp Voice Agent] Voice transcription returned empty.")
+                        message_text = "I received your voice message but couldn't make out the words. Could you please send it again?"
                 else:
-                    logger.warning("[WhatsApp Voice Agent] Voice transcription returned empty.")
-                    message_text = "I received your voice message but couldn't make out the words. Could you please send it again?"
-            else:
-                logger.error(f"[WhatsApp Voice Agent] Failed to download audio media {media_id}.")
-                message_text = "I received your voice note, but could not download the audio file. Please try sending your message again."
+                    logger.error(f"[WhatsApp Voice Agent] Failed to download audio media {media_id}.")
+                    message_text = "I received your voice note, but could not download the audio file. Please try sending your message again."
+        else:
+            # Step 2b: Text Message Cost & Rate Limiting Check
+            company_obj = context.get("company")
+            allowed, limit_msg, customer = check_and_enforce_text_limit(
+                company=company_obj,
+                phone=sender_phone,
+                customer_name=clean_name if clean_name != "Valued Customer" else None,
+            )
+            if not allowed:
+                logger.warning(
+                    f"[WhatsApp Text Agent] Customer {sender_phone} reached daily text limit "
+                    f"for company '{company_obj.name}'. Rejecting text and triggering human handover."
+                )
+                print(f"[WhatsApp Text Agent] Customer {sender_phone} exceeded text limit. Bypassing LLM.")
+                # Set AgentConversation status to human
+                try:
+                    conv = AgentConversation.objects.filter(
+                        company=company_obj, customer_phone=sender_phone
+                    ).order_by("id").last()
+                    if conv:
+                        conv.status = "human"
+                        conv.save(update_fields=["status"])
+                except Exception as e:
+                    logger.warning(f"[WhatsApp Text Agent] Could not update conversation status: {e}")
+
+                dispatch_res = service.send_text_message(to=sender_phone, text=limit_msg)
+                return {
+                    "success": dispatch_res.get("success", False) if isinstance(dispatch_res, dict) else True,
+                    "reply_text": limit_msg,
+                    "rate_limited": True,
+                    "dispatch_result": dispatch_res,
+                }
 
         logger.info(f"[WhatsApp Agent] Processing incoming message from {sender_phone} ({clean_name}): '{message_text}'")
         print(f"[WhatsApp Agent] Processing message from {sender_phone}: '{message_text}'")
@@ -851,7 +995,6 @@ def process_incoming_whatsapp_message(
         # Step 5: Update message metadata if audio/voice dispatched
         if is_voice_dispatched:
             try:
-                from operations.models import AgentConversation, AgentMessage
                 company_obj = context.get("company")
                 conv = AgentConversation.objects.filter(company=company_obj, customer_phone=sender_phone).last()
                 if conv:
