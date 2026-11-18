@@ -209,3 +209,56 @@ class CallEvent(models.Model):
     def __str__(self):
         return f"CallEvent {self.event_type} on {self.call.call_id} @ {self.created_at}"
 
+
+class OrderPrintLog(models.Model):
+    SLIP_INVOICE = "invoice"
+    SLIP_KOT = "kot"
+    SLIP_CHOICES = [
+        (SLIP_INVOICE, "Customer Invoice"),
+        (SLIP_KOT, "Kitchen Order Ticket"),
+    ]
+
+    MODE_BROWSER = "browser"
+    MODE_ESCPOS_LOCAL = "escpos_local"
+    MODE_CHOICES = [
+        (MODE_BROWSER, "Browser Print"),
+        (MODE_ESCPOS_LOCAL, "Local ESC/POS Spooler"),
+    ]
+
+    STATUS_SUCCESS = "success"
+    STATUS_FAILED = "failed"
+    STATUS_CHOICES = [
+        (STATUS_SUCCESS, "Success"),
+        (STATUS_FAILED, "Failed"),
+    ]
+
+    company = models.ForeignKey(
+        "companies.Company",
+        on_delete=models.CASCADE,
+        related_name="order_print_logs",
+    )
+    order = models.ForeignKey(
+        Order,
+        on_delete=models.CASCADE,
+        related_name="print_logs",
+    )
+    slip_type = models.CharField(max_length=20, choices=SLIP_CHOICES, default=SLIP_INVOICE)
+    print_mode = models.CharField(max_length=20, choices=MODE_CHOICES, default=MODE_BROWSER)
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default=STATUS_SUCCESS)
+    error_message = models.TextField(blank=True, default="")
+    printed_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="order_prints",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ("-created_at",)
+
+    def __str__(self):
+        return f"PrintLog #{self.order.order_number} [{self.slip_type.upper()}] ({self.status})"
+
+

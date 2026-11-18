@@ -116,6 +116,14 @@ class Company(models.Model):
     agent_support_phone = models.CharField(max_length=30, blank=True)
     agent_support_email = models.EmailField(blank=True)
 
+    # Enterprise Thermal Printing Configuration (80mm / SpeedX SP-200U)
+    printer_name = models.CharField(max_length=128, blank=True, default="SpeedX SP-200U")
+    receipt_header = models.CharField(max_length=255, blank=True, default="")
+    receipt_footer = models.CharField(max_length=255, blank=True, default="Thank you for your order! Powered by Rides Technologies")
+    currency_symbol = models.CharField(max_length=12, blank=True, default="Rs.")
+    auto_print_kot = models.BooleanField(default=False)
+    auto_print_invoice = models.BooleanField(default=False)
+
     # Legacy business-email setup metadata; account email remains the owner contact above.
     business_email_address = models.EmailField(blank=True)
     business_email_domain = models.CharField(max_length=253, blank=True)

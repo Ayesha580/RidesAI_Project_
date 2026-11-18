@@ -2,7 +2,7 @@ from django.contrib import admin
 from .models import (
     Order, OrderItem, DeliveryAssignment, OrderEvent,
     AgentConversation, AgentMessage, AgentActionLog,
-    VoiceCall, CallPermission, CallEvent
+    VoiceCall, CallPermission, CallEvent, OrderPrintLog
 )
 
 
@@ -40,3 +40,11 @@ class AgentConversationAdmin(admin.ModelAdmin):
     list_display = ("conversation_key", "company", "customer_name", "customer_phone", "status", "created_at")
     list_filter = ("status", "company")
     search_fields = ("customer_phone", "customer_name")
+
+
+@admin.register(OrderPrintLog)
+class OrderPrintLogAdmin(admin.ModelAdmin):
+    list_display = ("order", "company", "slip_type", "print_mode", "status", "printed_by", "created_at")
+    list_filter = ("slip_type", "print_mode", "status", "company")
+    search_fields = ("order__order_number", "company__name")
+    readonly_fields = ("created_at",)

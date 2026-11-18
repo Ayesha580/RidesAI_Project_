@@ -23,6 +23,8 @@ export const dashboardApi = {
   sendConversationReply: (conversationKey, data) => api.post(`/dashboard/conversations/${conversationKey}/reply/`, data),
   getOrders: (params = {}) => api.get("/dashboard/orders/", { params }),
   updateOrderStatus: (orderId, data) => api.patch(`/dashboard/orders/${orderId}/status/`, data),
+  getOrderReceipt: (orderId, type = "invoice") => api.get(`/dashboard/orders/${orderId}/receipt/`, { params: { type } }),
+  printOrderReceipt: (orderId, data) => api.post(`/dashboard/orders/${orderId}/print/`, data),
   getCalls: (params = {}) => api.get("/dashboard/calls/", { params }),
   getCallEvents: (callId) => api.get(`/dashboard/calls/${callId}/events/`),
 };

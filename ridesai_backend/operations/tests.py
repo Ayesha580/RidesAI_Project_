@@ -6,7 +6,7 @@ from accounts.models import StaffRole, User
 from companies.models import Company
 from .models import (
     Order, OrderItem, DeliveryAssignment, OrderEvent, AgentConversation, AgentMessage,
-    VoiceCall, CallPermission, CallEvent
+    VoiceCall, CallPermission, CallEvent, OrderPrintLog
 )
 from .calling import WhatsAppCallingClient, handle_calling_webhook_event
 
@@ -1002,6 +1002,303 @@ class DashboardCallsAPITests(TestCase):
         self.client.force_authenticate(self.owner_b)
         res_cross = self.client.get(f"/api/dashboard/calls/{self.call_a1.id}/events/")
         self.assertEqual(res_cross.status_code, 404)
+
+
+class ThermalReceiptPrintingTests(TestCase):
+    """
+    Enterprise Thermal Receipt (Invoice + KOT) System Tests.
+    Verifies ESC/POS binary generation, dashboard receipt API, print logging, and multi-tenant isolation.
+    """
+
+    def setUp(self):
+        self.client = APIClient()
+
+        # Company A (SpeedX SP-200U configured)
+        self.company_a = Company.objects.create(
+            name="Burger Hub",
+            phone="+923001234567",
+            address="Commercial Area, Block A",
+            printer_name="SpeedX SP-200U",
+            receipt_header="Best Burgers in Town",
+            receipt_footer="Thanks for choosing Burger Hub!",
+            currency_symbol="Rs.",
+            auto_print_kot=False,
+            auto_print_invoice=False,
+        )
+        self.owner_a = User.objects.create_user(
+            username="owner_a_thermal",
+            email="owner_a@burgerhub.com",
+            password="testpassword123",
+            company=self.company_a,
+            role=User.ROLE_OWNER,
+        )
+
+        # Company B (Isolated tenant)
+        self.company_b = Company.objects.create(
+            name="Pizza King",
+            phone="+923009876543",
+            address="Main Boulevard, Sector C",
+            printer_name="Epson TM-T88VI",
+        )
+        self.owner_b = User.objects.create_user(
+            username="owner_b_thermal",
+            email="owner_b@pizzaking.com",
+            password="testpassword123",
+            company=self.company_b,
+            role=User.ROLE_OWNER,
+        )
+
+        # Order for Company A
+        self.order_a = Order.objects.create(
+            company=self.company_a,
+            order_number="ORD-BH-1001",
+            customer_name="John Doe",
+            customer_phone="+923001112233",
+            delivery_address="Street 12, House 4B",
+            status="confirmed",
+            subtotal=Decimal("25.00"),
+            delivery_fee=Decimal("3.00"),
+            total=Decimal("28.00"),
+            notes="No onions, extra spicy sauce please!",
+            source="agent",
+        )
+        self.item_a1 = OrderItem.objects.create(
+            order=self.order_a,
+            item_name="Double Cheeseburger",
+            quantity=Decimal("2"),
+            unit_price=Decimal("10.00"),
+            line_total=Decimal("20.00"),
+        )
+        self.item_a2 = OrderItem.objects.create(
+            order=self.order_a,
+            item_name="Curly Fries",
+            quantity=Decimal("1"),
+            unit_price=Decimal("5.00"),
+            line_total=Decimal("5.00"),
+        )
+
+    def test_escpos_invoice_builder(self):
+        from operations.printing import build_invoice_escpos
+        raw_bytes = build_invoice_escpos(self.order_a, company=self.company_a)
+        self.assertIsInstance(raw_bytes, bytes)
+        # Ends with cut paper command GS V 66 0
+        self.assertTrue(raw_bytes.endswith(b"\x1dV\x42\x00"))
+
+        decoded_text = raw_bytes.decode("ascii", errors="replace")
+        self.assertIn("BURGER HUB", decoded_text)
+        self.assertIn("ORD-BH-1001", decoded_text)
+        self.assertIn("John Doe", decoded_text)
+        self.assertIn("Double Cheeseburger", decoded_text)
+        self.assertIn("Curly Fries", decoded_text)
+        self.assertIn("Rs. 28.00", decoded_text)
+        self.assertNotIn("$", decoded_text)
+        self.assertIn("No onions, extra spicy", decoded_text)
+        self.assertIn("Thanks for choosing Burger Hub!", decoded_text)
+
+    def test_escpos_kot_builder(self):
+        from operations.printing import build_kot_escpos
+        raw_bytes = build_kot_escpos(self.order_a, company=self.company_a)
+        self.assertIsInstance(raw_bytes, bytes)
+        self.assertTrue(raw_bytes.endswith(b"\x1dV\x42\x00"))
+
+        decoded_text = raw_bytes.decode("ascii", errors="replace")
+        self.assertIn("KOT", decoded_text)
+        self.assertIn("ORD-BH-1001", decoded_text)
+        self.assertIn("2x", decoded_text)
+        self.assertIn("Double Cheeseburger", decoded_text)
+        self.assertIn("Curly Fries", decoded_text)
+        self.assertIn("SPECIAL PREPARATION INSTRUCTIONS", decoded_text)
+        self.assertIn("No onions, extra spicy", decoded_text)
+
+    def test_order_receipt_api_invoice_and_kot(self):
+        self.client.force_authenticate(self.owner_a)
+
+        # GET invoice
+        res_inv = self.client.get(f"/api/dashboard/orders/{self.order_a.id}/receipt/?type=invoice")
+        self.assertEqual(res_inv.status_code, 200)
+        self.assertEqual(res_inv.data["slip_type"], "invoice")
+        self.assertEqual(res_inv.data["printer_name"], "SpeedX SP-200U")
+        self.assertEqual(res_inv.data["currency_symbol"], "Rs.")
+        self.assertFalse(res_inv.data["auto_print_kot"])
+        self.assertIn("escpos_base64", res_inv.data)
+        self.assertEqual(res_inv.data["receipt"]["order"]["order_number"], "ORD-BH-1001")
+        self.assertEqual(res_inv.data["receipt"]["currency_symbol"], "Rs.")
+        self.assertEqual(len(res_inv.data["receipt"]["items"]), 2)
+        self.assertEqual(res_inv.data["receipt"]["totals"]["total"], 28.0)
+
+        # GET KOT
+        res_kot = self.client.get(f"/api/dashboard/orders/{self.order_a.id}/receipt/?type=kot")
+        self.assertEqual(res_kot.status_code, 200)
+        self.assertEqual(res_kot.data["slip_type"], "kot")
+        self.assertIsNone(res_kot.data["receipt"]["totals"])
+        self.assertTrue(res_kot.data["receipt"]["order"]["has_notes"])
+
+    def test_order_print_api_browser_and_escpos(self):
+        self.client.force_authenticate(self.owner_a)
+
+        # Mode browser
+        res_print_browser = self.client.post(
+            f"/api/dashboard/orders/{self.order_a.id}/print/",
+            {"slip_type": "invoice", "mode": "browser"},
+            format="json",
+        )
+        self.assertEqual(res_print_browser.status_code, 200)
+        self.assertTrue(res_print_browser.data["success"])
+        self.assertEqual(res_print_browser.data["print_count"], 1)
+
+        # Verify audit log in database
+        log_browser = OrderPrintLog.objects.filter(order=self.order_a).first()
+        self.assertIsNotNone(log_browser)
+        self.assertEqual(log_browser.print_mode, "browser")
+        self.assertEqual(log_browser.slip_type, "invoice")
+        self.assertEqual(log_browser.status, "success")
+        self.assertEqual(log_browser.printed_by, self.owner_a)
+
+        # Mode escpos_local (runs safely with simulated/local fallback)
+        res_print_escpos = self.client.post(
+            f"/api/dashboard/orders/{self.order_a.id}/print/",
+            {"slip_type": "kot", "mode": "escpos_local"},
+            format="json",
+        )
+        self.assertEqual(res_print_escpos.status_code, 200)
+        self.assertEqual(res_print_escpos.data["mode"], "escpos_local")
+
+        # Total logs for this order should now be 2
+        self.assertEqual(OrderPrintLog.objects.filter(order=self.order_a).count(), 2)
+
+    def test_receipt_api_tenant_isolation(self):
+        # Authenticate as Company B owner
+        self.client.force_authenticate(self.owner_b)
+
+        # Try to access Company A's receipt -> 404
+        res_get = self.client.get(f"/api/dashboard/orders/{self.order_a.id}/receipt/")
+        self.assertEqual(res_get.status_code, 404)
+
+        # Try to trigger print for Company A's order -> 404
+        res_post = self.client.post(
+            f"/api/dashboard/orders/{self.order_a.id}/print/",
+            {"slip_type": "invoice", "mode": "browser"},
+            format="json",
+        )
+        self.assertEqual(res_post.status_code, 404)
+
+    def test_receipt_uses_company_currency_symbol(self):
+        from operations.printing import build_receipt_payload, build_invoice_escpos
+        # Test default Rs.
+        payload = build_receipt_payload(self.order_a, company=self.company_a)
+        self.assertEqual(payload["currency_symbol"], "Rs.")
+        self.assertEqual(payload["business"]["currency_symbol"], "Rs.")
+
+        raw_bytes = build_invoice_escpos(self.order_a, company=self.company_a)
+        decoded = raw_bytes.decode("ascii", errors="replace")
+        self.assertIn("Rs. 28.00", decoded)
+        self.assertNotIn("$", decoded)
+
+        # Test customized currency symbol (e.g. AED)
+        self.company_a.currency_symbol = "AED"
+        self.company_a.save()
+        payload_custom = build_receipt_payload(self.order_a, company=self.company_a)
+        self.assertEqual(payload_custom["currency_symbol"], "AED")
+
+        raw_custom = build_invoice_escpos(self.order_a, company=self.company_a)
+        decoded_custom = raw_custom.decode("ascii", errors="replace")
+        self.assertIn("AED 28.00", decoded_custom)
+        self.assertNotIn("Rs.", decoded_custom)
+
+    @patch("operations.printing.printer_service.dispatch_to_local_printer")
+    def test_auto_print_triggers_kot_and_invoice_on_order_create(self, mock_dispatch):
+        mock_dispatch.return_value = {"success": True, "printer": "SpeedX SP-200U", "bytes_sent": 450}
+
+        # Create company with both auto-print flags enabled
+        auto_company = Company.objects.create(
+            name="Auto Print Diner",
+            printer_name="SpeedX SP-200U",
+            auto_print_kot=True,
+            auto_print_invoice=True,
+        )
+
+        new_order = Order.objects.create(
+            company=auto_company,
+            order_number="ORD-AUTO-001",
+            customer_name="Alice Smith",
+            total=Decimal("45.00"),
+            status="confirmed",
+        )
+
+        # Both KOT and Invoice should be dispatched and logged
+        self.assertEqual(mock_dispatch.call_count, 2)
+        print_logs = OrderPrintLog.objects.filter(order=new_order)
+        self.assertEqual(print_logs.count(), 2)
+
+        kot_log = print_logs.filter(slip_type="kot").first()
+        inv_log = print_logs.filter(slip_type="invoice").first()
+        self.assertIsNotNone(kot_log)
+        self.assertIsNotNone(inv_log)
+        self.assertEqual(kot_log.status, "success")
+        self.assertEqual(inv_log.status, "success")
+        self.assertEqual(kot_log.print_mode, "escpos_local")
+
+    @patch("operations.printing.printer_service.dispatch_to_local_printer")
+    def test_auto_print_failure_does_not_block_order_creation(self, mock_dispatch):
+        mock_dispatch.return_value = {"success": False, "error": "Printer offline / cable unplugged"}
+
+        failing_company = Company.objects.create(
+            name="Offline Store",
+            printer_name="SpeedX SP-200U",
+            auto_print_kot=True,
+            auto_print_invoice=False,
+        )
+
+        # Order creation must NOT fail or throw exception
+        order = Order.objects.create(
+            company=failing_company,
+            order_number="ORD-FAIL-001",
+            customer_name="Bob Offline",
+            total=Decimal("15.00"),
+            status="new",
+        )
+        self.assertIsNotNone(order.id)
+
+        # A failed print log should be safely recorded without crashing
+        log = OrderPrintLog.objects.filter(order=order, slip_type="kot").first()
+        self.assertIsNotNone(log)
+        self.assertEqual(log.status, "failed")
+        self.assertIn("Printer offline", log.error_message)
+
+    @patch("operations.printing.printer_service.dispatch_to_local_printer")
+    def test_auto_print_does_not_duplicate_on_status_update(self, mock_dispatch):
+        mock_dispatch.return_value = {"success": True, "printer": "SpeedX SP-200U", "bytes_sent": 300}
+
+        company = Company.objects.create(
+            name="Status Check Diner",
+            auto_print_kot=True,
+            auto_print_invoice=False,
+        )
+
+        # 1. Order created in 'new' status -> 1 auto-print fired on create
+        order = Order.objects.create(
+            company=company,
+            order_number="ORD-STATUS-001",
+            customer_name="Charlie Status",
+            status="new",
+        )
+        self.assertEqual(mock_dispatch.call_count, 1)
+        self.assertEqual(OrderPrintLog.objects.filter(order=order).count(), 1)
+
+        # 2. Subsequent status transitions should NOT duplicate prints
+        order.status = "preparing"
+        order.save()
+        self.assertEqual(mock_dispatch.call_count, 1)
+
+        order.status = "ready"
+        order.save()
+        self.assertEqual(mock_dispatch.call_count, 1)
+
+        order.status = "delivered"
+        order.save()
+        self.assertEqual(mock_dispatch.call_count, 1)
+        self.assertEqual(OrderPrintLog.objects.filter(order=order).count(), 1)
+
 
 
 

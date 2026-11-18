@@ -9,6 +9,7 @@ Provides endpoints for:
 5. PATCH /api/dashboard/orders/<int:order_id>/status/ (Order lifecycle updates)
 """
 
+import base64
 import logging
 from decimal import Decimal
 from typing import Optional
@@ -24,7 +25,13 @@ from rest_framework.views import APIView
 from companies.models import Company
 from operations.models import (
     AgentConversation, AgentMessage, Order, OrderItem, OrderEvent,
-    VoiceCall, CallEvent
+    VoiceCall, CallEvent, OrderPrintLog
+)
+from operations.printing import (
+    build_receipt_payload,
+    build_invoice_escpos,
+    build_kot_escpos,
+    dispatch_to_local_printer,
 )
 from operations.whatsapp_service import WhatsAppService
 
@@ -561,4 +568,129 @@ class DashboardCallEventsAPIView(APIView):
             },
             "events": events_list,
         })
+
+
+class DashboardOrderReceiptAPIView(APIView):
+    """
+    GET /api/dashboard/orders/<int:order_pk>/receipt/?type=invoice|kot
+    Returns formatted 80mm thermal receipt data and pre-generated ESC/POS binary stream.
+    Strict tenant isolation enforced.
+    """
+    permission_classes = [AllowAny]
+
+    def get(self, request, order_pk):
+        company = _get_request_company(request)
+        if not company:
+            return Response({"detail": "No active company found."}, status=status.HTTP_404_NOT_FOUND)
+
+        order = get_object_or_404(Order, pk=order_pk, company=company)
+        slip_type = request.GET.get("type", "invoice").lower()
+        if slip_type not in ("invoice", "kot"):
+            slip_type = "invoice"
+
+        # 1. Build structured payload
+        payload = build_receipt_payload(order, company=company, slip_type=slip_type)
+
+        # 2. Build ESC/POS bytes (80mm / SpeedX SP-200U)
+        if slip_type == "kot":
+            escpos_bytes = build_kot_escpos(order, company=company)
+        else:
+            escpos_bytes = build_invoice_escpos(order, company=company)
+
+        escpos_base64 = base64.b64encode(escpos_bytes).decode("ascii")
+
+        # 3. Print audit info
+        print_logs = order.print_logs.all()
+        print_count = print_logs.filter(status=OrderPrintLog.STATUS_SUCCESS).count()
+        last_log = print_logs.first()
+
+        return Response({
+            "slip_type": slip_type,
+            "receipt": payload,
+            "printer_name": getattr(company, "printer_name", "SpeedX SP-200U") or "SpeedX SP-200U",
+            "currency_symbol": getattr(company, "currency_symbol", "Rs.") or "Rs.",
+            "auto_print_kot": getattr(company, "auto_print_kot", False),
+            "auto_print_invoice": getattr(company, "auto_print_invoice", False),
+            "print_count": print_count,
+            "last_printed_at": last_log.created_at.isoformat() if last_log else None,
+            "escpos_base64": escpos_base64,
+        })
+
+
+class DashboardOrderPrintAPIView(APIView):
+    """
+    POST /api/dashboard/orders/<int:order_pk>/print/
+    Dispatches print job to local Windows ESC/POS spooler or records browser print audit.
+    Body: {"slip_type": "invoice"|"kot", "mode": "browser"|"escpos_local"}
+    """
+    permission_classes = [AllowAny]
+
+    def post(self, request, order_pk):
+        company = _get_request_company(request)
+        if not company:
+            return Response({"detail": "No active company found."}, status=status.HTTP_404_NOT_FOUND)
+
+        order = get_object_or_404(Order, pk=order_pk, company=company)
+        slip_type = request.data.get("slip_type", "invoice").lower()
+        if slip_type not in ("invoice", "kot"):
+            slip_type = "invoice"
+
+        mode = request.data.get("mode", "browser").lower()
+        if mode not in ("browser", "escpos_local"):
+            mode = "browser"
+
+        user = request.user if request.user and request.user.is_authenticated else None
+
+        if mode == "escpos_local":
+            if slip_type == "kot":
+                raw_bytes = build_kot_escpos(order, company=company)
+            else:
+                raw_bytes = build_invoice_escpos(order, company=company)
+
+            printer_name = getattr(company, "printer_name", "SpeedX SP-200U")
+            dispatch_result = dispatch_to_local_printer(raw_bytes, printer_name)
+
+            log_status = OrderPrintLog.STATUS_SUCCESS if dispatch_result.get("success") else OrderPrintLog.STATUS_FAILED
+            OrderPrintLog.objects.create(
+                company=company,
+                order=order,
+                slip_type=slip_type,
+                print_mode=OrderPrintLog.MODE_ESCPOS_LOCAL,
+                status=log_status,
+                error_message=dispatch_result.get("error", "") or "",
+                printed_by=user,
+            )
+
+            print_count = order.print_logs.filter(status=OrderPrintLog.STATUS_SUCCESS).count()
+
+            return Response({
+                "success": dispatch_result.get("success", False),
+                "mode": "escpos_local",
+                "slip_type": slip_type,
+                "printer": dispatch_result.get("printer", printer_name),
+                "bytes_sent": dispatch_result.get("bytes_sent", 0),
+                "simulated": dispatch_result.get("simulated", False),
+                "error": dispatch_result.get("error"),
+                "print_count": print_count,
+            }, status=status.HTTP_200_OK if dispatch_result.get("success") else status.HTTP_200_OK)
+
+        else:
+            # Browser print audit logging
+            OrderPrintLog.objects.create(
+                company=company,
+                order=order,
+                slip_type=slip_type,
+                print_mode=OrderPrintLog.MODE_BROWSER,
+                status=OrderPrintLog.STATUS_SUCCESS,
+                printed_by=user,
+            )
+            print_count = order.print_logs.filter(status=OrderPrintLog.STATUS_SUCCESS).count()
+
+            return Response({
+                "success": True,
+                "mode": "browser",
+                "slip_type": slip_type,
+                "print_count": print_count,
+            }, status=status.HTTP_200_OK)
+
 

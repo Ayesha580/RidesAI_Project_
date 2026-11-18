@@ -1,7 +1,8 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useState, useRef } from "react";
 import { dashboardApi } from "../../api/operationsApi";
 import { errorText } from "../../api/axiosClient";
 import { useAuth } from "../../context/AuthContext";
+import ThermalReceiptModal from "../ThermalReceiptModal";
 
 const css = `
 .ov-container {
@@ -179,6 +180,48 @@ const css = `
   transition: border-color 0.2s ease;
 }
 
+.ov-btn-print {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 5px 9px;
+  background: #f8fafc;
+  border: 1px solid #cbd5e1;
+  color: #334155;
+  border-radius: 6px;
+  font-size: 11.5px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  white-space: nowrap;
+}
+
+.ov-btn-print:hover {
+  background: #e2e8f0;
+  color: #0f172a;
+}
+
+.ov-btn-kot {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 5px 9px;
+  background: #fffbeb;
+  border: 1px solid #fde68a;
+  color: #92400e;
+  border-radius: 6px;
+  font-size: 11.5px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  white-space: nowrap;
+}
+
+.ov-btn-kot:hover {
+  background: #fef3c7;
+  color: #78350f;
+}
+
 .ov-status-select:focus {
   border-color: #c026d3;
 }
@@ -255,6 +298,74 @@ const css = `
   font-weight: 600;
   margin-bottom: 12px;
 }
+
+.ov-btn-autoprint {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 14px;
+  border-radius: 10px;
+  border: 1px solid #d1d5db;
+  background: #f9fafb;
+  color: #4b5563;
+  font-size: 12.5px;
+  font-weight: 650;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  white-space: nowrap;
+}
+
+.ov-btn-autoprint:hover {
+  background: #f3f4f6;
+  border-color: #9ca3af;
+}
+
+.ov-btn-autoprint.active {
+  background: #ecfdf5;
+  border-color: #10b981;
+  color: #065f46;
+  box-shadow: 0 0 0 2px rgba(16, 185, 129, 0.15);
+}
+
+.ov-autoprint-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #9ca3af;
+  display: inline-block;
+}
+
+.ov-btn-autoprint.active .ov-autoprint-dot {
+  background: #10b981;
+  box-shadow: 0 0 8px #10b981;
+  animation: ovPulse 1.5s infinite;
+}
+
+@keyframes ovPulse {
+  0% { transform: scale(0.95); opacity: 0.8; }
+  50% { transform: scale(1.25); opacity: 1; }
+  100% { transform: scale(0.95); opacity: 0.8; }
+}
+
+.ov-autoprint-toast {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 11px 18px;
+  background: #0f172a;
+  color: #ffffff;
+  border-radius: 10px;
+  font-size: 13px;
+  font-weight: 600;
+  margin-bottom: 12px;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+  animation: ovSlideDown 0.2s ease-out;
+}
+
+@keyframes ovSlideDown {
+  from { opacity: 0; transform: translateY(-6px); }
+  to { opacity: 1; transform: translateY(0); }
+}
 `;
 
 export default function OrdersView() {
@@ -269,10 +380,41 @@ export default function OrdersView() {
   const [orderTotalPages, setOrderTotalPages] = useState(1);
   const [orderCount, setOrderCount] = useState(0);
 
+  const [receiptModalOrder, setReceiptModalOrder] = useState(null);
+  const [receiptModalSlipType, setReceiptModalSlipType] = useState("invoice");
+  const [autoTriggerPrint, setAutoTriggerPrint] = useState(false);
+  const [autoPrintToast, setAutoPrintToast] = useState(null);
+
+  // User preference persisted in localStorage
+  const [autoPrintPopup, setAutoPrintPopup] = useState(() => {
+    try {
+      return localStorage.getItem("ridesai_auto_print_popup") === "true";
+    } catch {
+      return false;
+    }
+  });
+
+  const knownOrderIdsRef = useRef(new Set());
+  const initializedRef = useRef(false);
+
+  const toggleAutoPrintPopup = () => {
+    setAutoPrintPopup((prev) => {
+      const next = !prev;
+      try {
+        localStorage.setItem("ridesai_auto_print_popup", String(next));
+      } catch (e) {
+        console.warn("Could not save to localStorage:", e);
+      }
+      return next;
+    });
+  };
+
   // --- Load Orders ---
-  const loadOrders = useCallback(async (page = 1) => {
-    setOrdersLoading(true);
-    setOrdersError("");
+  const loadOrders = useCallback(async (page = 1, isBackgroundPoll = false) => {
+    if (!isBackgroundPoll) {
+      setOrdersLoading(true);
+      setOrdersError("");
+    }
     try {
       const params = { page, page_size: 15 };
       const companyId = user?.company_id || user?.company;
@@ -281,20 +423,60 @@ export default function OrdersView() {
       if (orderStatus) params.status = orderStatus;
 
       const { data } = await dashboardApi.getOrders(params);
-      setOrders(data.results || []);
+      const fetchedOrders = data.results || [];
+
+      // Check for brand new orders if already initialized
+      if (initializedRef.current) {
+        const newlyArrived = fetchedOrders.filter(
+          (o) => !knownOrderIdsRef.current.has(o.id)
+        );
+
+        // Record all newly seen order IDs
+        newlyArrived.forEach((o) => knownOrderIdsRef.current.add(o.id));
+
+        if (autoPrintPopup && newlyArrived.length > 0) {
+          const newest = newlyArrived[0];
+          setAutoTriggerPrint(true);
+          setReceiptModalSlipType("invoice");
+          setReceiptModalOrder(newest);
+          setAutoPrintToast(`New Order #${newest.order_number} received — auto-opening 80mm print dialog...`);
+          setTimeout(() => setAutoPrintToast(null), 6000);
+        }
+      } else {
+        // Initial fetch: record existing historical order IDs, do NOT trigger popup
+        fetchedOrders.forEach((o) => knownOrderIdsRef.current.add(o.id));
+        initializedRef.current = true;
+      }
+
+      setOrders(fetchedOrders);
       setOrderTotalPages(data.total_pages || 1);
       setOrderPage(data.current_page || 1);
       setOrderCount(data.count || 0);
     } catch (err) {
-      setOrdersError(errorText(err));
+      if (!isBackgroundPoll) {
+        setOrdersError(errorText(err));
+      }
     } finally {
-      setOrdersLoading(false);
+      if (!isBackgroundPoll) {
+        setOrdersLoading(false);
+      }
     }
-  }, [user, orderSearch, orderStatus]);
+  }, [user, orderSearch, orderStatus, autoPrintPopup]);
 
   useEffect(() => {
     loadOrders(1);
   }, [loadOrders]);
+
+  // Live polling every 5s when autoPrintPopup is ON
+  useEffect(() => {
+    if (!autoPrintPopup) return;
+
+    const interval = setInterval(() => {
+      loadOrders(1, true);
+    }, 5000);
+
+    return () => clearInterval(interval);
+  }, [autoPrintPopup, loadOrders]);
 
   const handleUpdateOrderStatus = async (orderId, newStatus) => {
     try {
@@ -308,6 +490,29 @@ export default function OrdersView() {
   return (
     <div className="ov-container">
       <style>{css}</style>
+
+      {autoPrintToast && (
+        <div className="ov-autoprint-toast">
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <span style={{ fontSize: 16 }}>⚡</span>
+            <span>{autoPrintToast}</span>
+          </div>
+          <button
+            style={{
+              background: "transparent",
+              border: "none",
+              color: "#94a3b8",
+              cursor: "pointer",
+              fontSize: 16,
+              padding: "2px 6px",
+            }}
+            onClick={() => setAutoPrintToast(null)}
+            title="Dismiss"
+          >
+            ✕
+          </button>
+        </div>
+      )}
 
       {ordersError && (
         <div className="ov-error-banner" role="alert">
@@ -351,9 +556,24 @@ export default function OrdersView() {
             </select>
           </div>
 
-          <button className="ov-btn-refresh" onClick={() => loadOrders(orderPage)}>
-            <span>↻</span> Refresh Orders
-          </button>
+          <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+            <button
+              className={`ov-btn-autoprint ${autoPrintPopup ? "active" : ""}`}
+              onClick={toggleAutoPrintPopup}
+              title={
+                autoPrintPopup
+                  ? "Auto-Print Popup is ON: Polling every 5s. New orders automatically open the 80mm print dialog."
+                  : "Click to enable Auto-Print Popup for newly arriving orders"
+              }
+            >
+              <span className="ov-autoprint-dot"></span>
+              🖨️ Auto-Print: {autoPrintPopup ? "ON (5s Poll)" : "OFF"}
+            </button>
+
+            <button className="ov-btn-refresh" onClick={() => loadOrders(orderPage)}>
+              <span>↻</span> Refresh
+            </button>
+          </div>
         </div>
 
         {/* Orders Table */}
@@ -381,6 +601,7 @@ export default function OrdersView() {
                   <th>Status</th>
                   <th>Date & Time</th>
                   <th>Status Action</th>
+                  <th>Receipt / KOT</th>
                 </tr>
               </thead>
               <tbody>
@@ -455,6 +676,32 @@ export default function OrdersView() {
                           <option value="cancelled">Cancelled</option>
                         </select>
                       </td>
+                      <td>
+                        <div style={{ display: "flex", gap: 5, flexWrap: "nowrap" }}>
+                          <button
+                            className="ov-btn-print"
+                            title="Print Customer Invoice (80mm)"
+                            onClick={() => {
+                              setAutoTriggerPrint(false);
+                              setReceiptModalOrder(o);
+                              setReceiptModalSlipType("invoice");
+                            }}
+                          >
+                            🧾 Invoice
+                          </button>
+                          <button
+                            className="ov-btn-kot"
+                            title="Print Kitchen Order Ticket (KOT)"
+                            onClick={() => {
+                              setAutoTriggerPrint(false);
+                              setReceiptModalOrder(o);
+                              setReceiptModalSlipType("kot");
+                            }}
+                          >
+                            🍳 KOT
+                          </button>
+                        </div>
+                      </td>
                     </tr>
                   );
                 })}
@@ -493,6 +740,19 @@ export default function OrdersView() {
           </div>
         </footer>
       </section>
+
+      {/* 80mm Thermal Receipt / KOT Modal */}
+      {receiptModalOrder && (
+        <ThermalReceiptModal
+          order={receiptModalOrder}
+          initialSlipType={receiptModalSlipType}
+          autoTriggerPrint={autoTriggerPrint}
+          onClose={() => {
+            setReceiptModalOrder(null);
+            setAutoTriggerPrint(false);
+          }}
+        />
+      )}
     </div>
   );
 }
