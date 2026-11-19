@@ -31,99 +31,171 @@ logger = logging.getLogger("operations.whatsapp")
 # OpenAI / Groq Tool Schemas (Phase 3 Tool Calling)
 # ============================================================================
 
-AGENT_TOOLS = [
-    {
-        "type": "function",
-        "function": {
-            "name": "get_catalog_items",
-            "description": (
-                "Fetches real-time available menu/catalog items, stock availability, "
-                "descriptions, and prices for the current business store."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "search_query": {
-                        "type": "string",
-                        "description": "Optional keyword or category to search for specific items (e.g. 'burger', 'drink').",
-                    }
-                },
-                "required": [],
+TOOL_GET_CATALOG_ITEMS = {
+    "type": "function",
+    "function": {
+        "name": "get_catalog_items",
+        "description": (
+            "Fetches real-time available menu/catalog items, stock availability, "
+            "descriptions, and prices for the current business store."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "search_query": {
+                    "type": "string",
+                    "description": "Optional keyword or category to search for specific items (e.g. 'burger', 'medicine', 'service').",
+                }
             },
+            "required": [],
         },
     },
-    {
-        "type": "function",
-        "function": {
-            "name": "create_order",
-            "description": (
-                "Executes a confirmed order transaction in the store database. "
-                "Call this ONLY when the customer has clearly confirmed they want to order "
-                "and has provided their delivery address."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "delivery_address": {
-                        "type": "string",
-                        "description": "The customer's complete delivery address or table/pickup location.",
-                    },
+}
+
+TOOL_CREATE_ORDER = {
+    "type": "function",
+    "function": {
+        "name": "create_order",
+        "description": (
+            "Executes a confirmed order transaction in the store database. "
+            "Call this ONLY when the customer has clearly confirmed they want to order "
+            "and has provided their delivery address."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "delivery_address": {
+                    "type": "string",
+                    "description": "The customer's complete delivery address or table/pickup location.",
+                },
+                "items": {
+                    "type": "array",
+                    "description": "List of items and quantities being ordered.",
                     "items": {
-                        "type": "array",
-                        "description": "List of items and quantities being ordered.",
-                        "items": {
-                            "type": "object",
-                            "properties": {
-                                "item_name": {
-                                    "type": "string",
-                                    "description": "Name of the catalog item.",
-                                },
-                                "quantity": {
-                                    "type": "integer",
-                                    "description": "Number of units to order (minimum 1).",
-                                },
-                                "special_instructions": {
-                                    "type": "string",
-                                    "description": "Optional preparation notes (e.g. 'no onions', 'extra spicy').",
-                                },
+                        "type": "object",
+                        "properties": {
+                            "item_name": {
+                                "type": "string",
+                                "description": "Name of the catalog item.",
                             },
-                            "required": ["item_name", "quantity"],
+                            "quantity": {
+                                "type": "integer",
+                                "description": "Number of units to order (minimum 1).",
+                            },
+                            "special_instructions": {
+                                "type": "string",
+                                "description": "Optional preparation notes (e.g. 'no onions', 'extra spicy').",
+                            },
                         },
-                    },
-                    "customer_name": {
-                        "type": "string",
-                        "description": "Name of the customer placing the order.",
-                    },
-                    "notes": {
-                        "type": "string",
-                        "description": "General delivery instructions or notes for the kitchen/staff.",
+                        "required": ["item_name", "quantity"],
                     },
                 },
-                "required": ["delivery_address", "items"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "check_order_status",
-            "description": (
-                "Queries the real-time status and details of recent orders for the customer "
-                "by order number or customer phone number."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "order_number": {
-                        "type": "string",
-                        "description": "Optional order reference number (e.g., 'RA-261117-XXXX').",
-                    },
+                "customer_name": {
+                    "type": "string",
+                    "description": "Name of the customer placing the order.",
                 },
-                "required": [],
+                "notes": {
+                    "type": "string",
+                    "description": "General delivery instructions or notes for the staff.",
+                },
             },
+            "required": ["delivery_address", "items"],
         },
     },
+}
+
+TOOL_CHECK_ORDER_STATUS = {
+    "type": "function",
+    "function": {
+        "name": "check_order_status",
+        "description": (
+            "Queries the real-time status and details of recent orders for the customer "
+            "by order number or customer phone number."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "order_number": {
+                    "type": "string",
+                    "description": "Optional order reference number (e.g., 'RA-261117-XXXX').",
+                },
+            },
+            "required": [],
+        },
+    },
+}
+
+AGENT_TOOLS = [
+    TOOL_GET_CATALOG_ITEMS,
+    TOOL_CREATE_ORDER,
+    TOOL_CHECK_ORDER_STATUS,
 ]
+
+
+# ============================================================================
+# Category-Aware Modular Agent Profile Registry (PRD Multitenancy)
+# ============================================================================
+
+CATEGORY_AGENT_PROFILES = {
+    "restaurant": {
+        "key": "restaurant",
+        "role_desc": "food ordering and customer service",
+        "catalog_header": "FOOD MENU & AVAILABLE DISHES",
+        "instructions": (
+            "- Primary duty is presenting delicious food options, taking takeaway/delivery food orders, "
+            "and confirming customer delivery addresses."
+        ),
+        "tools": [TOOL_GET_CATALOG_ITEMS, TOOL_CREATE_ORDER, TOOL_CHECK_ORDER_STATUS],
+    },
+    "pharmacy": {
+        "key": "pharmacy",
+        "role_desc": "licensed pharmacy assistant and medicine ordering support",
+        "catalog_header": "MEDICINES & HEALTHCARE PRODUCTS",
+        "instructions": (
+            "- Primary duty is answering inquiries about in-stock OTC medicines, wellness products, "
+            "and taking delivery orders for health supplies.\n"
+            "- Inform customers that prescription-only medicines require presenting a valid physical or digital doctor's prescription upon delivery."
+        ),
+        "tools": [TOOL_GET_CATALOG_ITEMS, TOOL_CREATE_ORDER, TOOL_CHECK_ORDER_STATUS],
+    },
+    "clinic": {
+        "key": "clinic",
+        "role_desc": "clinic appointment desk and patient support assistant",
+        "catalog_header": "CLINICAL SERVICES & SPECIALTIES",
+        "instructions": (
+            "- Primary duty is providing information regarding clinic hours, doctor consultation timings, "
+            "available medical specialties, and collecting patient appointment requests (patient name, requested doctor, date/time, and contact phone).\n"
+            "- Do NOT attempt to place food or restaurant orders."
+        ),
+        "tools": [TOOL_GET_CATALOG_ITEMS, TOOL_CHECK_ORDER_STATUS],
+    },
+    "retail": {
+        "key": "retail",
+        "role_desc": "retail store assistant and product ordering support",
+        "catalog_header": "STORE CATALOG & INVENTORY",
+        "instructions": (
+            "- Primary duty is helping shoppers explore available retail merchandise, checking product stock, "
+            "and taking orders with delivery address."
+        ),
+        "tools": [TOOL_GET_CATALOG_ITEMS, TOOL_CREATE_ORDER, TOOL_CHECK_ORDER_STATUS],
+    },
+}
+
+
+def get_category_agent_config(business_type: Optional[str]) -> Dict[str, Any]:
+    """
+    Returns the modular agent profile configuration for a business vertical.
+    Resolves keywords to restaurant, pharmacy, clinic, or retail.
+    """
+    raw = (business_type or "").strip().lower()
+    if any(k in raw for k in ("pharm", "med", "chemist", "drug")):
+        return CATEGORY_AGENT_PROFILES["pharmacy"]
+    if any(k in raw for k in ("clinic", "hosp", "doctor", "health", "dental", "physio")):
+        return CATEGORY_AGENT_PROFILES["clinic"]
+    if any(k in raw for k in ("retail", "store", "shop", "supermarket", "grocery", "mart", "general")):
+        return CATEGORY_AGENT_PROFILES["retail"]
+    # Default to restaurant
+    return CATEGORY_AGENT_PROFILES["restaurant"]
 
 
 # ============================================================================
@@ -395,6 +467,7 @@ def get_business_context_for_company(company: Optional[Company]) -> Dict[str, An
         "tone": (company.agent_tone if company else "") or "friendly and helpful",
         "phone": (company.phone or company.agent_support_phone if company else "") or "",
         "address": (company.address if company else "") or "",
+        "business_type": (company.business_type if company else "") or "restaurant",
         "catalog": [],
         "knowledge": [],
         "hours": [],
@@ -493,6 +566,13 @@ def _build_system_prompt(
     delivery_zones_list = context.get("delivery_zones", [])
     delivery_zones_str = ", ".join(delivery_zones_list) if delivery_zones_list else (address or "our local delivery area")
 
+    # Category profile resolution
+    biz_type = context.get("business_type") or "restaurant"
+    cat_cfg = get_category_agent_config(biz_type)
+    role_desc = cat_cfg["role_desc"]
+    catalog_header = cat_cfg["catalog_header"]
+    category_instructions = cat_cfg["instructions"]
+
     # Format catalog items
     catalog_lines = []
     for item in context.get("catalog", []):
@@ -504,8 +584,8 @@ def _build_system_prompt(
         catalog_str = "\n".join(catalog_lines)
     else:
         catalog_str = (
-            "No catalog items are currently active. If a customer asks to view items or order, "
-            "politely inform them that the store catalog is currently being updated."
+            f"No catalog items are currently active. If a customer asks to view items or order, "
+            f"politely inform them that the store catalog is currently being updated."
         )
 
     # Format knowledge base FAQs
@@ -556,10 +636,11 @@ def _build_system_prompt(
         )
 
     return f"""You are the official AI Assistant for {biz_name} on WhatsApp.
-Your primary role is to assist customers with our menu/catalog, take orders directly into our database via tools, and provide operating hours and store information.
+Your primary role is {role_desc}.
 
 BUSINESS DETAILS:
 - Business Name: {biz_name}
+- Business Vertical: {biz_type.title()}
 - Brand Voice / Tone: {tone}
 - Default Greeting: {greeting}
 - Store Address: {address}
@@ -570,19 +651,27 @@ BUSINESS DETAILS:
 OPERATING HOURS:
 {hours_str}
 
-AVAILABLE MENU / CATALOG ITEMS:
+AVAILABLE {catalog_header}:
 {catalog_str}
 
 FREQUENTLY ASKED QUESTIONS & POLICIES:
 {kb_str}
+
+VERTICAL-SPECIFIC INSTRUCTIONS:
+{category_instructions}
+
+GLOBAL HEALTH & DIETARY GUARDRAILS (PRD MANDATORY):
+- Never diagnose medical conditions, prescribe prescription medications, or claim that any food, supplement, or product treats or cures any illness.
+- If a customer mentions serious health symptoms, allergies, or acute conditions, use cautious, supportive language and explicitly advise them to consult a qualified physician or healthcare professional.
+- Do not promise medical efficacy or replace clinical judgment.
 {history_mode_instruction}
 {voice_mode_instruction}
 
 STRICT TOOL CALLING RULES:
 1. Tool `get_catalog_items`:
-   - Use when the customer asks what you sell, asks to see the menu, asks for prices, or searches for a product.
+   - Use when the customer asks what you sell, asks to see the menu/catalog, asks for prices, or searches for a product/service.
 2. Tool `create_order`:
-   - Use ONLY when the customer has specified what they want to order AND provided their delivery address.
+   - Active for ordering verticals. Use ONLY when the customer has specified what they want to order AND provided their delivery address.
    - If the customer lists items to order but has NOT provided an address yet: do NOT call `create_order`. Instead, list their selected items with prices in Rs., calculate the total in Rs., and ask them: "Please provide your delivery address to confirm and place your order."
    - If items and address are already discussed, ask the customer for final confirmation or confirm the order.
    - When the customer confirms (e.g., 'hanjee', 'hanjee krden', 'ji kar dein', 'haan', 'done', 'ok', 'confirm', 'yes', 'bhej do'): IMMEDIATELY call `create_order` using the items and address from the conversation history, and return the confirmation.
@@ -767,10 +856,14 @@ def _generate_agent_reply(
             messages.append({"role": "user", "content": message_text})
 
             llm_max_tokens = int(getattr(settings, "OPENAI_MAX_TOKENS", 200))
+            biz_type = context.get("business_type") or "restaurant"
+            cat_cfg = get_category_agent_config(biz_type)
+            active_tools = cat_cfg.get("tools") or AGENT_TOOLS
+
             response = client.chat.completions.create(
                 model=model,
                 messages=messages,
-                tools=AGENT_TOOLS,
+                tools=active_tools,
                 tool_choice="auto",
                 temperature=0.3,
                 max_tokens=llm_max_tokens,

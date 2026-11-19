@@ -7,7 +7,32 @@ import { errorText } from "../api/axiosClient";
 import { staffApi } from "../api/StaffApi";
 import OrdersView from "./components/OrdersView";
 
-const STATUSES = ["new", "confirmed", "preparing", "ready", "assigned", "picked_up", "on_the_way", "delivered", "cancelled"];
+const FORWARD_STATUS_MAP = {
+  new: ["confirmed", "preparing", "cancelled"],
+  pending: ["confirmed", "preparing", "cancelled"],
+  confirmed: ["preparing", "prepared", "ready", "cancelled"],
+  preparing: ["prepared", "ready", "cancelled"],
+  prepared: ["ready", "assigned", "picked_up", "on_the_way", "out_for_delivery", "delivered", "cancelled"],
+  ready: ["assigned", "picked_up", "on_the_way", "out_for_delivery", "delivered", "cancelled"],
+  assigned: ["picked_up", "on_the_way", "out_for_delivery", "delivered", "cancelled"],
+  picked_up: ["on_the_way", "out_for_delivery", "delivered", "cancelled"],
+  on_the_way: ["delivered", "cancelled"],
+  out_for_delivery: ["delivered", "cancelled"],
+  delivered: [],
+  cancelled: [],
+};
+
+const getAvailableStatuses = (currentStatus) => {
+  const current = (currentStatus || "").toLowerCase();
+  const nextList = FORWARD_STATUS_MAP[current] || [];
+  return Array.from(new Set([current, ...nextList]));
+};
+
+const isTerminalStatus = (status) => {
+  const s = (status || "").toLowerCase();
+  return s === "delivered" || s === "cancelled";
+};
+
 const can = (user, permission) => user?.role === "owner" || (user?.permissions || []).includes("*") || (user?.permissions || []).includes(permission);
 
 export default function OrdersDashboard({ staff = false }) {
@@ -123,7 +148,22 @@ export default function OrdersDashboard({ staff = false }) {
             {order.delivery && <div style={{ color: "#4b5563", fontSize: 13, marginBottom: 8 }}>Rider: {order.delivery.rider_name} · {order.delivery.status}</div>}
             <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
               <span style={{ padding: "5px 9px", background: "#f3f4f6", borderRadius: 20, fontSize: 12 }}>{order.status.replaceAll("_", " ")}</span>
-              {can(user, "orders.update_status") && <select aria-label={`Update status for ${order.order_number}`} disabled={busy === order.id} value={order.status} onChange={(e) => updateStatus(order, e.target.value)}>{STATUSES.map((s) => <option key={s} value={s}>{s.replaceAll("_", " ")}</option>)}</select>}
+              {can(user, "orders.update_status") && (
+                <select
+                  aria-label={`Update status for ${order.order_number}`}
+                  disabled={busy === order.id || isTerminalStatus(order.status)}
+                  value={order.status}
+                  onChange={(e) => updateStatus(order, e.target.value)}
+                  style={{
+                    opacity: isTerminalStatus(order.status) ? 0.6 : 1,
+                    cursor: isTerminalStatus(order.status) ? "not-allowed" : "pointer",
+                  }}
+                >
+                  {getAvailableStatuses(order.status).map((s) => (
+                    <option key={s} value={s}>{s.replaceAll("_", " ")}</option>
+                  ))}
+                </select>
+              )}
               {can(user, "orders.assign") && employees.length > 0 && <>
                 <select aria-label={`Assign team member for ${order.order_number}`} value={selectedEmployees[order.id] || order.assigned_to_id || ""} onChange={e=>setSelectedEmployees(s=>({...s,[order.id]:e.target.value}))}>
                   <option value="">Assign employee</option>{employees.map(emp=><option key={emp.id} value={emp.id}>{emp.full_name || emp.username} · {emp.role_name || "Staff"}</option>)}

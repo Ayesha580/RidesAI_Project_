@@ -18,7 +18,7 @@ from django.core.paginator import Paginator, EmptyPage
 from django.db.models import Q, Avg
 from django.shortcuts import get_object_or_404
 from rest_framework import status
-from rest_framework.permissions import AllowAny
+from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
@@ -40,38 +40,13 @@ logger = logging.getLogger("operations.dashboard")
 
 def _get_request_company(request) -> Optional[Company]:
     """
-    Resolves the company for the current request.
-    1. If user is authenticated and attached to a company, uses user.company.
-    2. If query param `company_id` is supplied, fetches that company.
-    3. If header `X-Company-Id` is supplied, fetches that company.
-    4. Fallback for unauthenticated dev requests:
-       Matches 'burger king' or company with orders or active company.
+    Resolves the company for the current authenticated request.
+    Strictly isolated: returns request.user.company if available, otherwise None.
+    Never falls back to unauthenticated defaults or other companies.
     """
     if getattr(request, "user", None) and request.user.is_authenticated:
-        company = getattr(request.user, "company", None)
-        if company:
-            return company
-
-    comp_id = request.GET.get("company_id") or request.headers.get("X-Company-Id")
-    if comp_id:
-        try:
-            c = Company.objects.filter(pk=int(comp_id)).first()
-            if c:
-                return c
-        except Exception:
-            pass
-
-    # Prefer 'burger king' if present in DB
-    bk = Company.objects.filter(name__iexact="burger king").first()
-    if bk:
-        return bk
-
-    return (
-        Company.objects.filter(orders__isnull=False).distinct().first()
-        or Company.objects.filter(status="active").first()
-        or Company.objects.filter(is_approved=True).first()
-        or Company.objects.first()
-    )
+        return getattr(request.user, "company", None)
+    return None
 
 
 def _seed_demo_conversations_if_empty(company: Company):
@@ -141,18 +116,12 @@ class DashboardConversationsAPIView(APIView):
     Returns a paginated list of AI conversations grouped by customer phone number,
     including the full chat history (AgentMessage records with user/agent roles and timestamps).
     """
-    permission_classes = [AllowAny]
+    permission_classes = [IsAuthenticated]
 
     def get(self, request):
         company = _get_request_company(request)
         if not company:
-            return Response({
-                "count": 0,
-                "total_pages": 0,
-                "current_page": 1,
-                "page_size": 10,
-                "results": [],
-            })
+            return Response({"detail": "User has no associated company."}, status=status.HTTP_403_FORBIDDEN)
 
         # Seed sample conversations if this company has none
         _seed_demo_conversations_if_empty(company)
@@ -234,12 +203,12 @@ class DashboardConversationDetailAPIView(APIView):
     GET /api/dashboard/conversations/<uuid:conversation_key>/
     Returns full details and message history for a single conversation.
     """
-    permission_classes = [AllowAny]
+    permission_classes = [IsAuthenticated]
 
     def get(self, request, conversation_key):
         company = _get_request_company(request)
         if not company:
-            return Response({"detail": "No active company found."}, status=404)
+            return Response({"detail": "User has no associated company."}, status=status.HTTP_403_FORBIDDEN)
 
         conv = get_object_or_404(AgentConversation, company=company, conversation_key=conversation_key)
         msgs = list(conv.messages.all().order_by("created_at"))
@@ -272,12 +241,12 @@ class DashboardConversationReplyAPIView(APIView):
     POST /api/dashboard/conversations/<uuid:conversation_key>/reply/
     Allows a human manager to reply directly to the customer or toggle handover status.
     """
-    permission_classes = [AllowAny]
+    permission_classes = [IsAuthenticated]
 
     def post(self, request, conversation_key):
         company = _get_request_company(request)
         if not company:
-            return Response({"detail": "No active company found."}, status=404)
+            return Response({"detail": "User has no associated company."}, status=status.HTTP_403_FORBIDDEN)
 
         conv = get_object_or_404(AgentConversation, company=company, conversation_key=conversation_key)
         message_text = str(request.data.get("message") or "").strip()
@@ -324,18 +293,12 @@ class DashboardOrdersAPIView(APIView):
     GET /api/dashboard/orders/
     Returns a list of recent database orders with items, delivery address, subtotal, and status.
     """
-    permission_classes = [AllowAny]
+    permission_classes = [IsAuthenticated]
 
     def get(self, request):
         company = _get_request_company(request)
         if not company:
-            return Response({
-                "count": 0,
-                "total_pages": 0,
-                "current_page": 1,
-                "page_size": 20,
-                "results": [],
-            })
+            return Response({"detail": "User has no associated company."}, status=status.HTTP_403_FORBIDDEN)
 
         qs = Order.objects.filter(company=company).select_related("assigned_rider").prefetch_related("items").order_by("-created_at")
 
@@ -422,25 +385,33 @@ class DashboardOrderStatusAPIView(APIView):
     PATCH /api/dashboard/orders/<int:order_id>/status/
     Updates the status of an existing order and records an OrderEvent.
     """
-    permission_classes = [AllowAny]
+    permission_classes = [IsAuthenticated]
 
     def patch(self, request, order_id):
         company = _get_request_company(request)
         if not company:
-            return Response({"detail": "No active company found."}, status=404)
+            return Response({"detail": "User has no associated company."}, status=status.HTTP_403_FORBIDDEN)
 
         order = get_object_or_404(Order, company=company, pk=order_id)
-        new_status = request.data.get("status")
+        new_status = (request.data.get("status") or "").strip().lower()
         valid_statuses = [x[0] for x in Order.STATUS_CHOICES]
 
         if new_status not in valid_statuses:
             return Response({"error": f"Invalid status '{new_status}'."}, status=400)
 
         old_status = order.status
+        from operations.order_state import is_valid_order_transition
+        if not is_valid_order_transition(old_status, new_status):
+            return Response(
+                {"error": f"Invalid status transition from '{old_status}' to '{new_status}'."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
         order.status = new_status
         order.save(update_fields=["status", "updated_at"])
 
         actor = request.user if getattr(request, "user", None) and request.user.is_authenticated else None
+        note_text = request.data.get("note") or request.data.get("reason") or "Updated via Dashboard"
         OrderEvent.objects.create(
             company=company,
             order=order,
@@ -448,7 +419,15 @@ class DashboardOrderStatusAPIView(APIView):
             event_type="status_change",
             from_status=old_status,
             to_status=new_status,
-            note=request.data.get("note", "Updated via Dashboard"),
+            note=note_text,
+        )
+
+        from operations.notifications import send_order_status_notification
+        send_order_status_notification(
+            order=order,
+            previous_status=old_status,
+            new_status=new_status,
+            reason=request.data.get("reason") or request.data.get("note"),
         )
 
         return Response({
@@ -465,12 +444,12 @@ class DashboardCallsAPIView(APIView):
     GET /api/dashboard/calls/
     Returns tenant-scoped WhatsApp voice calls and aggregated KPI statistics.
     """
-    permission_classes = [AllowAny]
+    permission_classes = [IsAuthenticated]
 
     def get(self, request):
         company = _get_request_company(request)
         if not company:
-            return Response({"detail": "No active company found."}, status=404)
+            return Response({"detail": "User has no associated company."}, status=status.HTTP_403_FORBIDDEN)
 
         base_qs = VoiceCall.objects.filter(company=company)
 
@@ -534,12 +513,12 @@ class DashboardCallEventsAPIView(APIView):
     GET /api/dashboard/calls/<int:call_pk>/events/
     Returns chronological CallEvents for a specific tenant-owned VoiceCall.
     """
-    permission_classes = [AllowAny]
+    permission_classes = [IsAuthenticated]
 
     def get(self, request, call_pk):
         company = _get_request_company(request)
         if not company:
-            return Response({"detail": "No active company found."}, status=404)
+            return Response({"detail": "User has no associated company."}, status=status.HTTP_403_FORBIDDEN)
 
         call_obj = get_object_or_404(VoiceCall, pk=call_pk, company=company)
         events = call_obj.events.all().order_by("created_at")
@@ -581,12 +560,12 @@ class DashboardOrderReceiptAPIView(APIView):
     Returns formatted 80mm thermal receipt data and pre-generated ESC/POS binary stream.
     Strict tenant isolation enforced.
     """
-    permission_classes = [AllowAny]
+    permission_classes = [IsAuthenticated]
 
     def get(self, request, order_pk):
         company = _get_request_company(request)
         if not company:
-            return Response({"detail": "No active company found."}, status=status.HTTP_404_NOT_FOUND)
+            return Response({"detail": "User has no associated company."}, status=status.HTTP_403_FORBIDDEN)
 
         order = get_object_or_404(Order, pk=order_pk, company=company)
         slip_type = request.GET.get("type", "invoice").lower()
@@ -628,12 +607,12 @@ class DashboardOrderPrintAPIView(APIView):
     Dispatches print job to local Windows ESC/POS spooler or records browser print audit.
     Body: {"slip_type": "invoice"|"kot", "mode": "browser"|"escpos_local"}
     """
-    permission_classes = [AllowAny]
+    permission_classes = [IsAuthenticated]
 
     def post(self, request, order_pk):
         company = _get_request_company(request)
         if not company:
-            return Response({"detail": "No active company found."}, status=status.HTTP_404_NOT_FOUND)
+            return Response({"detail": "User has no associated company."}, status=status.HTTP_403_FORBIDDEN)
 
         order = get_object_or_404(Order, pk=order_pk, company=company)
         slip_type = request.data.get("slip_type", "invoice").lower()

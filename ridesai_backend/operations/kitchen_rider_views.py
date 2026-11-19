@@ -130,6 +130,13 @@ class KitchenOrderStatusAPIView(APIView):
             )
 
         previous_status = order.status
+        from operations.order_state import is_valid_order_transition
+        if not is_valid_order_transition(previous_status, new_status):
+            return Response(
+                {"error": f"Invalid status transition from '{previous_status}' to '{new_status}'."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
         order.status = new_status
         order.save(update_fields=["status", "updated_at"])
 
@@ -148,6 +155,15 @@ class KitchenOrderStatusAPIView(APIView):
         assigned_rider = order.assigned_rider
         if new_status in (Order.STATUS_PREPARED, Order.STATUS_READY) and not assigned_rider:
             assigned_rider = assign_best_rider(order)
+
+        # Dispatch automated customer WhatsApp notification
+        from operations.notifications import send_order_status_notification
+        send_order_status_notification(
+            order=order,
+            previous_status=previous_status,
+            new_status=new_status,
+            reason=request.data.get("reason") or request.data.get("note"),
+        )
 
         return Response({
             "id": order.id,
@@ -250,6 +266,13 @@ class RiderOrderStatusAPIView(APIView):
             )
 
         previous_status = order.status
+        from operations.order_state import is_valid_order_transition
+        if not is_valid_order_transition(previous_status, new_status):
+            return Response(
+                {"error": f"Invalid status transition from '{previous_status}' to '{new_status}'."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
         order.status = new_status
         order.save(update_fields=["status", "updated_at"])
 
@@ -262,6 +285,15 @@ class RiderOrderStatusAPIView(APIView):
             from_status=previous_status,
             to_status=new_status,
             note=f"Rider {request.user.username} updated delivery status to {new_status}",
+        )
+
+        # Dispatch automated customer WhatsApp notification
+        from operations.notifications import send_order_status_notification
+        send_order_status_notification(
+            order=order,
+            previous_status=previous_status,
+            new_status=new_status,
+            reason=request.data.get("reason") or request.data.get("note"),
         )
 
         return Response({

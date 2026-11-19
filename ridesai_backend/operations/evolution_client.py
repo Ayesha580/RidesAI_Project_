@@ -191,11 +191,13 @@ def get_connection_status(instance_name: str) -> str:
         return "disconnected"
 
 
-def send_text_message(instance_name: str, phone: str, text: str) -> Dict[str, Any]:
+def send_text_message(instance_name: str, phone: str = "", text: str = "", to: str = "") -> Dict[str, Any]:
     """
     Sends an outbound text message via Evolution API.
+    Supports either `phone` or `to` parameter for caller flexibility.
     """
-    cleaned_phone = _clean_phone(phone)
+    target_phone = phone or to or ""
+    cleaned_phone = _clean_phone(target_phone)
     api_url = _get_api_url()
     url = f"{api_url}/message/sendText/{instance_name}"
     payload = {

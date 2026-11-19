@@ -4,6 +4,47 @@ import { errorText } from "../../api/axiosClient";
 import { useAuth } from "../../context/AuthContext";
 import ThermalReceiptModal from "../ThermalReceiptModal";
 
+const FORWARD_STATUS_MAP = {
+  new: ["confirmed", "preparing", "cancelled"],
+  pending: ["confirmed", "preparing", "cancelled"],
+  confirmed: ["preparing", "prepared", "ready", "cancelled"],
+  preparing: ["prepared", "ready", "cancelled"],
+  prepared: ["ready", "assigned", "picked_up", "on_the_way", "out_for_delivery", "delivered", "cancelled"],
+  ready: ["assigned", "picked_up", "on_the_way", "out_for_delivery", "delivered", "cancelled"],
+  assigned: ["picked_up", "on_the_way", "out_for_delivery", "delivered", "cancelled"],
+  picked_up: ["on_the_way", "out_for_delivery", "delivered", "cancelled"],
+  on_the_way: ["delivered", "cancelled"],
+  out_for_delivery: ["delivered", "cancelled"],
+  delivered: [],
+  cancelled: [],
+};
+
+const getAvailableStatuses = (currentStatus) => {
+  const current = (currentStatus || "").toLowerCase();
+  const nextList = FORWARD_STATUS_MAP[current] || [];
+  return Array.from(new Set([current, ...nextList]));
+};
+
+const isTerminalStatus = (status) => {
+  const s = (status || "").toLowerCase();
+  return s === "delivered" || s === "cancelled";
+};
+
+const STATUS_LABELS = {
+  new: "New",
+  pending: "Pending",
+  confirmed: "Confirmed",
+  preparing: "Preparing",
+  prepared: "Prepared",
+  ready: "Ready",
+  assigned: "Assigned",
+  picked_up: "Picked Up",
+  on_the_way: "On The Way",
+  out_for_delivery: "Out For Delivery",
+  delivered: "Delivered",
+  cancelled: "Cancelled",
+};
+
 const css = `
 .ov-container {
   display: flex;
@@ -674,15 +715,19 @@ export default function OrdersView() {
                       <td>
                         <select
                           className="ov-status-select"
+                          disabled={isTerminalStatus(o.status)}
                           value={o.status}
                           onChange={(e) => handleUpdateOrderStatus(o.id, e.target.value)}
+                          style={{
+                            opacity: isTerminalStatus(o.status) ? 0.6 : 1,
+                            cursor: isTerminalStatus(o.status) ? "not-allowed" : "pointer",
+                          }}
                         >
-                          <option value="new">New</option>
-                          <option value="confirmed">Confirmed</option>
-                          <option value="preparing">Preparing</option>
-                          <option value="ready">Ready</option>
-                          <option value="delivered">Delivered</option>
-                          <option value="cancelled">Cancelled</option>
+                          {getAvailableStatuses(o.status).map((s) => (
+                            <option key={s} value={s}>
+                              {STATUS_LABELS[s] || s.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase())}
+                            </option>
+                          ))}
                         </select>
                       </td>
                       <td>

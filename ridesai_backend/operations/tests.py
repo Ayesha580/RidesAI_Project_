@@ -544,6 +544,15 @@ class DashboardAPITests(TestCase):
             status="active",
             is_approved=True,
         )
+        self.user = User.objects.create_user(
+            username="dash_owner",
+            password="Password123!",
+            email="dash_owner@example.com",
+            company=self.company,
+            role=User.ROLE_OWNER,
+        )
+        self.client.force_authenticate(user=self.user)
+
         self.conv = AgentConversation.objects.create(
             company=self.company,
             customer_name="Test Customer",
@@ -639,6 +648,28 @@ class DashboardAPITests(TestCase):
         self.order.refresh_from_db()
         self.assertEqual(self.order.status, "confirmed")
         self.assertTrue(OrderEvent.objects.filter(order=self.order, to_status="confirmed").exists())
+
+    def test_dashboard_endpoints_reject_unauthenticated_requests(self):
+        unauth_client = APIClient()
+        # 1. Orders list
+        resp = unauth_client.get("/api/dashboard/orders/")
+        self.assertEqual(resp.status_code, 401)
+
+        # 2. Conversations list
+        resp = unauth_client.get("/api/dashboard/conversations/")
+        self.assertEqual(resp.status_code, 401)
+
+        # 3. Order status patch
+        resp = unauth_client.patch(f"/api/dashboard/orders/{self.order.id}/status/", {"status": "confirmed"})
+        self.assertEqual(resp.status_code, 401)
+
+        # 4. Authenticated user without company gets 403 Forbidden
+        user_no_co = User.objects.create_user(username="orphan", password="Password123!", company=None)
+        client_no_co = APIClient()
+        client_no_co.force_authenticate(user=user_no_co)
+        resp = client_no_co.get("/api/dashboard/orders/")
+        self.assertEqual(resp.status_code, 403)
+        self.assertIn("User has no associated company.", resp.data.get("detail", ""))
 
 
 class WhatsAppVoiceAndWebhookTests(TestCase):
@@ -2295,6 +2326,241 @@ class EvolutionAPIIntegrationTests(TestCase):
         self.assertTrue(result["success"])
         mock_transcribe.assert_called_once_with(b"OGG_RAW_BYTES_TEST", filename="audio.ogg")
         mock_reply.assert_called_once()
+
+
+class Sprint1SharedCoreTests(TestCase):
+    def setUp(self):
+        self.client = APIClient()
+        self.company_restaurant = Company.objects.create(
+            name="Sprint1 Gourmet",
+            business_type="restaurant",
+            status="active",
+            is_approved=True,
+            whatsapp_instance_name="sprint1_rest_evo",
+        )
+        self.company_pharmacy = Company.objects.create(
+            name="Sprint1 Pharmacy",
+            business_type="pharmacy",
+            status="active",
+            is_approved=True,
+            whatsapp_instance_name="sprint1_pharma_evo",
+        )
+        self.company_clinic = Company.objects.create(
+            name="Sprint1 Clinic",
+            business_type="clinic",
+            status="active",
+            is_approved=True,
+            whatsapp_instance_name="sprint1_clinic_evo",
+        )
+        self.company_retail = Company.objects.create(
+            name="Sprint1 Mart",
+            business_type="retail",
+            status="active",
+            is_approved=True,
+            whatsapp_instance_name="sprint1_retail_evo",
+        )
+
+        self.owner = User.objects.create_user(
+            username="sprint1_owner",
+            password="Password123!",
+            company=self.company_restaurant,
+            role=User.ROLE_OWNER,
+        )
+
+    def test_category_aware_system_prompt_and_tools(self):
+        from operations.whatsapp_agent import (
+            _build_system_prompt,
+            get_category_agent_config,
+            TOOL_CREATE_ORDER,
+            TOOL_GET_CATALOG_ITEMS,
+            TOOL_CHECK_ORDER_STATUS,
+        )
+
+        # 1. Restaurant config & prompt
+        rest_cfg = get_category_agent_config("restaurant")
+        self.assertIn(TOOL_CREATE_ORDER, rest_cfg["tools"])
+        prompt_rest = _build_system_prompt("Ali", {"business_name": "Sprint1 Gourmet", "business_type": "restaurant"})
+        self.assertIn("food ordering", prompt_rest.lower())
+        self.assertIn("FOOD MENU & AVAILABLE DISHES", prompt_rest)
+        self.assertIn("GLOBAL HEALTH & DIETARY GUARDRAILS", prompt_rest)
+        self.assertIn("Never diagnose medical conditions", prompt_rest)
+
+        # 2. Pharmacy config & prompt
+        pharma_cfg = get_category_agent_config("pharmacy")
+        self.assertIn(TOOL_CREATE_ORDER, pharma_cfg["tools"])
+        prompt_pharma = _build_system_prompt("Sarah", {"business_name": "Sprint1 Pharmacy", "business_type": "pharmacy"})
+        self.assertIn("pharmacy assistant", prompt_pharma.lower())
+        self.assertIn("MEDICINES & HEALTHCARE PRODUCTS", prompt_pharma)
+        self.assertIn("prescription", prompt_pharma.lower())
+        self.assertIn("GLOBAL HEALTH & DIETARY GUARDRAILS", prompt_pharma)
+
+        # 3. Clinic config & prompt (create_order must NOT be in active tools)
+        clinic_cfg = get_category_agent_config("clinic")
+        self.assertNotIn(TOOL_CREATE_ORDER, clinic_cfg["tools"])
+        self.assertIn(TOOL_GET_CATALOG_ITEMS, clinic_cfg["tools"])
+        self.assertIn(TOOL_CHECK_ORDER_STATUS, clinic_cfg["tools"])
+        prompt_clinic = _build_system_prompt("Dr. Patient", {"business_name": "Sprint1 Clinic", "business_type": "clinic"})
+        self.assertIn("clinic appointment desk", prompt_clinic.lower())
+        self.assertIn("CLINICAL SERVICES & SPECIALTIES", prompt_clinic)
+        self.assertIn("GLOBAL HEALTH & DIETARY GUARDRAILS", prompt_clinic)
+
+        # 4. Retail config & prompt
+        retail_cfg = get_category_agent_config("retail")
+        self.assertIn(TOOL_CREATE_ORDER, retail_cfg["tools"])
+        prompt_retail = _build_system_prompt("Usman", {"business_name": "Sprint1 Mart", "business_type": "retail"})
+        self.assertIn("retail store assistant", prompt_retail.lower())
+        self.assertIn("STORE CATALOG & INVENTORY", prompt_retail)
+
+    @patch("operations.evolution_client.send_text_message")
+    def test_order_status_change_dispatches_whatsapp_notification(self, mock_evo_send):
+        mock_evo_send.return_value = {"status": "SUCCESS"}
+
+        order = Order.objects.create(
+            company=self.company_restaurant,
+            customer_name="Kamran",
+            customer_phone="+923001112233",
+            delivery_address="D-Ground, Faisalabad",
+            status=Order.STATUS_NEW,
+            subtotal=Decimal("850.00"),
+            total=Decimal("850.00"),
+            source="agent",
+        )
+
+        self.client.force_authenticate(user=self.owner)
+
+        # 1. Update from Dashboard: NEW -> CONFIRMED
+        resp = self.client.patch(
+            f"/api/dashboard/orders/{order.id}/status/",
+            {"status": "confirmed", "note": "Kitchen accepted"},
+            format="json",
+        )
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(mock_evo_send.call_count, 1)
+        args, kwargs = mock_evo_send.call_args
+        self.assertEqual(kwargs["instance_name"], "sprint1_rest_evo")
+        self.assertIn("923001112233", kwargs["to"])
+        self.assertIn("Order Confirmed", kwargs["text"])
+
+        # 2. Idempotent check: same status does NOT dispatch duplicate message
+        mock_evo_send.reset_mock()
+        from operations.notifications import send_order_status_notification
+        order.refresh_from_db()
+        dispatched = send_order_status_notification(order, previous_status="confirmed", new_status="confirmed")
+        self.assertFalse(dispatched)
+        mock_evo_send.assert_not_called()
+
+        # 3. Advance status: CONFIRMED -> PREPARING
+        dispatched = send_order_status_notification(order, previous_status="confirmed", new_status="preparing")
+        self.assertTrue(dispatched)
+        self.assertEqual(mock_evo_send.call_count, 1)
+        args, kwargs = mock_evo_send.call_args
+        self.assertIn("Order In Preparation", kwargs["text"])
+
+        # 4. Advance status: PREPARING -> DELIVERED
+        mock_evo_send.reset_mock()
+        dispatched = send_order_status_notification(order, previous_status="preparing", new_status="delivered")
+        self.assertTrue(dispatched)
+        self.assertEqual(mock_evo_send.call_count, 1)
+        args, kwargs = mock_evo_send.call_args
+        self.assertIn("Order Delivered", kwargs["text"])
+
+    @patch("operations.evolution_client.send_text_message")
+    def test_order_status_rejects_backward_transitions(self, mock_evo_send):
+        """
+        Verify backward transitions (ready -> new, delivered -> preparing) return 400 Bad Request
+        and trigger zero WhatsApp notifications.
+        """
+        order = Order.objects.create(
+            company=self.company_restaurant,
+            customer_name="Backward Test",
+            customer_phone="03090139836",
+            delivery_address="Faisalabad",
+            status=Order.STATUS_READY,
+            subtotal=Decimal("500.00"),
+            total=Decimal("500.00"),
+        )
+        self.client.force_authenticate(user=self.owner)
+
+        # 1. Attempt invalid backward transition from Dashboard: ready -> new
+        resp = self.client.patch(
+            f"/api/dashboard/orders/{order.id}/status/",
+            {"status": "new"},
+            format="json",
+        )
+        self.assertEqual(resp.status_code, 400)
+        self.assertIn("Invalid status transition", resp.data.get("error", ""))
+        order.refresh_from_db()
+        self.assertEqual(order.status, Order.STATUS_READY)
+        mock_evo_send.assert_not_called()
+
+        # 2. Advance to terminal state 'delivered'
+        resp = self.client.patch(
+            f"/api/dashboard/orders/{order.id}/status/",
+            {"status": "delivered"},
+            format="json",
+        )
+        self.assertEqual(resp.status_code, 200)
+        order.refresh_from_db()
+        self.assertEqual(order.status, Order.STATUS_DELIVERED)
+        self.assertEqual(mock_evo_send.call_count, 1)
+
+        # 3. Attempt invalid transition from terminal state: delivered -> preparing
+        mock_evo_send.reset_mock()
+        resp = self.client.patch(
+            f"/api/dashboard/orders/{order.id}/status/",
+            {"status": "preparing"},
+            format="json",
+        )
+        self.assertEqual(resp.status_code, 400)
+        self.assertIn("Invalid status transition", resp.data.get("error", ""))
+        order.refresh_from_db()
+        self.assertEqual(order.status, Order.STATUS_DELIVERED)
+        mock_evo_send.assert_not_called()
+
+    @patch("operations.evolution_client.send_text_message")
+    def test_notification_normalizes_local_phone_and_handles_ready_prepared(self, mock_evo_send):
+        """
+        Verify local 03xx phone numbers are normalized to 923xxxxxxxxx and ready/prepared
+        statuses produce proper customer WhatsApp messages.
+        """
+        mock_evo_send.return_value = {"status": "SUCCESS"}
+        from operations.notifications import normalize_pakistan_phone, send_order_status_notification
+
+        # Phone normalization unit tests
+        self.assertEqual(normalize_pakistan_phone("03090139836"), "923090139836")
+        self.assertEqual(normalize_pakistan_phone("+923090139836"), "923090139836")
+        self.assertEqual(normalize_pakistan_phone("+92 309 0139836"), "923090139836")
+        self.assertEqual(normalize_pakistan_phone("00923090139836"), "923090139836")
+        self.assertEqual(normalize_pakistan_phone("3090139836"), "923090139836")
+
+        order = Order.objects.create(
+            company=self.company_restaurant,
+            customer_name="Local Phone Test",
+            customer_phone="03090139836",
+            delivery_address="Faisalabad",
+            status=Order.STATUS_CONFIRMED,
+            subtotal=Decimal("600.00"),
+            total=Decimal("600.00"),
+        )
+
+        # Dispatch 'ready' notification
+        dispatched = send_order_status_notification(order, previous_status="preparing", new_status="ready")
+        self.assertTrue(dispatched)
+        self.assertEqual(mock_evo_send.call_count, 1)
+        args, kwargs = mock_evo_send.call_args
+        self.assertEqual(kwargs["to"], "923090139836")
+        self.assertIn("Order Ready", kwargs["text"])
+
+        # Dispatch 'prepared' notification
+        mock_evo_send.reset_mock()
+        dispatched = send_order_status_notification(order, previous_status="preparing", new_status="prepared")
+        self.assertTrue(dispatched)
+        self.assertEqual(mock_evo_send.call_count, 1)
+        args, kwargs = mock_evo_send.call_args
+        self.assertEqual(kwargs["to"], "923090139836")
+        self.assertIn("Order Ready", kwargs["text"])
+
+
 
 
 

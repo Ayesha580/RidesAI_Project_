@@ -24,6 +24,7 @@ from accounts.business_permissions import HasBusinessPermission
 from companies.models import CatalogItem, Inventory, StockMovement
 from .models import (Order, OrderItem, DeliveryAssignment, OrderEvent,
                      AgentConversation, AgentMessage, AgentActionLog)
+from .order_state import is_valid_order_transition, ALLOWED_ORDER_TRANSITIONS
 from .whatsapp_storage import (get_whatsapp_config, save_whatsapp_config,
                                is_valid_verify_token, get_config_by_phone_number_id)
 from .whatsapp_service import WhatsAppService, send_whatsapp_message
@@ -32,21 +33,11 @@ from .whatsapp_agent import process_incoming_whatsapp_message
 logger = logging.getLogger(__name__)
 
 
-ORDER_TRANSITIONS = {
-    Order.STATUS_NEW: {Order.STATUS_CONFIRMED, Order.STATUS_CANCELLED},
-    Order.STATUS_CONFIRMED: {Order.STATUS_PREPARING, Order.STATUS_CANCELLED},
-    Order.STATUS_PREPARING: {Order.STATUS_READY, Order.STATUS_CANCELLED},
-    Order.STATUS_READY: {Order.STATUS_ASSIGNED, Order.STATUS_CANCELLED},
-    Order.STATUS_ASSIGNED: {Order.STATUS_PICKED_UP, Order.STATUS_CANCELLED},
-    Order.STATUS_PICKED_UP: {Order.STATUS_ON_THE_WAY},
-    Order.STATUS_ON_THE_WAY: {Order.STATUS_DELIVERED},
-    Order.STATUS_DELIVERED: set(),
-    Order.STATUS_CANCELLED: set(),
-}
+ORDER_TRANSITIONS = ALLOWED_ORDER_TRANSITIONS
 
 
 def _valid_order_transition(current, next_status):
-    return next_status in ORDER_TRANSITIONS.get(current, set())
+    return is_valid_order_transition(current, next_status)
 
 
 class BusinessAPIView(APIView):
@@ -227,6 +218,7 @@ class OrderStatusAPIView(BusinessAPIView):
                 return Response({"detail": "Your role cannot update this order."}, status=403)
             if not _valid_order_transition(order.status, next_status):
                 return Response({
+                    "error": f"Invalid status transition from '{order.status}' to '{next_status}'.",
                     "detail": f"Invalid order transition from {order.status} to {next_status}."
                 }, status=409)
         previous = order.status
@@ -236,6 +228,15 @@ class OrderStatusAPIView(BusinessAPIView):
         OrderEvent.objects.create(company=self.company, order=order, actor=request.user,
             event_type="status_changed", from_status=previous, to_status=next_status,
             note=str(request.data.get("note", "")))
+
+        from operations.notifications import send_order_status_notification
+        send_order_status_notification(
+            order=order,
+            previous_status=previous,
+            new_status=next_status,
+            reason=request.data.get("note"),
+        )
+
         return Response(_order_payload(order))
 
 
