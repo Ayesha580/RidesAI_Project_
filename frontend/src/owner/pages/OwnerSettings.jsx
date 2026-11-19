@@ -3,9 +3,11 @@ import OwnerLayout from "../components/OwnerLayout";
 import { useAuth } from "../../context/AuthContext";
 import ProfileTab from "./settings/ProfileTab";
 import BillingTab from "./settings/BillingTab";
+import WhatsAppConnectCard from "./settings/WhatsAppConnectCard";
 
 const TABS = [
   { id: "profile", icon: "👤", label: "Profile" },
+  { id: "whatsapp", icon: "💬", label: "WhatsApp AI" },
   { id: "billing", icon: "💳", label: "Billing" },
 ];
 
@@ -120,6 +122,11 @@ export default function OwnerSettings() {
       </div>
 
       {tab === "profile" && <ProfileTab />}
+      {tab === "whatsapp" && (
+        <div style={{ maxWidth: 720 }}>
+          <WhatsAppConnectCard />
+        </div>
+      )}
       {tab === "billing" && <BillingTab suspended={locked} />}
     </OwnerLayout>
   );

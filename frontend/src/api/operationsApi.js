@@ -15,6 +15,8 @@ export const operationsApi = {
   chat: (data) => api.post("/operations/agent/chat/", data),
   conversations: () => api.get("/operations/agent/conversations/"),
   updateConversation: (data) => api.patch("/operations/agent/conversations/", data),
+  whatsappConnectStatus: () => api.get("/operations/whatsapp/connect/"),
+  whatsappConnectGenerate: () => api.post("/operations/whatsapp/connect/"),
 };
 
 export const dashboardApi = {

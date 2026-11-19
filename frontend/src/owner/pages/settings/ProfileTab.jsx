@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { errorText } from "../../../api/axiosClient";
 import { profileApi } from "../../../api/profileApi";
 import { useAuth } from "../../../context/AuthContext";
+import WhatsAppConnectCard from "./WhatsAppConnectCard";
 
 const EMPTY_PW = { current_password: "", new_password: "", confirm: "" };
 
@@ -109,6 +110,8 @@ export default function ProfileTab() {
           <button className="ad-btn ad-btn-primary" disabled={saving}>{saving ? "Saving..." : "Save changes"}</button>
         </div>
       </form>
+
+      <WhatsAppConnectCard />
 
       <form className="se-card" onSubmit={savePassword}>
         <h3>Change password</h3>
