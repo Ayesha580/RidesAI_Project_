@@ -317,8 +317,8 @@ def execute_create_order(
             "customer_name": order.customer_name,
             "delivery_address": order.delivery_address,
             "items": created_items_summary,
-            "subtotal": f"${subtotal:.2f}",
-            "total": f"${order.total:.2f}",
+            "subtotal": f"Rs. {subtotal:.2f}",
+            "total": f"Rs. {order.total:.2f}",
             "estimated_delivery_time": "30-45 minutes",
         }
 
@@ -360,7 +360,7 @@ def execute_check_order_status(
                 "order_number": o.order_number,
                 "status": o.status,
                 "status_display": o.get_status_display(),
-                "total": f"${o.total:.2f}",
+                "total": f"Rs. {o.total:.2f}",
                 "delivery_address": o.delivery_address,
                 "created_at": o.created_at.strftime("%Y-%m-%d %I:%M %p"),
                 "items": [f"{it.quantity}x {it.item_name}" for it in o.items.all()],
@@ -424,6 +424,14 @@ def get_business_context_for_company(company: Optional[Company]) -> Dict[str, An
             .values("day_of_week", "opens_at", "closes_at", "is_closed")
         )
         context["hours"] = hours
+
+        # Fetch active delivery service areas / zones
+        zones = []
+        try:
+            zones = list(company.service_areas.filter(is_active=True).values_list("city", flat=True))
+        except Exception:
+            pass
+        context["delivery_zones"] = [z for z in zones if z]
     except Exception as e:
         logger.warning(f"[WhatsApp Agent] Could not load DB business context for company {company.id}: {e}", exc_info=True)
 
@@ -467,7 +475,12 @@ def _get_business_context(phone_number_id: str) -> Dict[str, Any]:
         return get_business_context_for_company(None)
 
 
-def _build_system_prompt(customer_name: str, context: Dict[str, Any]) -> str:
+def _build_system_prompt(
+    customer_name: str,
+    context: Dict[str, Any],
+    is_voice_note: bool = False,
+    has_prior_history: bool = False,
+) -> str:
     """
     Constructs a detailed grounding system prompt for the LLM using tenant metadata,
     catalog items, operating hours, business knowledge, and tool-calling directives.
@@ -477,11 +490,13 @@ def _build_system_prompt(customer_name: str, context: Dict[str, Any]) -> str:
     tone = context.get("tone") or "friendly and helpful"
     phone = context.get("phone") or "our support team"
     address = context.get("address") or "our store location"
+    delivery_zones_list = context.get("delivery_zones", [])
+    delivery_zones_str = ", ".join(delivery_zones_list) if delivery_zones_list else (address or "our local delivery area")
 
     # Format catalog items
     catalog_lines = []
     for item in context.get("catalog", []):
-        price = f"${float(item['price']):.2f}" if item.get("price") else "Price on request"
+        price = f"Rs. {float(item['price']):.2f}" if item.get("price") else "Price on request"
         desc = f" - {item['description']}" if item.get("description") else ""
         catalog_lines.append(f"• {item['name']}: {price}{desc}")
     
@@ -512,6 +527,34 @@ def _build_system_prompt(customer_name: str, context: Dict[str, Any]) -> str:
             hours_lines.append(f"• {day}: {h.get('opens_at')} - {h.get('closes_at')}")
     hours_str = "\n".join(hours_lines) if hours_lines else "• Monday - Sunday: 9:00 AM - 10:00 PM"
 
+    voice_mode_instruction = ""
+    voice_end_reminder = ""
+    if is_voice_note:
+        voice_mode_instruction = (
+            "\nCRITICAL VOICE NOTE INSTRUCTION (INCOMING AUDIO MESSAGE):\n"
+            "- The customer communicated via VOICE NOTE.\n"
+            "- CRITICAL VOICE RULE: Your reply will be spoken aloud by an English TTS engine. "
+            "You MUST reply strictly in simple, plain English ONLY (no Urdu script, no Hindi, no Roman Urdu). "
+            "Keep it under 2 short sentences.\n"
+            "- Example: 'Your order is 1 Zinger Burger for 650 rupees, 1 Fries for 250 rupees, and 1 Cold Drink for 150 rupees. "
+            "Total is 1050 rupees for delivery to Peoples Colony Faisalabad. Should I confirm your order?'\n"
+            "- Do NOT use markdown symbols (*, _, #), bullet points, or complex words so the audio synthesis remains fluent.\n"
+        )
+        voice_end_reminder = (
+            "\nCRITICAL VOICE RULE: Your reply will be spoken aloud by an English TTS engine. "
+            "You MUST reply strictly in simple, plain English ONLY (no Urdu script, no Hindi, no Roman Urdu). "
+            "Keep it under 2 short sentences.\n"
+        )
+
+    history_mode_instruction = ""
+    if has_prior_history:
+        history_mode_instruction = (
+            "\nACTIVE CONVERSATION INSTRUCTION:\n"
+            "- An active conversation is ALREADY IN PROGRESS with this customer. Previous messages are in context above.\n"
+            "- NEVER start your reply with a welcome greeting ('Welcome to...') or introductory pleasantries.\n"
+            "- Continue the conversation directly and fulfill their confirmation or query without resetting.\n"
+        )
+
     return f"""You are the official AI Assistant for {biz_name} on WhatsApp.
 Your primary role is to assist customers with our menu/catalog, take orders directly into our database via tools, and provide operating hours and store information.
 
@@ -520,6 +563,7 @@ BUSINESS DETAILS:
 - Brand Voice / Tone: {tone}
 - Default Greeting: {greeting}
 - Store Address: {address}
+- Delivery Zones / Service Areas: {delivery_zones_str}
 - Support Phone: {phone}
 - Customer Name: {customer_name}
 
@@ -531,29 +575,35 @@ AVAILABLE MENU / CATALOG ITEMS:
 
 FREQUENTLY ASKED QUESTIONS & POLICIES:
 {kb_str}
+{history_mode_instruction}
+{voice_mode_instruction}
 
 STRICT TOOL CALLING RULES:
 1. Tool `get_catalog_items`:
    - Use when the customer asks what you sell, asks to see the menu, asks for prices, or searches for a product.
 2. Tool `create_order`:
    - Use ONLY when the customer has specified what they want to order AND provided their delivery address.
-   - If the customer lists items to order but has NOT provided an address yet: do NOT call `create_order`. Instead, list their selected items with prices, calculate the total, and ask them: "Please provide your delivery address to confirm and place your order."
-   - Once the delivery address is provided, immediately call `create_order`.
-   - After `create_order` succeeds, provide a cheerful confirmation containing the *order number*, items, total, and estimated delivery time (30-45 mins).
+   - If the customer lists items to order but has NOT provided an address yet: do NOT call `create_order`. Instead, list their selected items with prices in Rs., calculate the total in Rs., and ask them: "Please provide your delivery address to confirm and place your order."
+   - If items and address are already discussed, ask the customer for final confirmation or confirm the order.
+   - When the customer confirms (e.g., 'hanjee', 'hanjee krden', 'ji kar dein', 'haan', 'done', 'ok', 'confirm', 'yes', 'bhej do'): IMMEDIATELY call `create_order` using the items and address from the conversation history, and return the confirmation.
+   - After `create_order` succeeds, provide a cheerful confirmation containing the *order number*, items, total in Pakistani Rupees (e.g., *Total:* Rs. 850.00), and estimated delivery time (30-45 mins).
 3. Tool `check_order_status`:
    - Use when the customer asks about order status, tracking, or previous orders.
 
-STRICT CONVERSATIONAL RULES:
+STRICT CONVERSATIONAL & LOCALIZATION RULES:
+- CURRENCY RULE: Always quote all prices in Pakistani Rupees using `Rs.` (never use `$` or dollars). When speaking in voice mode, speak naturally as 'rupees' (e.g., '850 rupees').
+- FORBIDDEN HINDI VOCABULARY: Under NO circumstances use formal Hindi words (strictly FORBIDDEN: 'kripya', 'pushti', 'dhanyavaad', 'namaste', 'aabhar', 'kripya pushti karein'). Use natural Pakistani Roman Urdu (e.g. 'shukriya', 'theek hai', 'order confirm kar diya hai', 'bhej dein') or clear English.
+- CONFIRMATION UNDERSTANDING: Understand Pakistani Roman Urdu confirmations such as 'hanjee', 'hanjee krden', 'ji kar dein', 'haan', 'done', 'ok', 'confirm', 'bhej do', 'yes' as YES to the previous order summary—immediately call the order placement tool (`create_order`) and confirm the order. NEVER reply with a welcome greeting if a conversation is already in progress.
 - Under NO circumstances provide financial advice, programming code, political commentary, or general trivia. Politely decline and bring the conversation back to {biz_name}.
 - Keep replies concise, natural, and formatted nicely for WhatsApp (*bold* for highlights/order numbers, clear line breaks, and emojis).
 - Ground all facts strictly in the business context and tool outputs above. Never invent prices or items that do not exist in the store catalog.
 
 CRITICAL COST-SAVING RULES:
 - You are a voice-first agent. Humans do not want to listen to long monologues.
-- NEVER use filler words, introductory pleasantries, or formatting like markdown/bullet points.
 - Answer in strictly 1 to 2 short sentences. Maximum 20 words per response.
+- NEVER use filler words, introductory pleasantries, or formatting like markdown/bullet points.
 - Be highly direct and concise.
-"""
+{voice_end_reminder}"""
 
 
 def _build_fallback_reply(message_text: str, customer_name: str, context: Dict[str, Any]) -> str:
@@ -562,9 +612,12 @@ def _build_fallback_reply(message_text: str, customer_name: str, context: Dict[s
     """
     biz_name = context.get("business_name") or "our store"
     phone = context.get("phone")
-    greeting = context.get("greeting") or f"Hello {customer_name}! Welcome to *{biz_name}*."
     support_line = f"\n\nFor immediate assistance, please call us directly at *{phone}*." if phone else ""
 
+    if context.get("has_prior_history"):
+        return f"Thank you! We received your message: '_{message_text}_'. Our team will assist you shortly.{support_line}"
+
+    greeting = context.get("greeting") or f"Hello {customer_name}! Welcome to *{biz_name}*."
     return (
         f"{greeting}\n\n"
         f"Thank you for contacting *{biz_name}*! We have received your message:\n"
@@ -625,15 +678,17 @@ def _generate_agent_reply(
     customer_name: Any = "Valued Customer",
     context: Any = None,
     sender_phone: str = "",
+    is_voice_note: bool = False,
 ) -> str:
     """
     Generates a dynamic response using OpenAI's gpt-4o-mini model with full tool calling:
-    1. Sends user message with registered tools (get_catalog_items, create_order, check_order_status).
-    2. If the LLM requests tool execution, executes the function with multi-tenant isolation.
-    3. Feeds tool outputs back into the conversation for a second pass to produce natural confirmation.
+    1. Loads recent conversation history from AgentConversation / AgentMessage to maintain multi-turn memory.
+    2. Sends user message with registered tools (get_catalog_items, create_order, check_order_status).
+    3. If the LLM requests tool execution, executes the function with multi-tenant isolation.
+    4. Feeds tool outputs back into the conversation for a second pass to produce natural confirmation.
 
     Supports both standard call:
-        _generate_agent_reply(message_text, customer_name, context, sender_phone)
+        _generate_agent_reply(message_text, customer_name, context, sender_phone, is_voice_note)
     and test / convenience call:
         _generate_agent_reply(company, sender_phone, message_text)
     """
@@ -659,20 +714,59 @@ def _generate_agent_reply(
     if not company:
         return _build_fallback_reply(message_text, customer_name, context)
 
+    # Multi-turn memory: Load recent conversation history (last 10 messages from past 24 hours)
+    history_messages: List[Dict[str, str]] = []
+    has_prior_history = False
+    if company and sender_phone:
+        try:
+            from operations.models import AgentConversation
+            from datetime import timedelta
+            conv = AgentConversation.objects.filter(company=company, customer_phone=sender_phone).last()
+            if conv:
+                recent_msgs = list(
+                    conv.messages.filter(created_at__gte=timezone.now() - timedelta(hours=24))
+                    .order_by("-created_at")[:10]
+                )
+                recent_msgs.reverse()
+                for m in recent_msgs:
+                    role = "assistant" if m.role == "assistant" else "user"
+                    content_str = (m.content or "").strip()
+                    if content_str:
+                        history_messages.append({"role": role, "content": content_str})
+                if history_messages:
+                    has_prior_history = True
+        except Exception as e:
+            logger.warning(f"[WhatsApp Agent] Could not load conversation history: {e}")
+
+    context["has_prior_history"] = has_prior_history
+
     api_key = getattr(settings, "OPENAI_API_KEY", "") or os.environ.get("OPENAI_API_KEY", "")
     model = getattr(settings, "OPENAI_MODEL", "gpt-4o-mini")
 
     if api_key and len(api_key.strip()) > 10:
         try:
             client = OpenAI(api_key=api_key.strip(), timeout=25.0)
-            system_prompt = _build_system_prompt(customer_name, context)
+            system_prompt = _build_system_prompt(
+                customer_name=customer_name,
+                context=context,
+                is_voice_note=is_voice_note,
+                has_prior_history=has_prior_history,
+            )
 
-            messages: List[Dict[str, Any]] = [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": message_text},
-            ]
+            messages: List[Dict[str, Any]] = [{"role": "system", "content": system_prompt}]
+            messages.extend(history_messages)
+            if is_voice_note:
+                messages.append({
+                    "role": "system",
+                    "content": (
+                        "CRITICAL VOICE RULE: Your reply will be spoken aloud by an English TTS engine. "
+                        "You MUST reply strictly in simple, plain English ONLY (no Urdu script, no Hindi, no Roman Urdu). "
+                        "Keep it under 2 short sentences."
+                    ),
+                })
+            messages.append({"role": "user", "content": message_text})
 
-            llm_max_tokens = int(getattr(settings, "OPENAI_MAX_TOKENS", 50))
+            llm_max_tokens = int(getattr(settings, "OPENAI_MAX_TOKENS", 200))
             response = client.chat.completions.create(
                 model=model,
                 messages=messages,
@@ -730,6 +824,16 @@ def _generate_agent_reply(
                         "content": json.dumps(tool_result),
                     })
 
+                if is_voice_note:
+                    messages.append({
+                        "role": "system",
+                        "content": (
+                            "CRITICAL VOICE RULE: Your reply will be spoken aloud by an English TTS engine. "
+                            "You MUST reply strictly in simple, plain English ONLY (no Urdu script, no Hindi, no Roman Urdu). "
+                            "Keep it under 2 short sentences."
+                        ),
+                    })
+
                 # Second completion pass to generate customer-facing response based on tool results
                 second_response = client.chat.completions.create(
                     model=model,
@@ -740,12 +844,12 @@ def _generate_agent_reply(
                 final_content = second_response.choices[0].message.content
                 if final_content and final_content.strip():
                     reply = final_content.strip()
-                    record_conversation_turn(company, sender_phone, customer_name, message_text, reply)
+                    record_conversation_turn(company, sender_phone, customer_name, message_text, reply, is_voice=is_voice_note)
                     return reply
 
             elif response_msg.content and response_msg.content.strip():
                 reply = response_msg.content.strip()
-                record_conversation_turn(company, sender_phone, customer_name, message_text, reply)
+                record_conversation_turn(company, sender_phone, customer_name, message_text, reply, is_voice=is_voice_note)
                 return reply
 
         except Exception as e:
@@ -754,7 +858,7 @@ def _generate_agent_reply(
 
     # Fallback when OpenAI key is missing, invalid, or request fails
     fallback_reply = _build_fallback_reply(message_text, customer_name, context)
-    record_conversation_turn(company, sender_phone, customer_name, message_text, fallback_reply)
+    record_conversation_turn(company, sender_phone, customer_name, message_text, fallback_reply, is_voice=is_voice_note)
     return fallback_reply
 
 
@@ -914,12 +1018,13 @@ def process_incoming_whatsapp_message(
     media_id: Optional[str] = None,
     msg_type: str = "text",
     company: Optional[Company] = None,
+    audio_bytes: Optional[bytes] = None,
 ) -> Dict[str, Any]:
     """
     Main background entrypoint for processing an incoming WhatsApp customer message:
     1. Multi-Tenant Guard: Validates that destination phone_number_id belongs to a registered company.
     2. Voice/Text Rate Limit & Cost Guard: Checks customer usage against daily quotas.
-    3. Voice Input (STT): If audio note (.ogg), downloads via Meta Graph API and transcribes via Groq/Whisper.
+    3. Voice Input (STT): If audio note (.ogg), downloads via Meta Graph API or uses provided audio_bytes, and transcribes via Groq/Whisper.
     4. Tool-Calling Agent: Runs LLM with dynamic tool calling (get_catalog_items, create_order, check_order_status).
     5. Voice Output (TTS): If customer sent audio, synthesizes speech and uploads via Meta API or Evolution API.
     6. Dispatches reply via Evolution API (if instance configured) or Meta Cloud API using WhatsAppService.
@@ -952,7 +1057,7 @@ def process_incoming_whatsapp_message(
             }
 
         # Step 2: Audio / Voice Message Cost & Rate Limiting Check
-        is_voice_message = (msg_type == "audio" or bool(media_id))
+        is_voice_message = (msg_type == "audio" or bool(media_id) or bool(audio_bytes))
         if is_voice_message:
             company_obj = context.get("company")
             allowed, limit_msg, customer = check_and_enforce_voice_limit(
@@ -974,12 +1079,23 @@ def process_incoming_whatsapp_message(
                     "dispatch_result": dispatch_res,
                 }
 
-            if media_id:
+            if audio_bytes:
+                logger.info(f"[WhatsApp Voice Agent] Transcribing provided audio bytes ({len(audio_bytes)} bytes) for {sender_phone}...")
+                print(f"[WhatsApp Voice Agent] Transcribing provided voice note ({len(audio_bytes)} bytes) for {sender_phone}...")
+                transcription = transcribe_audio(audio_bytes, filename="audio.ogg")
+                if transcription and transcription.strip():
+                    message_text = transcription.strip()
+                    logger.info(f"[WhatsApp Voice Agent] STT transcribed text: '{message_text}'")
+                    print(f"[WhatsApp Voice Agent STT] Customer voice note transcribed: '{message_text}'")
+                else:
+                    logger.warning("[WhatsApp Voice Agent] Voice transcription returned empty.")
+                    message_text = "I received your voice message but couldn't make out the words. Could you please send it again?"
+            elif media_id:
                 logger.info(f"[WhatsApp Voice Agent] Downloading audio media {media_id} for {sender_phone}...")
                 print(f"[WhatsApp Voice Agent] Received voice note from {sender_phone} (Media ID: {media_id}). Downloading...")
-                audio_bytes = service.download_media_file(media_id)
-                if audio_bytes:
-                    transcription = transcribe_audio(audio_bytes, filename="audio.ogg")
+                downloaded_audio = service.download_media_file(media_id)
+                if downloaded_audio:
+                    transcription = transcribe_audio(downloaded_audio, filename="audio.ogg")
                     if transcription and transcription.strip():
                         message_text = transcription.strip()
                         logger.info(f"[WhatsApp Voice Agent] STT transcribed text: '{message_text}'")
@@ -990,6 +1106,9 @@ def process_incoming_whatsapp_message(
                 else:
                     logger.error(f"[WhatsApp Voice Agent] Failed to download audio media {media_id}.")
                     message_text = "I received your voice note, but could not download the audio file. Please try sending your message again."
+            else:
+                logger.error(f"[WhatsApp Voice Agent] No audio bytes or valid media ID available for {sender_phone}. Skipping audio download.")
+                message_text = "I received your voice note, but could not process the audio file. Please send a text message instead."
         else:
             # Step 2b: Text Message Cost & Rate Limiting Check
             company_obj = context.get("company")
@@ -1032,6 +1151,7 @@ def process_incoming_whatsapp_message(
             customer_name=clean_name,
             context=context,
             sender_phone=sender_phone,
+            is_voice_note=is_voice_message,
         )
 
         # Step 4: Outbound WhatsApp dispatch (Multi-Tenant Routing: Evolution API or Meta Cloud API)
@@ -1044,7 +1164,10 @@ def process_incoming_whatsapp_message(
             logger.info(f"[WhatsApp Voice Agent] Customer sent voice note. Synthesizing voice reply for {sender_phone}...")
             print(f"[WhatsApp Voice Agent] Synthesizing TTS voice note for {sender_phone}...")
 
-            audio_bytes = synthesize_speech(reply_text)
+            from operations.audio_service import clean_text_for_tts
+            tts_text = clean_text_for_tts(reply_text)
+
+            audio_bytes = synthesize_speech(tts_text)
             if audio_bytes:
                 audio_res = _dispatch_whatsapp_audio(company=company_obj, phone=sender_phone, audio_bytes=audio_bytes, service=service)
                 if audio_res and audio_res.get("success"):
@@ -1072,15 +1195,6 @@ def process_incoming_whatsapp_message(
                         last_msg.save(update_fields=["metadata"])
             except Exception:
                 pass
-
-        logger.info(f"[WhatsApp Agent] Dispatch result for {sender_phone}: {dispatch_result.get('success')}")
-        return {
-            "success": dispatch_result.get("success", False),
-            "reply_text": reply_text,
-            "transcribed_text": message_text if is_voice_message else None,
-            "is_voice_response": is_voice_dispatched,
-            "dispatch_result": dispatch_result,
-        }
 
         logger.info(f"[WhatsApp Agent] Dispatch result for {sender_phone}: {dispatch_result.get('success')}")
         return {

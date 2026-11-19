@@ -91,9 +91,9 @@ def _seed_demo_conversations_if_empty(company: Company):
             "status": "bot",
             "messages": [
                 ("user", "Menu mein kya kya available hai aur prices kya hain?"),
-                ("assistant", f"Welcome to {company.name}! 😊\n\nHere's our menu:\n• Zinger Burger: $550.00\n• Crispy Fries: $220.00\n• Cold Drink: $120.00\n\nWhat can I get for you today?"),
+                ("assistant", f"Welcome to {company.name}! 😊\n\nHere's our menu:\n• Zinger Burger: Rs. 550.00\n• Crispy Fries: Rs. 220.00\n• Cold Drink: Rs. 120.00\n\nWhat can I get for you today?"),
                 ("user", "Mujhe 2 Zinger Burger aur 1 Crispy Fries bhej do, address House #45, Street 2, Johar Town, Lahore hai."),
-                ("assistant", "🎉 Your order has been successfully placed, Ali Khan!\n\n*Order Number:* *RA-261117-B81503C3*\n*Items:* 2x Zinger Burger, 1x Crispy Fries\n*Total:* $1320.00\n*Estimated Delivery:* 30-45 minutes. 🍔"),
+                ("assistant", "🎉 Your order has been successfully placed, Ali Khan!\n\n*Order Number:* *RA-261117-B81503C3*\n*Items:* 2x Zinger Burger, 1x Crispy Fries\n*Total:* Rs. 1320.00\n*Estimated Delivery:* 30-45 minutes. 🍔"),
             ]
         },
         {
@@ -102,9 +102,9 @@ def _seed_demo_conversations_if_empty(company: Company):
             "status": "bot",
             "messages": [
                 ("user", "Hi! Do you have any vegetarian or cheese burger options?"),
-                ("assistant", f"Hello Sarah! Welcome to {company.name}. We have delicious Crispy Fries ($220.00) and Cold Drinks ($120.00). Our main burger is the signature Zinger Burger. Would you like fries with that?"),
+                ("assistant", f"Hello Sarah! Welcome to {company.name}. We have delicious Crispy Fries (Rs. 220.00) and Cold Drinks (Rs. 120.00). Our main burger is the signature Zinger Burger. Would you like fries with that?"),
                 ("user", "Yes please! 2 large fries to Gulberg III, Main Market."),
-                ("assistant", "Excellent! Your order has been recorded for 2x Crispy Fries. Total: $440.00. We will dispatch it shortly! 🍟"),
+                ("assistant", "Excellent! Your order has been recorded for 2x Crispy Fries. Total: Rs. 440.00. We will dispatch it shortly! 🍟"),
             ]
         },
         {

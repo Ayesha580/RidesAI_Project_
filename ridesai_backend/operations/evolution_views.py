@@ -128,6 +128,10 @@ class EvolutionWebhookView(APIView):
                 company.whatsapp_connection_status = new_status
                 company.save(update_fields=["whatsapp_connection_status"])
 
+            # Auto-configure call rejection whenever session connects/opens
+            if new_status == "connected" or str(state).lower() == "open":
+                evolution_client.configure_instance_settings(instance)
+
             return Response(
                 {
                     "status": "updated",
@@ -159,12 +163,44 @@ class EvolutionWebhookView(APIView):
             msg_type = "text"
             media_id = None
             message_text = ""
+            audio_bytes = None
 
             # Check for audio / voice note
             if "audioMessage" in message_obj:
+                import base64
                 msg_type = "audio"
                 audio_obj = message_obj.get("audioMessage", {})
-                media_id = audio_obj.get("url") or audio_obj.get("id") or "evolution_voice_note"
+                media_id = None
+
+                # Check all three locations for inline base64:
+                # 1. data.get("message", {}).get("base64") (Evolution API v2 with WEBHOOK_BASE64=true)
+                # 2. data.get("base64")
+                # 3. audio_obj.get("base64")
+                raw_b64 = (
+                    data.get("message", {}).get("base64")
+                    or data.get("base64")
+                    or audio_obj.get("base64")
+                )
+                if raw_b64:
+                    try:
+                        if "," in str(raw_b64):
+                            raw_b64 = str(raw_b64).split(",", 1)[1]
+                        audio_bytes = base64.b64decode(raw_b64)
+                    except Exception as e:
+                        logger.warning(f"[Evolution Webhook] Failed to decode inline base64 audio: {e}")
+
+                # If not present inline, fetch decrypted base64 from Evolution API
+                if not audio_bytes:
+                    audio_bytes = evolution_client.get_media_base64(instance, data)
+
+                if not audio_bytes:
+                    logger.error(
+                        f"[Evolution Webhook ERROR] Failed to obtain decrypted audio bytes for instance '{instance}' "
+                        f"from customer {customer_phone}. Skipping Meta download fallback to prevent missing token errors."
+                    )
+                    media_id = None
+                else:
+                    media_id = "evolution_voice_note"
             else:
                 conversation = message_obj.get("conversation", "")
                 extended = message_obj.get("extendedTextMessage", {}).get("text", "")
@@ -172,7 +208,7 @@ class EvolutionWebhookView(APIView):
 
             logger.info(
                 f"[Evolution Webhook] Incoming message for '{company.name}' from {customer_phone} "
-                f"({customer_name}) | Type: {msg_type} | Text: '{message_text}'"
+                f"({customer_name}) | Type: {msg_type} | Text: '{message_text}' | Audio bytes: {len(audio_bytes) if audio_bytes else 0}"
             )
 
             # Route directly into the existing AI agent processing pipeline
@@ -185,6 +221,7 @@ class EvolutionWebhookView(APIView):
                     media_id=media_id,
                     msg_type=msg_type,
                     company=company,
+                    audio_bytes=audio_bytes,
                 )
                 return Response({"status": "processed", "result": agent_result}, status=200)
             except Exception as e:

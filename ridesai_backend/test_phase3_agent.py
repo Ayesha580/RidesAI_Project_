@@ -47,7 +47,7 @@ def setup_test_data():
             status="active",
             is_approved=True,
             phone="+923001234567",
-            address="Main Boulevard, Gulberg, Lahore",
+            address="Faisalabad, Pakistan",
             agent_greeting="Welcome to Burger King!",
         )
 

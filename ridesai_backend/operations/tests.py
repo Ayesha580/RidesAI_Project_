@@ -199,7 +199,7 @@ class WhatsAppAgentToolCallingTests(TestCase):
 
         self.assertTrue(result["success"])
         self.assertTrue(result["order_number"].startswith("RA-"))
-        self.assertEqual(result["total"], "$29.00")  # (2 * 12.50) + (1 * 4.00) = 29.00
+        self.assertEqual(result["total"], "Rs. 29.00")  # (2 * 12.50) + (1 * 4.00) = 29.00
 
         # Verify Database state
         order = Order.objects.get(order_number=result["order_number"])
@@ -372,6 +372,167 @@ class WhatsAppAgentToolCallingTests(TestCase):
         self.assertEqual(reply, "Your order has been placed successfully for 1x Cheeseburger!")
         # Verify order was created in DB
         self.assertEqual(Order.objects.filter(company=self.company_a, delivery_address="777 Market St").count(), 1)
+
+    def test_clean_text_for_tts(self):
+        from operations.audio_service import clean_text_for_tts
+        raw = "Your order is *1 Zinger Burger* for $800.00 and _Fries_ for Rs. 250! #Order • Fast delivery"
+        cleaned = clean_text_for_tts(raw)
+        self.assertNotIn("*", cleaned)
+        self.assertNotIn("_", cleaned)
+        self.assertNotIn("#", cleaned)
+        self.assertNotIn("•", cleaned)
+        self.assertNotIn("$", cleaned)
+        self.assertNotIn("Rs.", cleaned)
+        self.assertIn("800.00 rupees", cleaned)
+        self.assertIn("250 rupees", cleaned)
+
+    @patch("openai.OpenAI")
+    def test_synthesize_speech_defaults_nova_mp3_and_speed(self, mock_openai_cls):
+        from operations.audio_service import synthesize_speech
+
+        mock_client = MagicMock()
+        mock_openai_cls.return_value = mock_client
+        mock_response = MagicMock()
+        mock_response.content = b"MP3_SYNTHESIZED_AUDIO_BYTES"
+        mock_client.audio.speech.create.return_value = mock_response
+
+        with patch.object(settings, "OPENAI_API_KEY", "sk-mock-valid-key-for-test"):
+            audio_bytes = synthesize_speech("Your order is *1 Cheeseburger* for Rs. 850!")
+
+        self.assertEqual(audio_bytes, b"MP3_SYNTHESIZED_AUDIO_BYTES")
+        mock_client.audio.speech.create.assert_called_once_with(
+            model="tts-1-hd",
+            voice="nova",
+            input="Your order is 1 Cheeseburger for 850 rupees!",
+            response_format="mp3",
+            speed=0.92,
+        )
+
+    @patch("operations.whatsapp_agent._dispatch_whatsapp_audio")
+    @patch("operations.whatsapp_agent._dispatch_whatsapp_text")
+    @patch("operations.whatsapp_agent.synthesize_speech")
+    @patch("operations.whatsapp_agent.transcribe_audio")
+    @patch("operations.whatsapp_agent.OpenAI")
+    def test_voice_order_followed_by_hanjee_krden_places_order(
+        self, mock_openai_cls, mock_transcribe, mock_synth, mock_dispatch_text, mock_dispatch_audio
+    ):
+        import json
+        from operations.whatsapp_agent import process_incoming_whatsapp_message
+        from operations.models import AgentConversation
+
+        mock_client = MagicMock()
+        mock_openai_cls.return_value = mock_client
+        mock_transcribe.return_value = "1 Cheeseburger and 1 French Fries bhej do 777 Market St"
+        mock_synth.return_value = b"MOCK_OGG_AUDIO_BYTES"
+        mock_dispatch_audio.return_value = {"success": True}
+        mock_dispatch_text.return_value = {"success": True}
+
+        self.company_a.whatsapp_instance_name = "test_evo_inst_multiturn"
+        self.company_a.save()
+
+        # Turn 1: LLM responds in simple English without markdown confirming the items and asking for confirmation
+        turn1_resp = MagicMock()
+        turn1_msg = MagicMock()
+        turn1_msg.tool_calls = None
+        turn1_msg.content = "Your order is 1 Cheeseburger for 12.50 rupees and 1 French Fries for 4.00 rupees. Total is 16.50 rupees for delivery to 777 Market St. Should I confirm your order?"
+        turn1_resp.choices = [MagicMock(message=turn1_msg)]
+        mock_client.chat.completions.create.return_value = turn1_resp
+
+        with patch.object(settings, "OPENAI_API_KEY", "sk-mock-valid-key-for-test"):
+            res1 = process_incoming_whatsapp_message(
+                sender_phone="+923001234567",
+                message_text="",
+                phone_number_id="test_evo_inst_multiturn",
+                customer_name="Ali Khan",
+                media_id="mock_media_1",
+                msg_type="audio",
+                company=self.company_a,
+                audio_bytes=b"OGG_RAW_BYTES_TEST",
+            )
+
+        self.assertTrue(res1["success"])
+        self.assertIn("Your order is 1 Cheeseburger", res1["reply_text"])
+        self.assertEqual(Order.objects.filter(company=self.company_a).count(), 0)
+
+        # Verify Turn 1 had CRITICAL VOICE RULE instructions in system prompt and before user message
+        turn1_call_messages = mock_client.chat.completions.create.call_args_list[0][1]["messages"]
+        turn1_sys_content = turn1_call_messages[0]["content"]
+        self.assertIn("CRITICAL VOICE RULE", turn1_sys_content)
+        self.assertIn("You MUST reply strictly in simple, plain English ONLY", turn1_sys_content)
+        self.assertEqual(turn1_call_messages[-2]["content"], (
+            "CRITICAL VOICE RULE: Your reply will be spoken aloud by an English TTS engine. "
+            "You MUST reply strictly in simple, plain English ONLY (no Urdu script, no Hindi, no Roman Urdu). "
+            "Keep it under 2 short sentences."
+        ))
+
+        # Verify Turn 1 was recorded in AgentConversation
+        conv = AgentConversation.objects.filter(company=self.company_a, customer_phone="+923001234567").first()
+        self.assertIsNotNone(conv)
+        self.assertEqual(conv.messages.count(), 2)
+
+        # Turn 2: Customer replies with Roman Urdu confirmation "Hanjee krden"
+        # Mock OpenAI to call create_order tool call on Turn 2
+        tool_call = MagicMock()
+        tool_call.id = "call_turn2_confirm"
+        tool_call.function.name = "create_order"
+        tool_call.function.arguments = json.dumps({
+            "items": [
+                {"item_name": "Cheeseburger", "quantity": 1},
+                {"item_name": "French Fries", "quantity": 1},
+            ],
+            "delivery_address": "777 Market St",
+            "customer_name": "Ali Khan",
+        })
+
+        turn2_pass1 = MagicMock()
+        turn2_pass1_msg = MagicMock()
+        turn2_pass1_msg.tool_calls = [tool_call]
+        turn2_pass1_msg.content = None
+        turn2_pass1.choices = [MagicMock(message=turn2_pass1_msg)]
+
+        turn2_pass2 = MagicMock()
+        turn2_pass2_msg = MagicMock()
+        turn2_pass2_msg.content = "Order confirm ho gaya hai! Order number is RA-12345. Aapka order 30-45 minutes mein deliver ho jaye ga."
+        turn2_pass2.choices = [MagicMock(message=turn2_pass2_msg)]
+
+        mock_client.chat.completions.create.side_effect = [turn2_pass1, turn2_pass2]
+
+        with patch.object(settings, "OPENAI_API_KEY", "sk-mock-valid-key-for-test"):
+            res2 = process_incoming_whatsapp_message(
+                sender_phone="+923001234567",
+                message_text="Hanjee krden",
+                phone_number_id="test_evo_inst_multiturn",
+                customer_name="Ali Khan",
+                msg_type="text",
+                company=self.company_a,
+            )
+
+        self.assertTrue(res2["success"])
+        # Turn 2 must NOT return a welcome greeting
+        self.assertNotIn("Welcome to", res2["reply_text"])
+        self.assertIn("Order confirm ho gaya", res2["reply_text"])
+
+        # Verify an order was created in the database
+        created_order = Order.objects.filter(company=self.company_a, customer_phone="+923001234567").first()
+        self.assertIsNotNone(created_order)
+        self.assertEqual(created_order.delivery_address, "777 Market St")
+        self.assertEqual(created_order.items.count(), 2)
+
+        # Inspect the messages passed to OpenAI in Turn 2 to verify multi-turn memory
+        calls = mock_client.chat.completions.create.call_args_list
+        turn2_first_call_messages = calls[-2][1]["messages"]
+        # History messages should be present
+        roles = [m["role"] for m in turn2_first_call_messages if isinstance(m, dict)]
+        self.assertIn("system", roles)
+        self.assertIn("assistant", roles)
+        # Verify Turn 2 user message is present in the conversation
+        user_msgs = [m for m in turn2_first_call_messages if isinstance(m, dict) and m.get("role") == "user"]
+        self.assertEqual(len(user_msgs), 2)  # Turn 1 user message + Turn 2 user message
+        self.assertEqual(user_msgs[1]["content"], "Hanjee krden")
+        # System prompt should have ACTIVE CONVERSATION INSTRUCTION
+        system_content = turn2_first_call_messages[0]["content"]
+        self.assertIn("ACTIVE CONVERSATION INSTRUCTION", system_content)
+        self.assertIn("NEVER start your reply with a welcome greeting", system_content)
 
 
 class DashboardAPITests(TestCase):
@@ -1857,6 +2018,7 @@ class EvolutionAPIIntegrationTests(TestCase):
             media_id=None,
             msg_type="text",
             company=self.company,
+            audio_bytes=None,
         )
 
     def test_evolution_webhook_updates_connection_status(self):
@@ -1923,6 +2085,218 @@ class EvolutionAPIIntegrationTests(TestCase):
             to="923009998877",
             text="Hello from Meta Cloud API!",
         )
+
+    @patch("operations.evolution_client.requests.post")
+    def test_configure_instance_settings_rejects_calls(self, mock_post):
+        from operations.evolution_client import configure_instance_settings
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {"status": "SUCCESS"}
+        mock_post.return_value = mock_resp
+
+        res = configure_instance_settings("test_instance_reject", msg_call="Custom busy message")
+        self.assertEqual(res, {"status": "SUCCESS"})
+
+        mock_post.assert_called_once()
+        args, kwargs = mock_post.call_args
+        self.assertIn("/settings/set/test_instance_reject", args[0])
+        payload = kwargs.get("json", {})
+        self.assertTrue(payload.get("rejectCall"))
+        self.assertEqual(payload.get("msgCall"), "Custom busy message")
+        self.assertTrue(payload.get("groupsIgnore"))
+        self.assertFalse(payload.get("alwaysOnline"))
+
+    @patch("operations.evolution_client.requests.post")
+    def test_get_media_base64_success(self, mock_post):
+        import base64
+        from operations.evolution_client import get_media_base64
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        raw_bytes = b"TEST_OGG_AUDIO_STREAM_123"
+        mock_resp.json.return_value = {
+            "base64": f"data:audio/ogg;base64,{base64.b64encode(raw_bytes).decode('utf-8')}"
+        }
+        mock_post.return_value = mock_resp
+
+        result = get_media_base64("test_instance_media", {"key": {"id": "msg_abc"}})
+        self.assertEqual(result, raw_bytes)
+
+        mock_post.assert_called_once()
+        args, kwargs = mock_post.call_args
+        self.assertIn("/chat/getBase64FromMediaMessage/test_instance_media", args[0])
+        payload = kwargs.get("json", {})
+        self.assertEqual(payload.get("message"), {"key": {"id": "msg_abc"}})
+        self.assertFalse(payload.get("convertToMp4"))
+
+    @patch("operations.evolution_client.requests.post")
+    def test_get_media_base64_accepts_201_created(self, mock_post):
+        import base64
+        from operations.evolution_client import get_media_base64
+        mock_resp = MagicMock()
+        mock_resp.status_code = 201
+        raw_bytes = b"EVO_V2_201_CREATED_AUDIO"
+        mock_resp.json.return_value = {
+            "base64": base64.b64encode(raw_bytes).decode("utf-8"),
+            "buffer": None,
+        }
+        mock_post.return_value = mock_resp
+
+        result = get_media_base64("test_instance_201", {"key": {"id": "msg_201"}})
+        self.assertEqual(result, raw_bytes)
+
+    @patch("operations.evolution_client.get_media_base64")
+    @patch("operations.evolution_views.process_incoming_whatsapp_message")
+    def test_evolution_webhook_routes_audio_message(self, mock_process_agent, mock_get_media):
+        mock_get_media.return_value = b"MOCK_DECRYPTED_AUDIO"
+        mock_process_agent.return_value = {"success": True}
+
+        self.company.whatsapp_instance_name = "test_evo_audio_inst"
+        self.company.save()
+
+        response = self.client.post(
+            "/api/operations/whatsapp/evolution-webhook/",
+            {
+                "event": "messages.upsert",
+                "instance": "test_evo_audio_inst",
+                "data": {
+                    "key": {"fromMe": False, "remoteJid": "923112233445@s.whatsapp.net"},
+                    "pushName": "Jane Voice",
+                    "message": {
+                        "audioMessage": {
+                            "url": "https://mmg.whatsapp.net/v/t62.7114-24/audio.enc",
+                            "mimetype": "audio/ogg; codecs=opus",
+                        }
+                    },
+                },
+            },
+            format="json",
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data.get("status"), "processed")
+        mock_get_media.assert_called_once()
+        mock_process_agent.assert_called_once_with(
+            sender_phone="923112233445",
+            message_text="",
+            phone_number_id="test_evo_audio_inst",
+            customer_name="Jane Voice",
+            media_id="evolution_voice_note",
+            msg_type="audio",
+            company=self.company,
+            audio_bytes=b"MOCK_DECRYPTED_AUDIO",
+        )
+
+    @patch("operations.evolution_client.get_media_base64")
+    @patch("operations.evolution_views.process_incoming_whatsapp_message")
+    def test_evolution_webhook_reads_message_base64_inline(self, mock_process_agent, mock_get_media):
+        import base64
+        mock_process_agent.return_value = {"success": True}
+        raw_audio = b"INLINE_AUDIO_DECRYPTED"
+        b64_audio = base64.b64encode(raw_audio).decode("utf-8")
+
+        self.company.whatsapp_instance_name = "test_evo_inline_inst"
+        self.company.save()
+
+        # Evolution API v2 with WEBHOOK_BASE64=true puts base64 in data["message"]["base64"]
+        response = self.client.post(
+            "/api/operations/whatsapp/evolution-webhook/",
+            {
+                "event": "messages.upsert",
+                "instance": "test_evo_inline_inst",
+                "data": {
+                    "key": {"fromMe": False, "remoteJid": "923112233445@s.whatsapp.net"},
+                    "pushName": "Inline Tester",
+                    "message": {
+                        "base64": f"data:audio/ogg;base64,{b64_audio}",
+                        "audioMessage": {
+                            "url": "https://mmg.whatsapp.net/v/t62.7114-24/audio.enc",
+                        },
+                    },
+                },
+            },
+            format="json",
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data.get("status"), "processed")
+        # Should NOT make extra HTTP call since base64 was inline
+        mock_get_media.assert_not_called()
+        mock_process_agent.assert_called_once_with(
+            sender_phone="923112233445",
+            message_text="",
+            phone_number_id="test_evo_inline_inst",
+            customer_name="Inline Tester",
+            media_id="evolution_voice_note",
+            msg_type="audio",
+            company=self.company,
+            audio_bytes=raw_audio,
+        )
+
+    @patch("operations.evolution_client.get_media_base64")
+    @patch("operations.evolution_views.process_incoming_whatsapp_message")
+    def test_evolution_webhook_failed_audio_does_not_pass_meta_url(self, mock_process_agent, mock_get_media):
+        mock_get_media.return_value = None
+        mock_process_agent.return_value = {"success": True}
+
+        self.company.whatsapp_instance_name = "test_evo_failed_audio_inst"
+        self.company.save()
+
+        response = self.client.post(
+            "/api/operations/whatsapp/evolution-webhook/",
+            {
+                "event": "messages.upsert",
+                "instance": "test_evo_failed_audio_inst",
+                "data": {
+                    "key": {"fromMe": False, "remoteJid": "923112233445@s.whatsapp.net"},
+                    "pushName": "Failed Audio",
+                    "message": {
+                        "audioMessage": {
+                            "url": "https://mmg.whatsapp.net/v/t62.7114-24/audio.enc",
+                        },
+                    },
+                },
+            },
+            format="json",
+        )
+        self.assertEqual(response.status_code, 200)
+        mock_get_media.assert_called_once()
+        # media_id MUST be None, NOT the encrypted https://mmg.whatsapp.net URL
+        mock_process_agent.assert_called_once_with(
+            sender_phone="923112233445",
+            message_text="",
+            phone_number_id="test_evo_failed_audio_inst",
+            customer_name="Failed Audio",
+            media_id=None,
+            msg_type="audio",
+            company=self.company,
+            audio_bytes=None,
+        )
+
+    @patch("operations.whatsapp_agent._dispatch_whatsapp_text")
+    @patch("operations.whatsapp_agent.transcribe_audio")
+    @patch("operations.whatsapp_agent._generate_agent_reply")
+    def test_whatsapp_agent_processes_raw_audio_bytes(self, mock_reply, mock_transcribe, mock_dispatch):
+        from operations.whatsapp_agent import process_incoming_whatsapp_message
+        mock_transcribe.return_value = "Mujhe 2 Zinger burger bhej do"
+        mock_reply.return_value = "Order placed successfully!"
+        mock_dispatch.return_value = {"success": True}
+
+        self.company.whatsapp_instance_name = "test_evo_audio_agent_inst"
+        self.company.save()
+
+        result = process_incoming_whatsapp_message(
+            sender_phone="923001239999",
+            message_text="",
+            phone_number_id="test_evo_audio_agent_inst",
+            customer_name="Audio Tester",
+            media_id="mock_media_id",
+            msg_type="audio",
+            company=self.company,
+            audio_bytes=b"OGG_RAW_BYTES_TEST",
+        )
+        self.assertTrue(result["success"])
+        mock_transcribe.assert_called_once_with(b"OGG_RAW_BYTES_TEST", filename="audio.ogg")
+        mock_reply.assert_called_once()
+
+
 
 
 
