@@ -1752,6 +1752,180 @@ class VoiceCostOptimizationTests(TestCase):
         self.assertEqual(cust.daily_call_count, 1)
 
 
+from .whatsapp_agent import _dispatch_whatsapp_text, _dispatch_whatsapp_audio
+
+
+class EvolutionAPIIntegrationTests(TestCase):
+    def setUp(self):
+        self.client = APIClient()
+        self.company = Company.objects.create(
+            name="Evolution QR Pizza",
+            business_type="restaurant",
+            is_approved=True,
+            whatsapp_connection_status="disconnected",
+        )
+        self.owner = User.objects.create_user(
+            username="owner_evo_test",
+            password="Password123!",
+            email="owner_evo@example.com",
+            company=self.company,
+            role=User.ROLE_OWNER,
+        )
+
+    @patch("operations.evolution_client.requests.post")
+    def test_connect_whatsapp_generates_qr(self, mock_post):
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {
+            "instance": {"instanceName": f"company_{self.company.id}", "status": "created"},
+            "qrcode": {"base64": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAA..."},
+        }
+        mock_post.return_value = mock_resp
+
+        self.client.force_authenticate(self.owner)
+        response = self.client.post("/api/operations/whatsapp/connect/")
+        self.assertEqual(response.status_code, 200)
+
+        # Verify instance name assigned
+        self.company.refresh_from_db()
+        expected_inst = f"company_{self.company.id}"
+        self.assertEqual(self.company.whatsapp_instance_name, expected_inst)
+        self.assertEqual(response.data["instance_name"], expected_inst)
+        self.assertEqual(response.data["qrcode_base64"], "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAA...")
+
+    @patch("operations.evolution_views.process_incoming_whatsapp_message")
+    def test_evolution_webhook_routes_text_to_agent(self, mock_process_agent):
+        mock_process_agent.return_value = {"success": True, "reply_text": "Agent reply text"}
+        self.company.whatsapp_instance_name = "test_evo_inst_42"
+        self.company.save()
+
+        # 1. Ignore bot's own message
+        res_from_me = self.client.post(
+            "/api/operations/whatsapp/evolution-webhook/",
+            {
+                "event": "messages.upsert",
+                "instance": "test_evo_inst_42",
+                "data": {
+                    "key": {"fromMe": True, "remoteJid": "923001234567@s.whatsapp.net"},
+                    "message": {"conversation": "My own bot message"},
+                },
+            },
+            format="json",
+        )
+        self.assertEqual(res_from_me.status_code, 200)
+        self.assertEqual(res_from_me.data.get("ignored"), "from_me")
+        mock_process_agent.assert_not_called()
+
+        # 2. Ignore group chats
+        res_group = self.client.post(
+            "/api/operations/whatsapp/evolution-webhook/",
+            {
+                "event": "messages.upsert",
+                "instance": "test_evo_inst_42",
+                "data": {
+                    "key": {"fromMe": False, "remoteJid": "123456789-987654@g.us"},
+                    "message": {"conversation": "Group chatter"},
+                },
+            },
+            format="json",
+        )
+        self.assertEqual(res_group.status_code, 200)
+        self.assertEqual(res_group.data.get("ignored"), "group_message")
+        mock_process_agent.assert_not_called()
+
+        # 3. Valid customer incoming text message
+        res_customer = self.client.post(
+            "/api/operations/whatsapp/evolution-webhook/",
+            {
+                "event": "messages.upsert",
+                "instance": "test_evo_inst_42",
+                "data": {
+                    "key": {"fromMe": False, "remoteJid": "923001234567@s.whatsapp.net"},
+                    "pushName": "John Doe",
+                    "message": {"conversation": "Can I order 1 large pizza?"},
+                },
+            },
+            format="json",
+        )
+        self.assertEqual(res_customer.status_code, 200)
+        self.assertEqual(res_customer.data.get("status"), "processed")
+        mock_process_agent.assert_called_once_with(
+            sender_phone="923001234567",
+            message_text="Can I order 1 large pizza?",
+            phone_number_id="test_evo_inst_42",
+            customer_name="John Doe",
+            media_id=None,
+            msg_type="text",
+            company=self.company,
+        )
+
+    def test_evolution_webhook_updates_connection_status(self):
+        self.company.whatsapp_instance_name = "test_evo_conn_inst"
+        self.company.whatsapp_connection_status = "disconnected"
+        self.company.save()
+
+        response = self.client.post(
+            "/api/operations/whatsapp/evolution-webhook/",
+            {
+                "event": "connection.update",
+                "instance": "test_evo_conn_inst",
+                "data": {"state": "open"},
+            },
+            format="json",
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data.get("connection_status"), "connected")
+
+        self.company.refresh_from_db()
+        self.assertEqual(self.company.whatsapp_connection_status, "connected")
+
+    @patch("operations.evolution_client.send_text_message")
+    def test_outbound_reply_uses_evolution_when_instance_set(self, mock_evo_send):
+        mock_evo_send.return_value = {"key": {"id": "evo_msg_123"}, "status": "PENDING"}
+
+        company_evo = Company.objects.create(
+            name="Evo Tenant",
+            whatsapp_instance_name="company_evo_inst",
+        )
+        company_meta = Company.objects.create(
+            name="Meta Tenant",
+            whatsapp_instance_name="",
+        )
+
+        mock_meta_service = MagicMock()
+        mock_meta_service.send_text_message.return_value = {"success": True, "messages": [{"id": "meta_wamid_99"}]}
+
+        # 1. Company with Evolution instance uses Evolution API
+        res_evo = _dispatch_whatsapp_text(
+            company=company_evo,
+            phone="923009998877",
+            text="Hello from Evolution!",
+            service=mock_meta_service,
+        )
+        self.assertTrue(res_evo["success"])
+        self.assertEqual(res_evo["provider"], "evolution")
+        mock_evo_send.assert_called_once_with(
+            instance_name="company_evo_inst",
+            phone="923009998877",
+            text="Hello from Evolution!",
+        )
+        mock_meta_service.send_text_message.assert_not_called()
+
+        # 2. Company without Evolution instance falls back to Meta WhatsAppService
+        res_meta = _dispatch_whatsapp_text(
+            company=company_meta,
+            phone="923009998877",
+            text="Hello from Meta Cloud API!",
+            service=mock_meta_service,
+        )
+        self.assertTrue(res_meta["success"])
+        mock_meta_service.send_text_message.assert_called_once_with(
+            to="923009998877",
+            text="Hello from Meta Cloud API!",
+        )
+
+
+
 
 
 

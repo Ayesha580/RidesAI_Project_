@@ -128,6 +128,10 @@ class Company(models.Model):
     auto_print_kot = models.BooleanField(default=False)
     auto_print_invoice = models.BooleanField(default=False)
 
+
+    whatsapp_instance_name = models.CharField(max_length=100, blank=True, null=True)
+    whatsapp_connection_status = models.CharField(max_length=20, default="disconnected")  # connected / disconnected
+
     # Legacy business-email setup metadata; account email remains the owner contact above.
     business_email_address = models.EmailField(blank=True)
     business_email_domain = models.CharField(max_length=253, blank=True)

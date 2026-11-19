@@ -448,6 +448,10 @@ def _get_business_context(phone_number_id: str) -> Dict[str, Any]:
             except Exception:
                 company = None
 
+        if not company:
+            # Check if phone_number_id matches an Evolution API instance_name
+            company = Company.objects.filter(whatsapp_instance_name=phone_number_id).first()
+
         # Fail closed: Do NOT fallback to random Company.objects.first()
         if not company:
             logger.warning(
@@ -840,6 +844,68 @@ def check_and_enforce_text_limit(
     return True, None, customer
 
 
+def _dispatch_whatsapp_text(
+    company: Optional[Company],
+    phone: str,
+    text: str,
+    service: Optional[WhatsAppService] = None,
+) -> Dict[str, Any]:
+    """
+    Routes outbound WhatsApp text message:
+    - If company has `whatsapp_instance_name`, routes via Evolution API.
+    - Otherwise, falls back to Meta WhatsAppService untouched.
+    """
+    instance_name = getattr(company, "whatsapp_instance_name", None) if company else None
+    if instance_name:
+        from operations import evolution_client
+        logger.info(f"[WhatsApp Routing] Dispatching text via Evolution API (instance: {instance_name}) to {phone}")
+        res = evolution_client.send_text_message(instance_name=instance_name, phone=phone, text=text)
+        success = bool(res and not res.get("error"))
+        return {
+            "success": success,
+            "data": res,
+            "provider": "evolution",
+        }
+
+    if service:
+        return service.send_text_message(to=phone, text=text)
+    return {"success": False, "error": "No WhatsApp provider configured"}
+
+
+def _dispatch_whatsapp_audio(
+    company: Optional[Company],
+    phone: str,
+    audio_bytes: bytes,
+    service: Optional[WhatsAppService] = None,
+) -> Dict[str, Any]:
+    """
+    Routes outbound WhatsApp audio voice note:
+    - If company has `whatsapp_instance_name`, routes via Evolution API as base64 audio.
+    - Otherwise, falls back to Meta WhatsAppService (upload_media -> send_audio_message).
+    """
+    import base64
+    instance_name = getattr(company, "whatsapp_instance_name", None) if company else None
+    if instance_name:
+        from operations import evolution_client
+        logger.info(f"[WhatsApp Routing] Dispatching audio via Evolution API (instance: {instance_name}) to {phone}")
+        audio_b64 = base64.b64encode(audio_bytes).decode("utf-8")
+        res = evolution_client.send_audio_message(instance_name=instance_name, phone=phone, audio_base64=audio_b64)
+        success = bool(res and not res.get("error"))
+        return {
+            "success": success,
+            "data": res,
+            "provider": "evolution",
+        }
+
+    if service:
+        outbound_media_id = service.upload_media(audio_bytes, mime_type="audio/ogg")
+        if outbound_media_id:
+            return service.send_audio_message(to=phone, media_id=outbound_media_id)
+        return {"success": False, "error": "Media upload failed"}
+
+    return {"success": False, "error": "No WhatsApp provider configured"}
+
+
 def process_incoming_whatsapp_message(
     sender_phone: str,
     message_text: str,
@@ -847,15 +913,16 @@ def process_incoming_whatsapp_message(
     customer_name: Optional[str] = None,
     media_id: Optional[str] = None,
     msg_type: str = "text",
+    company: Optional[Company] = None,
 ) -> Dict[str, Any]:
     """
     Main background entrypoint for processing an incoming WhatsApp customer message:
     1. Multi-Tenant Guard: Validates that destination phone_number_id belongs to a registered company.
-    2. Voice Rate Limit & Cost Guard: Checks customer voice usage vs max_daily_voice_notes.
+    2. Voice/Text Rate Limit & Cost Guard: Checks customer usage against daily quotas.
     3. Voice Input (STT): If audio note (.ogg), downloads via Meta Graph API and transcribes via Groq/Whisper.
     4. Tool-Calling Agent: Runs LLM with dynamic tool calling (get_catalog_items, create_order, check_order_status).
-    5. Voice Output (TTS): If customer sent audio, synthesizes speech (OpenAI tts-1) and uploads via Meta API.
-    6. Dispatches reply via Meta Cloud API using WhatsAppService.
+    5. Voice Output (TTS): If customer sent audio, synthesizes speech and uploads via Meta API or Evolution API.
+    6. Dispatches reply via Evolution API (if instance configured) or Meta Cloud API using WhatsAppService.
     """
     close_old_connections()
     try:
@@ -863,7 +930,11 @@ def process_incoming_whatsapp_message(
         service = WhatsAppService(phone_number_id=phone_number_id)
 
         # Step 1: Multi-Tenant Isolation Check (Fail Closed)
-        context = _get_business_context(phone_number_id)
+        if company:
+            context = get_business_context_for_company(company)
+        else:
+            context = _get_business_context(phone_number_id)
+
         if not context.get("is_configured") or not context.get("company"):
             logger.warning(
                 f"[WhatsApp Agent] Access rejected: phone_number_id '{phone_number_id}' "
@@ -895,7 +966,7 @@ def process_incoming_whatsapp_message(
                     f"for company '{company_obj.name}'. Rejecting audio processing and dispatching warning text."
                 )
                 print(f"[WhatsApp Voice Agent] Customer {sender_phone} exceeded voice limit. Blocking audio processing.")
-                dispatch_res = service.send_text_message(to=sender_phone, text=limit_msg)
+                dispatch_res = _dispatch_whatsapp_text(company=company_obj, phone=sender_phone, text=limit_msg, service=service)
                 return {
                     "success": dispatch_res.get("success", False) if isinstance(dispatch_res, dict) else True,
                     "reply_text": limit_msg,
@@ -944,7 +1015,7 @@ def process_incoming_whatsapp_message(
                 except Exception as e:
                     logger.warning(f"[WhatsApp Text Agent] Could not update conversation status: {e}")
 
-                dispatch_res = service.send_text_message(to=sender_phone, text=limit_msg)
+                dispatch_res = _dispatch_whatsapp_text(company=company_obj, phone=sender_phone, text=limit_msg, service=service)
                 return {
                     "success": dispatch_res.get("success", False) if isinstance(dispatch_res, dict) else True,
                     "reply_text": limit_msg,
@@ -963,9 +1034,10 @@ def process_incoming_whatsapp_message(
             sender_phone=sender_phone,
         )
 
-        # Step 4: Outbound WhatsApp dispatch via WhatsAppService
+        # Step 4: Outbound WhatsApp dispatch (Multi-Tenant Routing: Evolution API or Meta Cloud API)
         dispatch_result = None
         is_voice_dispatched = False
+        company_obj = context.get("company")
 
         # Voice-first response: If customer sent a voice note, synthesize and send a voice reply
         if is_voice_message:
@@ -974,28 +1046,24 @@ def process_incoming_whatsapp_message(
 
             audio_bytes = synthesize_speech(reply_text)
             if audio_bytes:
-                outbound_media_id = service.upload_media(audio_bytes, mime_type="audio/ogg")
-                if outbound_media_id:
-                    print(f"[WhatsApp Voice Agent] Uploaded voice note (Media ID: {outbound_media_id}). Dispatching audio...")
-                    audio_res = service.send_audio_message(to=sender_phone, media_id=outbound_media_id)
-                    if audio_res and audio_res.get("success"):
-                        dispatch_result = audio_res
-                        is_voice_dispatched = True
+                audio_res = _dispatch_whatsapp_audio(company=company_obj, phone=sender_phone, audio_bytes=audio_bytes, service=service)
+                if audio_res and audio_res.get("success"):
+                    dispatch_result = audio_res
+                    is_voice_dispatched = True
                 else:
-                    logger.warning("[WhatsApp Voice Agent] Media upload failed. Falling back to text message.")
-                    print("[WhatsApp Voice Agent Warning] Media upload failed. Falling back to text.")
+                    logger.warning("[WhatsApp Voice Agent] Audio dispatch failed. Falling back to text message.")
+                    print("[WhatsApp Voice Agent Warning] Audio dispatch failed. Falling back to text.")
             else:
                 logger.warning("[WhatsApp Voice Agent] Speech synthesis failed. Falling back to text message.")
                 print("[WhatsApp Voice Agent Warning] TTS failed. Falling back to text.")
 
         # Fallback to text message if voice response was not used or failed
         if not dispatch_result or not dispatch_result.get("success"):
-            dispatch_result = service.send_text_message(to=sender_phone, text=reply_text)
+            dispatch_result = _dispatch_whatsapp_text(company=company_obj, phone=sender_phone, text=reply_text, service=service)
 
         # Step 5: Update message metadata if audio/voice dispatched
         if is_voice_dispatched:
             try:
-                company_obj = context.get("company")
                 conv = AgentConversation.objects.filter(company=company_obj, customer_phone=sender_phone).last()
                 if conv:
                     last_msg = conv.messages.last()
@@ -1004,6 +1072,15 @@ def process_incoming_whatsapp_message(
                         last_msg.save(update_fields=["metadata"])
             except Exception:
                 pass
+
+        logger.info(f"[WhatsApp Agent] Dispatch result for {sender_phone}: {dispatch_result.get('success')}")
+        return {
+            "success": dispatch_result.get("success", False),
+            "reply_text": reply_text,
+            "transcribed_text": message_text if is_voice_message else None,
+            "is_voice_response": is_voice_dispatched,
+            "dispatch_result": dispatch_result,
+        }
 
         logger.info(f"[WhatsApp Agent] Dispatch result for {sender_phone}: {dispatch_result.get('success')}")
         return {
