@@ -56,6 +56,7 @@ def _role_json(role):
     }
 
 def _staff_json(u):
+    role_name = u.staff_role.name if u.staff_role else u.get_role_display()
     return {
         "id": u.id,
         "username": u.username,
@@ -66,7 +67,7 @@ def _staff_json(u):
         "email": u.email,
         "is_active": u.is_active,
         "role_id": u.staff_role_id,
-        "role_name": u.staff_role.name if u.staff_role else None,
+        "role_name": role_name,
         "modules": u.get_modules(),
         "permissions": u.get_permissions(),
         "date_joined": u.date_joined.isoformat(),
@@ -172,7 +173,8 @@ class StaffAPIView(APIView):
 
     def get(self, request):
         qs = (
-            User.objects.filter(company=request.user.company, role=User.ROLE_STAFF)
+            User.objects.filter(company=request.user.company)
+            .exclude(role__in=[User.ROLE_OWNER, User.ROLE_SUPERADMIN])
             .select_related("staff_role")
             .order_by("-id")
         )
@@ -226,7 +228,9 @@ class StaffDetailAPIView(APIView):
 
     def _get(self, request, user_id):
         return get_object_or_404(
-            User, pk=user_id, company=request.user.company, role=User.ROLE_STAFF
+            User.objects.exclude(role__in=[User.ROLE_OWNER, User.ROLE_SUPERADMIN]),
+            pk=user_id,
+            company=request.user.company,
         )
 
     def get(self, request, user_id):

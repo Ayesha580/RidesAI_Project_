@@ -21,6 +21,7 @@ import OwnerSettings from "./owner/pages/OwnerSettings";
 import OwnerDashboard from "./owner/pages/OwnerDashboard";
 import OwnerRoles from "./owner/pages/OwnerRoles";
 import OwnerStaff from "./owner/pages/OwnerStaff";
+import OwnerLayout from "./owner/components/OwnerLayout";
 
 // staff
 import StaffDashboard from "./staff/pages/StaffDashboard";
@@ -69,7 +70,11 @@ function OwnerModulePage() {
   if (moduleKey === "patients") return <ClinicPatients />;
   if (moduleKey === "fulfillment") return <RetailFulfillment />;
   if (moduleKey === "returns") return <RetailReturns />;
-  return <Catalog moduleKey={moduleKey} />;
+  return (
+    <OwnerLayout title={moduleLabel(moduleKey)}>
+      <Catalog moduleKey={moduleKey} />
+    </OwnerLayout>
+  );
 }
 function ModuleGuard({ children }) {
   const { user, loading } = useAuth();
@@ -167,7 +172,16 @@ export default function App() {
         />
       ))}
 
-      <Route path="/owner/catalog" element={<Guard roles={["owner"]}><Catalog /></Guard>} />
+      <Route
+        path="/owner/catalog"
+        element={
+          <Guard roles={["owner"]}>
+            <OwnerLayout title="Catalog">
+              <Catalog />
+            </OwnerLayout>
+          </Guard>
+        }
+      />
       <Route path="/owner/settings" element={<AuthOnly><OwnerSettings /></AuthOnly>} />
       <Route path="/owner/billing" element={<Navigate to="/owner/settings?tab=billing" replace />} />
 

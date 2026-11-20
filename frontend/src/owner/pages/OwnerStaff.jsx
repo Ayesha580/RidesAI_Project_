@@ -34,8 +34,10 @@ export default function OwnerStaff() {
   const load = useCallback(async () => {
     try {
       const [s, r] = await Promise.all([staffApi.list(), roleApi.list()]);
-      setStaff(s.data);
-      setRoles(r.data);
+      const staffList = Array.isArray(s.data) ? s.data : s.data?.results || s.data?.employees || s.data?.data || [];
+      const roleList = Array.isArray(r.data) ? r.data : r.data?.results || r.data?.roles || r.data?.data || [];
+      setStaff(staffList);
+      setRoles(roleList);
     } catch (e) {
       setError(errorText(e));
     } finally {

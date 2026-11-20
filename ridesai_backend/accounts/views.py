@@ -90,6 +90,7 @@ def _business_info(user):
     return {
         "owner_nav": owner_nav_for(bt),
         "business_label": BUSINESS_TYPES[business_key(bt)]["label"],
+        "business_type": bt,
         "subscription_status": c.subscription_status,
         "trial_ends_at": c.trial_ends_at,
         "is_manual_override": c.is_manual_override,
