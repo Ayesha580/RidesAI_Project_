@@ -28,6 +28,7 @@ const ICONS = {
   returns: "↩️",
 
   appointments: "🩺",
+  doctors: "👨‍⚕️",
   patients: "🧑‍⚕️",
   lab_tests: "🧪",
 
@@ -65,6 +66,7 @@ const LABELS = {
 
   // clinic
   appointments: "Appointments",
+  doctors: "Doctors Directory",
   patients: "Patients",
   lab_tests: "Lab Tests",
 

@@ -46,6 +46,9 @@ import KitchenDashboard from "./operations/KitchenDashboard";
 import RiderDashboard from "./operations/RiderDashboard";
 import PharmacyPrescriptions from "./operations/PharmacyPrescriptions";
 import PharmacyBatches from "./operations/PharmacyBatches";
+import ClinicAppointments from "./operations/ClinicAppointments";
+import ClinicDoctors from "./operations/ClinicDoctors";
+import ClinicPatients from "./operations/ClinicPatients";
 
 function Home() {
   const { user, loading } = useAuth();
@@ -59,6 +62,9 @@ function OwnerModulePage() {
   if (moduleKey === "calls") return <CallsDashboard />;
   if (moduleKey === "prescriptions") return <PharmacyPrescriptions />;
   if (moduleKey === "expiry_tracking") return <PharmacyBatches />;
+  if (moduleKey === "appointments") return <ClinicAppointments />;
+  if (moduleKey === "doctors") return <ClinicDoctors />;
+  if (moduleKey === "patients") return <ClinicPatients />;
   return <Catalog moduleKey={moduleKey} />;
 }
 function ModuleGuard({ children }) {
@@ -74,6 +80,9 @@ function StaffModulePage() {
   if (moduleKey === "my_deliveries") return <RiderDeliveries />;
   if (moduleKey === "prescriptions") return <PharmacyPrescriptions staff />;
   if (moduleKey === "expiry_tracking") return <PharmacyBatches staff />;
+  if (moduleKey === "appointments") return <ClinicAppointments staff />;
+  if (moduleKey === "doctors") return <ClinicDoctors staff />;
+  if (moduleKey === "patients") return <ClinicPatients staff />;
   if (["products", "menu", "medicines", "services"].includes(moduleKey)) return <StaffLayout title={moduleLabel(moduleKey)}><Catalog moduleKey={moduleKey} /></StaffLayout>;
   return (
     <StaffLayout title={moduleLabel(moduleKey)}>

@@ -51,3 +51,17 @@ export const pharmacyApi = {
   updatePrescriptionStatus: (prescriptionId, data) =>
     api.patch(`/pharmacy/prescriptions/${prescriptionId}/status/`, data),
 };
+
+export const clinicApi = {
+  getDoctors: (params = {}) => api.get("/clinic/doctors/", { params }),
+  createDoctor: (data) => api.post("/clinic/doctors/", data),
+  updateDoctor: (id, data) => api.patch(`/clinic/doctors/${id}/`, data),
+  deleteDoctor: (id) => api.delete(`/clinic/doctors/${id}/`),
+  getPatients: (params = {}) => api.get("/clinic/patients/", { params }),
+  createPatient: (data) => api.post("/clinic/patients/", data),
+  updatePatient: (id, data) => api.patch(`/clinic/patients/${id}/`, data),
+  deletePatient: (id) => api.delete(`/clinic/patients/${id}/`),
+  getAppointments: (params = {}) => api.get("/clinic/appointments/", { params }),
+  createAppointment: (data) => api.post("/clinic/appointments/", data),
+  updateAppointmentStatus: (id, data) => api.patch(`/clinic/appointments/${id}/status/`, data),
+};

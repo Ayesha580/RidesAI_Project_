@@ -1,4 +1,5 @@
 import uuid
+from decimal import Decimal
 from django.conf import settings
 from django.db import models
 from django.utils import timezone
@@ -141,7 +142,7 @@ class AgentMessage(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
-        ordering = ("created_at",)
+        ordering = ("created_at", "id")
 
 
 class AgentActionLog(models.Model):
@@ -243,7 +244,7 @@ class CallEvent(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
-        ordering = ("created_at",)
+        ordering = ("created_at", "id")
 
     def __str__(self):
         return f"CallEvent {self.event_type} on {self.call.call_id} @ {self.created_at}"
@@ -409,6 +410,137 @@ class Prescription(models.Model):
 
     def __str__(self):
         return f"{self.prescription_number} ({self.customer_phone}) - {self.status}"
+
+
+# ============================================================================
+# Phase 3: Clinic & Hospital Models
+# ============================================================================
+
+class Doctor(models.Model):
+    company = models.ForeignKey(
+        "companies.Company",
+        on_delete=models.CASCADE,
+        related_name="doctors",
+        db_index=True,
+    )
+    name = models.CharField(max_length=255)
+    specialty = models.CharField(max_length=150)
+    qualification = models.CharField(max_length=255, blank=True, default="")
+    consultation_fee = models.DecimalField(max_digits=10, decimal_places=2, default=Decimal("0.00"))
+    available_days = models.CharField(max_length=255, default="Mon-Sat")
+    available_hours = models.CharField(max_length=150, default="10:00 AM - 06:00 PM")
+    is_active = models.BooleanField(default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ("name",)
+        indexes = [
+            models.Index(fields=["company", "is_active", "specialty"]),
+        ]
+
+    def __str__(self):
+        return f"{self.name} ({self.specialty})"
+
+
+class Patient(models.Model):
+    company = models.ForeignKey(
+        "companies.Company",
+        on_delete=models.CASCADE,
+        related_name="patients",
+        db_index=True,
+    )
+    name = models.CharField(max_length=255)
+    phone = models.CharField(max_length=32, db_index=True)
+    age = models.PositiveIntegerField(null=True, blank=True)
+    gender = models.CharField(max_length=20, blank=True, default="")
+    notes = models.TextField(blank=True, default="")
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ("-created_at",)
+        indexes = [
+            models.Index(fields=["company", "phone"]),
+        ]
+        constraints = [
+            models.UniqueConstraint(fields=["company", "phone"], name="unique_patient_phone_per_company")
+        ]
+
+    def __str__(self):
+        return f"{self.name} ({self.phone})"
+
+
+class Appointment(models.Model):
+    STATUS_PENDING = "pending"
+    STATUS_CONFIRMED = "confirmed"
+    STATUS_CHECKED_IN = "checked_in"
+    STATUS_COMPLETED = "completed"
+    STATUS_CANCELLED = "cancelled"
+    STATUS_NO_SHOW = "no_show"
+
+    STATUS_CHOICES = [
+        (STATUS_PENDING, "Pending"),
+        (STATUS_CONFIRMED, "Confirmed"),
+        (STATUS_CHECKED_IN, "Checked In"),
+        (STATUS_COMPLETED, "Completed"),
+        (STATUS_CANCELLED, "Cancelled"),
+        (STATUS_NO_SHOW, "No Show"),
+    ]
+
+    company = models.ForeignKey(
+        "companies.Company",
+        on_delete=models.CASCADE,
+        related_name="appointments",
+        db_index=True,
+    )
+    appointment_number = models.CharField(max_length=32, unique=True, editable=False)
+    doctor = models.ForeignKey(
+        Doctor,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="appointments",
+    )
+    patient = models.ForeignKey(
+        Patient,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="appointments",
+    )
+    patient_name = models.CharField(max_length=255)
+    patient_phone = models.CharField(max_length=32, db_index=True)
+    appointment_date = models.DateField(null=True, blank=True)
+    appointment_time = models.CharField(max_length=50, blank=True, default="")
+    reason = models.TextField(blank=True, default="")
+    status = models.CharField(
+        max_length=20,
+        choices=STATUS_CHOICES,
+        default=STATUS_PENDING,
+        db_index=True,
+    )
+    staff_notes = models.TextField(blank=True, default="")
+    source = models.CharField(max_length=50, default="dashboard")
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ("-created_at",)
+        indexes = [
+            models.Index(fields=["company", "status", "-created_at"]),
+            models.Index(fields=["company", "appointment_date"]),
+        ]
+
+    def save(self, *args, **kwargs):
+        if not self.appointment_number:
+            self.appointment_number = f"APT-{timezone.now():%y%m%d}-{uuid.uuid4().hex[:6].upper()}"
+        super().save(*args, **kwargs)
+
+    def __str__(self):
+        doc = self.doctor.name if self.doctor else "Unassigned"
+        return f"{self.appointment_number} - {self.patient_name} with {doc} ({self.status})"
+
 
 
 

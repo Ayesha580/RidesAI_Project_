@@ -157,11 +157,71 @@ TOOL_SUBMIT_PRESCRIPTION_REQUEST = {
     },
 }
 
+TOOL_GET_CLINIC_DOCTORS = {
+    "type": "function",
+    "function": {
+        "name": "get_clinic_doctors",
+        "description": (
+            "Retrieves the list of active doctors, their specialties, qualifications, consultation fees (in Rs.), "
+            "available days, and clinic consultation hours."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "specialty": {
+                    "type": "string",
+                    "description": "Optional medical specialty to filter by (e.g. 'Cardiologist', 'Dermatologist', 'General Physician').",
+                },
+            },
+            "required": [],
+        },
+    },
+}
+
+TOOL_BOOK_APPOINTMENT = {
+    "type": "function",
+    "function": {
+        "name": "book_appointment",
+        "description": (
+            "Books a doctor consultation appointment for a patient at the clinic. "
+            "Registers a pending appointment and assigns the doctor."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "patient_name": {
+                    "type": "string",
+                    "description": "Full name of the patient seeking medical consultation.",
+                },
+                "doctor_name": {
+                    "type": "string",
+                    "description": "Name of the requested doctor or preferred specialty (e.g. 'Dr. Ayesha Tariq' or 'Cardiologist').",
+                },
+                "preferred_date": {
+                    "type": "string",
+                    "description": "Preferred appointment date (e.g., 'YYYY-MM-DD' or 'Tomorrow' or 'Saturday').",
+                },
+                "preferred_time": {
+                    "type": "string",
+                    "description": "Preferred appointment time (e.g., '11:00 AM' or '05:30 PM').",
+                },
+                "reason": {
+                    "type": "string",
+                    "description": "Brief health concern, symptoms, or reason for visit.",
+                },
+            },
+            "required": ["patient_name"],
+        },
+    },
+}
+
 AGENT_TOOLS = [
     TOOL_GET_CATALOG_ITEMS,
     TOOL_CREATE_ORDER,
     TOOL_CHECK_ORDER_STATUS,
     TOOL_SUBMIT_PRESCRIPTION_REQUEST,
+    TOOL_GET_CLINIC_DOCTORS,
+    TOOL_BOOK_APPOINTMENT,
 ]
 
 
@@ -199,11 +259,16 @@ CATEGORY_AGENT_PROFILES = {
         "role_desc": "clinic appointment desk and patient support assistant",
         "catalog_header": "CLINICAL SERVICES & SPECIALTIES",
         "instructions": (
-            "- Primary duty is providing information regarding clinic hours, doctor consultation timings, "
-            "available medical specialties, and collecting patient appointment requests (patient name, requested doctor, date/time, and contact phone).\n"
-            "- Do NOT attempt to place food or restaurant orders."
+            "- Primary duty is providing information regarding clinic hours, active doctors, consultation timings, "
+            "consultation fees in Rs., and booking patient appointments.\n"
+            "- DOCTOR INQUIRIES: Call `get_clinic_doctors` to view current doctors, qualifications, fees, and available days/hours.\n"
+            "- APPOINTMENT BOOKING: Before calling `book_appointment`, collect the patient's name, preferred doctor or specialty, "
+            "preferred date and time, and brief reason for consultation. Once confirmed with the patient, call `book_appointment`.\n"
+            "- MEDICAL GUARDRAIL: You are an administrative assistant, NOT a doctor. STRICTLY NEVER diagnose symptoms, prescribe medicines, "
+            "or offer medical treatment advice. Always advise consulting a qualified doctor or visiting the emergency room for urgent symptoms.\n"
+            "- Do NOT attempt to place food or takeaway delivery orders via `create_order`."
         ),
-        "tools": [TOOL_GET_CATALOG_ITEMS, TOOL_CHECK_ORDER_STATUS],
+        "tools": [TOOL_GET_CLINIC_DOCTORS, TOOL_BOOK_APPOINTMENT, TOOL_GET_CATALOG_ITEMS, TOOL_CHECK_ORDER_STATUS],
     },
     "retail": {
         "key": "retail",
@@ -537,6 +602,133 @@ def execute_submit_prescription_request(
         }
     except Exception as e:
         logger.error(f"[Tool: submit_prescription_request] Error: {e}", exc_info=True)
+        return {"success": False, "error": str(e)}
+
+
+def execute_get_clinic_doctors(company: Company, specialty: Optional[str] = None) -> Dict[str, Any]:
+    """
+    Fetches active clinic doctors strictly isolated to the specified tenant company.
+    """
+    try:
+        from operations.models import Doctor
+        qs = Doctor.objects.filter(company=company, is_active=True)
+        if specialty and specialty.strip():
+            qs = qs.filter(specialty__icontains=specialty.strip())
+
+        doctors_list = []
+        for doc in qs:
+            fee_num = int(doc.consultation_fee) if doc.consultation_fee % 1 == 0 else doc.consultation_fee
+            doctors_list.append({
+                "id": doc.id,
+                "name": doc.name,
+                "specialty": doc.specialty,
+                "qualification": doc.qualification,
+                "consultation_fee": f"Rs. {fee_num}",
+                "available_days": doc.available_days,
+                "available_hours": doc.available_hours,
+            })
+
+        logger.info(f"[Tool: get_clinic_doctors] Retrieved {len(doctors_list)} doctors for {company.name}.")
+        return {
+            "success": True,
+            "count": len(doctors_list),
+            "doctors": doctors_list,
+        }
+    except Exception as e:
+        logger.error(f"[Tool: get_clinic_doctors] Error: {e}", exc_info=True)
+        return {"success": False, "error": str(e), "doctors": []}
+
+
+def execute_book_appointment(
+    company: Company,
+    sender_phone: str,
+    patient_name: str,
+    doctor_name: Optional[str] = None,
+    preferred_date: Optional[str] = None,
+    preferred_time: Optional[str] = None,
+    reason: Optional[str] = None,
+) -> Dict[str, Any]:
+    """
+    Creates a pending Appointment record and ensures Patient record exists for the clinic tenant.
+    """
+    try:
+        from datetime import datetime
+        from operations.models import Doctor, Patient, Appointment
+
+        clean_name = (patient_name or "").strip() or "Patient"
+        clean_phone = (sender_phone or "").strip()
+        clean_time = (preferred_time or "").strip()
+        clean_reason = (reason or "").strip()
+
+        # Find or create patient
+        patient, _ = Patient.objects.get_or_create(
+            company=company,
+            phone=clean_phone,
+            defaults={"name": clean_name}
+        )
+        if patient.name != clean_name and clean_name != "Patient":
+            patient.name = clean_name
+            patient.save(update_fields=["name", "updated_at"])
+
+        # Match doctor by name or specialty if provided
+        matched_doctor = None
+        if doctor_name and doctor_name.strip():
+            query = doctor_name.strip()
+            matched_doctor = (
+                Doctor.objects.filter(company=company, is_active=True, name__icontains=query).first()
+                or Doctor.objects.filter(company=company, is_active=True, specialty__icontains=query).first()
+            )
+
+        # Parse date if provided in YYYY-MM-DD
+        parsed_date = None
+        if preferred_date and preferred_date.strip():
+            try:
+                parsed_date = datetime.strptime(preferred_date.strip(), "%Y-%m-%d").date()
+            except Exception:
+                parsed_date = None
+
+        time_str = clean_time
+        if not parsed_date and preferred_date and preferred_date.strip():
+            time_str = f"{preferred_date.strip()} {clean_time}".strip()
+
+        with transaction.atomic():
+            apt = Appointment.objects.create(
+                company=company,
+                doctor=matched_doctor,
+                patient=patient,
+                patient_name=clean_name,
+                patient_phone=clean_phone,
+                appointment_date=parsed_date,
+                appointment_time=time_str or "To be scheduled",
+                reason=clean_reason,
+                status=Appointment.STATUS_PENDING,
+                source="whatsapp_ai",
+            )
+
+        doc_fee = f"Rs. {int(matched_doctor.consultation_fee)}" if matched_doctor and matched_doctor.consultation_fee else "Rs. 0"
+
+        logger.info(
+            f"[Tool: book_appointment] Created appointment {apt.appointment_number} "
+            f"for {clean_name} ({clean_phone}) with {matched_doctor.name if matched_doctor else 'Unassigned'} at {company.name}."
+        )
+
+        return {
+            "success": True,
+            "appointment_number": apt.appointment_number,
+            "patient_name": apt.patient_name,
+            "doctor": matched_doctor.name if matched_doctor else "To be assigned by clinic reception",
+            "specialty": matched_doctor.specialty if matched_doctor else None,
+            "consultation_fee": doc_fee,
+            "appointment_date": str(apt.appointment_date) if apt.appointment_date else (preferred_date or "To be scheduled"),
+            "appointment_time": apt.appointment_time,
+            "status": "pending",
+            "message": (
+                f"Appointment request #{apt.appointment_number} has been registered successfully. "
+                "Our clinic reception will confirm your slot shortly via WhatsApp."
+            ),
+        }
+    except Exception as e:
+        logger.error(f"[Tool: book_appointment] Error: {e}", exc_info=True)
         return {"success": False, "error": str(e)}
 
 
@@ -1006,6 +1198,21 @@ def _generate_agent_reply(
                             requested_items=fn_args.get("requested_items", ""),
                             customer_name=fn_args.get("customer_name") or customer_name,
                             notes=fn_args.get("notes", ""),
+                        )
+                    elif fn_name == "get_clinic_doctors":
+                        tool_result = execute_get_clinic_doctors(
+                            company=company,
+                            specialty=fn_args.get("specialty"),
+                        )
+                    elif fn_name == "book_appointment":
+                        tool_result = execute_book_appointment(
+                            company=company,
+                            sender_phone=sender_phone,
+                            patient_name=fn_args.get("patient_name") or customer_name,
+                            doctor_name=fn_args.get("doctor_name"),
+                            preferred_date=fn_args.get("preferred_date"),
+                            preferred_time=fn_args.get("preferred_time"),
+                            reason=fn_args.get("reason"),
                         )
                     else:
                         tool_result = {"error": f"Tool '{fn_name}' is not recognized."}

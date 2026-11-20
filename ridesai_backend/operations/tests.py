@@ -2744,6 +2744,208 @@ class PharmacyPlatformTests(TestCase):
         ).exists())
 
 
+class ClinicPlatformTests(TestCase):
+    def setUp(self):
+        self.client = APIClient()
+        self.clinic_company = Company.objects.create(
+            name="Care Clinic",
+            business_type="clinic",
+            address="123 Hospital Rd, Faisalabad",
+            phone="03001112233",
+            status="active",
+            is_approved=True,
+            subscription_status="active",
+            is_manual_override=True,
+            whatsapp_instance_name="care_clinic_inst",
+        )
+        self.other_company = Company.objects.create(
+            name="Other Clinic",
+            business_type="clinic",
+            address="456 Other Rd, Faisalabad",
+            phone="03009998877",
+            status="active",
+            is_approved=True,
+            subscription_status="active",
+            is_manual_override=True,
+            whatsapp_instance_name="care_clinic_inst",
+        )
+        self.owner = User.objects.create_user(
+            username="care_owner@clinic.pk",
+            email="care_owner@clinic.pk",
+            password="Password123!",
+            company=self.clinic_company,
+            role="owner",
+            email_verified=True,
+        )
+        self.other_user = User.objects.create_user(
+            username="other_owner@clinic.pk",
+            email="other_owner@clinic.pk",
+            password="Password123!",
+            company=self.other_company,
+            role="owner",
+            email_verified=True,
+        )
+
+    def test_doctor_and_patient_crud_and_tenant_isolation(self):
+        # 1. Unauthenticated -> 401
+        resp = self.client.get("/api/clinic/doctors/")
+        self.assertEqual(resp.status_code, 401)
+
+        # 2. Authenticated as Care Clinic
+        self.client.force_authenticate(user=self.owner)
+        doc_resp = self.client.post("/api/clinic/doctors/", {
+            "name": "Dr. Hamza",
+            "specialty": "Cardiologist",
+            "qualification": "MBBS, FCPS",
+            "consultation_fee": "2000.00",
+            "available_days": "Mon-Fri",
+            "available_hours": "05:00 PM - 09:00 PM",
+            "is_active": True,
+        }, format="json")
+        self.assertEqual(doc_resp.status_code, 201)
+        doc_id = doc_resp.data["id"]
+
+        # Create patient
+        pat_resp = self.client.post("/api/clinic/patients/", {
+            "name": "Ali Hassan",
+            "phone": "03001239876",
+            "age": 30,
+            "gender": "Male",
+            "notes": "Chest discomfort",
+        }, format="json")
+        self.assertEqual(pat_resp.status_code, 201)
+        pat_id = pat_resp.data["id"]
+
+        # 3. Other company cannot see or edit
+        self.client.force_authenticate(user=self.other_user)
+        other_list = self.client.get("/api/clinic/doctors/")
+        self.assertEqual(len(other_list.data["doctors"]), 0)
+
+        other_patch = self.client.patch(f"/api/clinic/doctors/{doc_id}/", {"consultation_fee": "1000.00"}, format="json")
+        self.assertEqual(other_patch.status_code, 404)
+
+        other_pat_patch = self.client.patch(f"/api/clinic/patients/{pat_id}/", {"name": "Hacked"}, format="json")
+        self.assertEqual(other_pat_patch.status_code, 404)
+
+    @patch("operations.evolution_client.send_text_message")
+    def test_appointment_lifecycle_and_notifications(self, mock_evo_send):
+        from operations.models import Doctor, Patient, Appointment
+        mock_evo_send.return_value = {"success": True}
+        self.client.force_authenticate(user=self.owner)
+
+        # 1. Register doctor and patient
+        doc = Doctor.objects.create(
+            company=self.clinic_company,
+            name="Dr. Sarah",
+            specialty="Dermatologist",
+            consultation_fee=Decimal("1800.00"),
+        )
+        pat = Patient.objects.create(
+            company=self.clinic_company,
+            name="Hina",
+            phone="03090139836",
+        )
+
+        # 2. Create appointment
+        resp = self.client.post("/api/clinic/appointments/", {
+            "patient_name": "Hina",
+            "patient_phone": "03090139836",
+            "doctor_id": doc.id,
+            "appointment_date": "2026-11-25",
+            "appointment_time": "03:00 PM",
+            "reason": "Skin checkup",
+        }, format="json")
+        self.assertEqual(resp.status_code, 201)
+        apt_id = resp.data["id"]
+        apt_num = resp.data["appointment_number"]
+        self.assertTrue(apt_num.startswith("APT-"))
+        self.assertEqual(resp.data["status"], "pending")
+
+        # 3. Confirm appointment -> WhatsApp notification sent
+        confirm_resp = self.client.patch(f"/api/clinic/appointments/{apt_id}/status/", {
+            "status": "confirmed",
+            "staff_notes": "Confirmed slot with Dr. Sarah",
+        }, format="json")
+        self.assertEqual(confirm_resp.status_code, 200)
+        self.assertEqual(confirm_resp.data["status"], "confirmed")
+        self.assertEqual(mock_evo_send.call_count, 1)
+        args, kwargs = mock_evo_send.call_args
+        self.assertEqual(kwargs["to"], "923090139836")
+        self.assertIn("Appointment Confirmed", kwargs["text"])
+
+        # 4. Mark checked_in
+        checkin_resp = self.client.patch(f"/api/clinic/appointments/{apt_id}/status/", {
+            "status": "checked_in",
+        }, format="json")
+        self.assertEqual(checkin_resp.status_code, 200)
+
+        # 5. Mark completed
+        mock_evo_send.reset_mock()
+        complete_resp = self.client.patch(f"/api/clinic/appointments/{apt_id}/status/", {
+            "status": "completed",
+        }, format="json")
+        self.assertEqual(complete_resp.status_code, 200)
+        self.assertEqual(mock_evo_send.call_count, 1)
+
+        # 6. Invalid backward transition rejected (completed -> pending)
+        invalid_resp = self.client.patch(f"/api/clinic/appointments/{apt_id}/status/", {
+            "status": "pending",
+        }, format="json")
+        self.assertEqual(invalid_resp.status_code, 400)
+        self.assertIn("Invalid appointment transition", invalid_resp.data["error"])
+
+    def test_clinic_ai_agent_tools(self):
+        from operations.models import Doctor, Patient, Appointment
+        from operations.whatsapp_agent import (
+            get_category_agent_config,
+            execute_get_clinic_doctors,
+            execute_book_appointment,
+            TOOL_GET_CLINIC_DOCTORS,
+            TOOL_BOOK_APPOINTMENT,
+            TOOL_CREATE_ORDER,
+        )
+
+        cfg = get_category_agent_config("clinic")
+        self.assertEqual(cfg["key"], "clinic")
+        self.assertIn(TOOL_GET_CLINIC_DOCTORS, cfg["tools"])
+        self.assertIn(TOOL_BOOK_APPOINTMENT, cfg["tools"])
+        self.assertNotIn(TOOL_CREATE_ORDER, cfg["tools"])
+
+        # Test execute_get_clinic_doctors
+        Doctor.objects.create(
+            company=self.clinic_company,
+            name="Dr. Tariq",
+            specialty="Pediatrician",
+            consultation_fee=Decimal("1200.00"),
+            is_active=True,
+        )
+        res_docs = execute_get_clinic_doctors(self.clinic_company)
+        self.assertTrue(res_docs["success"])
+        self.assertEqual(res_docs["count"], 1)
+        self.assertEqual(res_docs["doctors"][0]["name"], "Dr. Tariq")
+        self.assertEqual(res_docs["doctors"][0]["consultation_fee"], "Rs. 1200")
+
+        # Test execute_book_appointment
+        res_book = execute_book_appointment(
+            company=self.clinic_company,
+            sender_phone="03001234567",
+            patient_name="Ahmad",
+            doctor_name="Dr. Tariq",
+            preferred_date="2026-11-26",
+            preferred_time="11:00 AM",
+            reason="Child fever",
+        )
+        self.assertTrue(res_book["success"])
+        self.assertTrue(res_book["appointment_number"].startswith("APT-"))
+        self.assertEqual(res_book["doctor"], "Dr. Tariq")
+        self.assertEqual(res_book["consultation_fee"], "Rs. 1200")
+        self.assertTrue(Appointment.objects.filter(
+            company=self.clinic_company,
+            appointment_number=res_book["appointment_number"],
+            status="pending",
+        ).exists())
+
+
 
 
 

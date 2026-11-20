@@ -32,6 +32,7 @@ MODULES = {
     "returns": "Returns & Refunds",
     # ---- clinic ----
     "appointments": "Appointments",
+    "doctors": "Doctors Directory",
     "patients": "Patients",
     "lab_tests": "Lab Tests",
 }
@@ -87,14 +88,14 @@ BUSINESS_TYPES = {
     "clinic": {
         "label": "Clinic",
         "keywords": ["clinic", "hospital", "doctor", "dental", "lab"],
-        "modules": ["orders", "appointments", "patients", "prescriptions", "lab_tests",
+        "modules": ["orders", "appointments", "doctors", "patients", "prescriptions", "lab_tests",
                     "inventory", "expenses"],
-        "owner_menu": ["orders", "appointments", "patients", "prescriptions", "lab_tests",
+        "owner_menu": ["orders", "appointments", "doctors", "patients", "prescriptions", "lab_tests",
                        "inventory", "reports"],
         "templates": {
             "Doctor": ["appointments", "patients", "prescriptions", "lab_tests"],
-            "Receptionist": ["orders", "appointments", "patients", "pos"],
-            "Manager": ["orders", "reports", "expenses", "attendance", "appointments"],
+            "Receptionist": ["orders", "appointments", "doctors", "patients", "pos"],
+            "Manager": ["orders", "reports", "expenses", "attendance", "appointments", "doctors"],
         },
     },
     "retail": {
