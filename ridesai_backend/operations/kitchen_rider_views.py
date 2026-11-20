@@ -165,6 +165,11 @@ class KitchenOrderStatusAPIView(APIView):
             reason=request.data.get("reason") or request.data.get("note"),
         )
 
+        # Auto-complete linked exchange requests if delivered
+        if new_status == Order.STATUS_DELIVERED:
+            from operations.retail_views import complete_linked_exchanges_on_delivery
+            complete_linked_exchanges_on_delivery(order, company=company)
+
         return Response({
             "id": order.id,
             "order_number": order.order_number,
@@ -219,6 +224,7 @@ class RiderOrdersAPIView(APIView):
                 "delivery_address": o.delivery_address or "Store Pickup",
                 "total": float(o.total or 0),
                 "notes": o.notes or "",
+                "is_exchange": bool("EXCHANGE SWAP" in (o.notes or "") or o.exchange_requests.exists()),
                 "items": _serialize_order_items(o),
                 "kot_data": kot_payload,
             })
@@ -295,6 +301,11 @@ class RiderOrderStatusAPIView(APIView):
             new_status=new_status,
             reason=request.data.get("reason") or request.data.get("note"),
         )
+
+        # Auto-complete linked exchange requests if delivered
+        if new_status == Order.STATUS_DELIVERED:
+            from operations.retail_views import complete_linked_exchanges_on_delivery
+            complete_linked_exchanges_on_delivery(order, company=company)
 
         return Response({
             "id": order.id,

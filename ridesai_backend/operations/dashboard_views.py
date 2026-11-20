@@ -430,6 +430,11 @@ class DashboardOrderStatusAPIView(APIView):
             reason=request.data.get("reason") or request.data.get("note"),
         )
 
+        # Auto-complete linked exchange requests if delivered
+        if new_status == Order.STATUS_DELIVERED:
+            from operations.retail_views import complete_linked_exchanges_on_delivery
+            complete_linked_exchanges_on_delivery(order, company=company)
+
         return Response({
             "success": True,
             "id": order.id,

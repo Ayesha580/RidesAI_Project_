@@ -30,7 +30,7 @@ REDIRECT_MAP = {
     User.ROLE_MANAGER: "/manager/dashboard",
     User.ROLE_KITCHEN: "/kitchen/dashboard",
     User.ROLE_RIDER: "/rider/dashboard",
-    User.ROLE_EMPLOYEE: "/employee/dashboard",
+    User.ROLE_EMPLOYEE: "/staff/dashboard",
 }
 EMAIL_VERIFICATION_REDIRECT = "/login"
 SELECT_PLAN_REDIRECT = "/select-plan"
@@ -72,6 +72,13 @@ def _resolve_redirect(user):
         return state, "/kitchen/dashboard"
     if getattr(user, "is_rider", False):
         return state, "/rider/dashboard"
+    if user.staff_role and "packer" in user.staff_role.name.lower():
+        return state, "/staff/fulfillment"
+    if user.role in (User.ROLE_STAFF, User.ROLE_EMPLOYEE):
+        mods = user.get_modules()
+        if "fulfillment" in mods:
+            return state, "/staff/fulfillment"
+        return state, "/staff/dashboard"
     return state, REDIRECT_MAP.get(user.role, "/dashboard")
 
 

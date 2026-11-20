@@ -65,3 +65,13 @@ export const clinicApi = {
   createAppointment: (data) => api.post("/clinic/appointments/", data),
   updateAppointmentStatus: (id, data) => api.patch(`/clinic/appointments/${id}/status/`, data),
 };
+
+export const retailApi = {
+  getFulfillmentOrders: (params = {}) => api.get("/retail/fulfillment/", { params }),
+  updateFulfillmentStatus: (orderId, data) => api.patch(`/retail/fulfillment/${orderId}/status/`, data),
+  getReturns: (params = {}) => api.get("/retail/returns/", { params }),
+  createReturn: (data) => api.post("/retail/returns/", data),
+  updateReturnStatus: (id, data) => api.patch(`/retail/returns/${id}/status/`, data),
+  getInventoryAlerts: () => api.get("/retail/inventory-alerts/"),
+};
+

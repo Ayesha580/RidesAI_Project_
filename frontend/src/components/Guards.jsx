@@ -8,7 +8,9 @@ const ROLE_HOME = {
   manager: "/manager/dashboard",
   kitchen: "/kitchen/dashboard",
   rider: "/rider/dashboard",
-  employee: "/employee/dashboard",
+  employee: "/staff/dashboard",
+  Employee: "/staff/dashboard",
+  staff: "/staff/dashboard",
   superadmin: "/admin/dashboard",
 };
 
@@ -21,20 +23,34 @@ export const isUserOverrideOrActive = (user) =>
   );
 
 export const homeFor = (user) => {
-  if (user?.role === "kitchen" || user?.role_name?.toLowerCase?.().includes("kitchen")) {
+  const roleLower = String(user?.role || "").toLowerCase();
+  const roleNameLower = String(user?.role_name || "").toLowerCase();
+  const modules = Array.isArray(user?.modules) ? user.modules : [];
+
+  if (roleLower === "kitchen" || roleNameLower.includes("kitchen")) {
     return "/kitchen/dashboard";
   }
   if (
-    user?.role === "rider" ||
-    user?.role_name?.toLowerCase?.().includes("rider") ||
-    user?.role_name?.toLowerCase?.().includes("delivery boy")
+    roleLower === "rider" ||
+    roleNameLower.includes("rider") ||
+    roleNameLower.includes("delivery boy") ||
+    roleNameLower.includes("delivery")
   ) {
     return "/rider/dashboard";
   }
-  if (user?.role === "owner" && isUserOverrideOrActive(user)) {
+  if (roleLower === "owner" && isUserOverrideOrActive(user)) {
     return "/owner/dashboard";
   }
-  return user?.redirect || ROLE_HOME[user?.role] || "/login";
+
+  if (roleNameLower.includes("packer") || modules.includes("fulfillment")) {
+    return "/staff/fulfillment";
+  }
+
+  if (roleLower === "staff" || roleLower === "employee") {
+    return user?.redirect || (modules.length === 1 ? `/staff/${modules[0]}` : "/staff/dashboard");
+  }
+
+  return user?.redirect || ROLE_HOME[roleLower] || ROLE_HOME[user?.role] || "/login";
 };
 
 export function AuthOnly({ children }) {
@@ -56,14 +72,21 @@ export function Guard({ roles, children }) {
   }
 
   if (roles) {
-    const isOwner = user.role === "owner";
+    const roleLower = String(user.role || "").toLowerCase();
+    const isOwner = roleLower === "owner";
+    const isStaff = roleLower === "staff" || roleLower === "employee";
     const roleMatches =
-      roles.includes(user.role) ||
-      (roles.includes("kitchen") && (user.role === "kitchen" || user.role_name?.toLowerCase?.().includes("kitchen"))) ||
-      (roles.includes("rider") && (user.role === "rider" || user.role_name?.toLowerCase?.().includes("rider") || user.role_name?.toLowerCase?.().includes("delivery")));
+      roles.map((r) => r.toLowerCase()).includes(roleLower) ||
+      (roles.includes("staff") && isStaff) ||
+      (roles.includes("employee") && isStaff) ||
+      (roles.includes("kitchen") && (roleLower === "kitchen" || user.role_name?.toLowerCase?.().includes("kitchen"))) ||
+      (roles.includes("rider") && (roleLower === "rider" || user.role_name?.toLowerCase?.().includes("rider") || user.role_name?.toLowerCase?.().includes("delivery")));
 
     if (!roleMatches && !isOwner) {
       const target = homeFor(user);
+      if (typeof window !== "undefined" && target === window.location.pathname) {
+        return children;
+      }
       return <Navigate to={target === "/login" ? "/login" : target} replace />;
     }
   }

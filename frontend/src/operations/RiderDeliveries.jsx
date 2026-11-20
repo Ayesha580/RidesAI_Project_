@@ -27,7 +27,37 @@ export default function RiderDeliveries() {
     {error && <div className="ad-alert" role="alert">{error}</div>}
     {loading ? <div className="ad-skeleton" style={{ height: 150 }} /> : orders.length === 0 ? <div className="ad-empty"><span>🛵</span><h3>No assigned deliveries</h3><p>Your assigned orders will appear here.</p></div> : <div style={{ display: "grid", gap: 12 }}>
       {orders.map((o) => <article key={o.id} style={{ background: "white", border: "1px solid #e5e7eb", borderRadius: 14, padding: 16 }}>
-        <strong>{o.order_number}</strong><p style={{ margin: "6px 0", fontWeight: 600 }}>{o.customer_name} · {o.customer_phone || "No phone"}</p>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+          <strong>{o.order_number}</strong>
+          {(o.is_exchange || (o.notes && o.notes.includes("EXCHANGE SWAP"))) && (
+            <span style={{
+              background: "rgba(255, 119, 255, 0.16)",
+              color: "#c026d3",
+              border: "1px solid rgba(255, 119, 255, 0.4)",
+              borderRadius: "20px",
+              padding: "2px 8px",
+              fontSize: "11px",
+              fontWeight: "800",
+            }}>
+              🔄 SWAP
+            </span>
+          )}
+        </div>
+        {(o.is_exchange || (o.notes && o.notes.includes("EXCHANGE SWAP"))) && (
+          <div style={{
+            margin: "8px 0",
+            padding: "8px 10px",
+            background: "#fdf4ff",
+            border: "1px solid #f0abfc",
+            borderRadius: "8px",
+            color: "#86198f",
+            fontSize: "12px",
+            fontWeight: "600",
+          }}>
+            🔄 <strong>EXCHANGE SWAP:</strong> Hand over replacement &amp; collect original item!
+          </div>
+        )}
+        <p style={{ margin: "6px 0", fontWeight: 600 }}>{o.customer_name} · {o.customer_phone || "No phone"}</p>
         <p style={{ color: "#4b5563", fontSize: 13 }}>{o.delivery_address || "No delivery address provided"}</p>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
           <span>{o.status.replaceAll("_", " ")}</span>

@@ -542,5 +542,84 @@ class Appointment(models.Model):
         return f"{self.appointment_number} - {self.patient_name} with {doc} ({self.status})"
 
 
+class ReturnRequest(models.Model):
+    STATUS_PENDING = "pending"
+    STATUS_APPROVED = "approved"
+    STATUS_REJECTED = "rejected"
+    STATUS_COMPLETED = "completed"
+
+    STATUS_CHOICES = [
+        (STATUS_PENDING, "Pending"),
+        (STATUS_APPROVED, "Approved"),
+        (STATUS_REJECTED, "Rejected"),
+        (STATUS_COMPLETED, "Completed"),
+    ]
+
+    TYPE_RETURN = "return"
+    TYPE_EXCHANGE = "exchange"
+
+    TYPE_CHOICES = [
+        (TYPE_RETURN, "Return"),
+        (TYPE_EXCHANGE, "Exchange"),
+    ]
+
+    company = models.ForeignKey(
+        "companies.Company",
+        on_delete=models.CASCADE,
+        related_name="return_requests",
+        db_index=True,
+    )
+    return_number = models.CharField(max_length=32, unique=True, editable=False)
+    order = models.ForeignKey(
+        Order,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="return_requests",
+    )
+    order_number = models.CharField(max_length=64, blank=True, default="")
+    customer_name = models.CharField(max_length=255, blank=True, default="")
+    customer_phone = models.CharField(max_length=32, db_index=True)
+    item_summary = models.TextField(blank=True, default="")
+    reason = models.TextField()
+    request_type = models.CharField(
+        max_length=20,
+        choices=TYPE_CHOICES,
+        default=TYPE_RETURN,
+    )
+    status = models.CharField(
+        max_length=20,
+        choices=STATUS_CHOICES,
+        default=STATUS_PENDING,
+        db_index=True,
+    )
+    staff_notes = models.TextField(blank=True, default="")
+    replacement_order = models.ForeignKey(
+        Order,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="exchange_requests",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ("-created_at",)
+        indexes = [
+            models.Index(fields=["company", "status", "-created_at"]),
+            models.Index(fields=["company", "customer_phone"]),
+        ]
+
+    def save(self, *args, **kwargs):
+        if not self.return_number:
+            self.return_number = f"RET-{timezone.now():%y%m%d}-{uuid.uuid4().hex[:6].upper()}"
+        super().save(*args, **kwargs)
+
+    def __str__(self):
+        return f"{self.return_number} - {self.customer_name} ({self.request_type}: {self.status})"
+
+
+
 
 

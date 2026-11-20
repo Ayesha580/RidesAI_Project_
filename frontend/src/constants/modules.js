@@ -26,6 +26,7 @@ const ICONS = {
   products: "🛒",
   stock_alerts: "🔔",
   returns: "↩️",
+  fulfillment: "📦",
 
   appointments: "🩺",
   doctors: "👨‍⚕️",
@@ -63,6 +64,7 @@ const LABELS = {
   products: "Products",
   stock_alerts: "Low Stock Alerts",
   returns: "Returns & Refunds",
+  fulfillment: "Fulfillment",
 
   // clinic
   appointments: "Appointments",

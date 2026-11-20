@@ -237,6 +237,11 @@ class OrderStatusAPIView(BusinessAPIView):
             reason=request.data.get("note"),
         )
 
+        # Auto-complete linked exchange requests if delivered
+        if next_status == Order.STATUS_DELIVERED:
+            from operations.retail_views import complete_linked_exchanges_on_delivery
+            complete_linked_exchanges_on_delivery(order, company=self.company)
+
         return Response(_order_payload(order))
 
 

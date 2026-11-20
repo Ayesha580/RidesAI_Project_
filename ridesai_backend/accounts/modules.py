@@ -30,6 +30,7 @@ MODULES = {
     "products": "Products",
     "stock_alerts": "Low Stock Alerts",
     "returns": "Returns & Refunds",
+    "fulfillment": "Fulfillment",
     # ---- clinic ----
     "appointments": "Appointments",
     "doctors": "Doctors Directory",
@@ -101,14 +102,16 @@ BUSINESS_TYPES = {
     "retail": {
         "label": "Retail Shop",
         "keywords": ["retail", "shop", "boutique", "clothing", "electronics"],
-        "modules": ["orders", "products", "returns", "deliveries", "my_deliveries",
+        "modules": ["orders", "fulfillment", "products", "returns", "deliveries", "my_deliveries",
                     "customers", "inventory", "suppliers", "expenses"],
-        "owner_menu": ["orders", "products", "returns", "customers", "deliveries",
+        "owner_menu": ["orders", "fulfillment", "products", "returns", "customers", "deliveries",
                        "inventory", "reports"],
         "templates": {
-            "Manager": ["orders", "products", "pos", "inventory", "reports", "expenses", "deliveries"],
+            "Manager": ["orders", "fulfillment", "products", "pos", "inventory", "reports", "expenses", "deliveries"],
+            "Packer": ["fulfillment", "orders"],
             "Cashier": ["orders", "pos", "customers", "returns"],
             "Stock Keeper": ["products", "inventory"],
+            "Delivery Boy": ["my_deliveries"],
         },
     },
     # "Other" ya koi unknown business type

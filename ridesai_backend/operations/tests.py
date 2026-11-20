@@ -2946,6 +2946,394 @@ class ClinicPlatformTests(TestCase):
         ).exists())
 
 
+from rest_framework import status as drf_status
+from django.urls import reverse as django_reverse
+
+
+class RetailPlatformTests(TestCase):
+    """
+    Test suite for the Retail / Store Platform:
+    - Fulfillment board (packing & dispatch) with forward-only order transitions
+    - Returns & exchanges lifecycle (pending -> approved | rejected -> completed)
+    - Low stock & out of stock inventory alerts
+    - Multi-tenant company isolation
+    - Shared AI agent retail tools (submit_return_request)
+    """
+
+    def setUp(self):
+        self.retail_company_a = Company.objects.create(
+            name="Alpha Retail Mart",
+            business_type="retail",
+            status="active",
+            is_approved=True,
+            subscription_status="active",
+            is_manual_override=True,
+            whatsapp_instance_name="alpha_retail_inst",
+            whatsapp_connection_status="connected",
+            currency_symbol="Rs.",
+        )
+        self.retail_company_b = Company.objects.create(
+            name="Beta Electronics",
+            business_type="retail",
+            status="active",
+            is_approved=True,
+            subscription_status="active",
+            is_manual_override=True,
+            whatsapp_instance_name="beta_elect_inst",
+            whatsapp_connection_status="connected",
+            currency_symbol="Rs.",
+        )
+
+        self.owner_a = User.objects.create_user(
+            username="owner_alpha@test.pk",
+            email="owner_alpha@test.pk",
+            password="Password123!",
+            company=self.retail_company_a,
+            role=User.ROLE_OWNER,
+            email_verified=True,
+        )
+        self.owner_b = User.objects.create_user(
+            username="owner_beta@test.pk",
+            email="owner_beta@test.pk",
+            password="Password123!",
+            company=self.retail_company_b,
+            role=User.ROLE_OWNER,
+            email_verified=True,
+        )
+
+        self.client_a = APIClient()
+        self.client_a.force_authenticate(user=self.owner_a)
+
+        self.client_b = APIClient()
+        self.client_b.force_authenticate(user=self.owner_b)
+
+        # Products & Inventory
+        from companies.models import CatalogItem, Inventory
+        self.prod_in_stock = CatalogItem.objects.create(
+            company=self.retail_company_a,
+            name="Wireless Headphones",
+            sku="WH-100",
+            price=Decimal("3500.00"),
+            is_available=True,
+        )
+        Inventory.objects.create(
+            company=self.retail_company_a,
+            item=self.prod_in_stock,
+            is_unlimited=False,
+            quantity=Decimal("50"),
+            low_stock_threshold=Decimal("10"),
+        )
+
+        self.prod_low_stock = CatalogItem.objects.create(
+            company=self.retail_company_a,
+            name="Gaming Mouse RGB",
+            sku="GM-200",
+            price=Decimal("1800.00"),
+            is_available=True,
+        )
+        Inventory.objects.create(
+            company=self.retail_company_a,
+            item=self.prod_low_stock,
+            is_unlimited=False,
+            quantity=Decimal("6"),  # Low stock
+            low_stock_threshold=Decimal("10"),
+        )
+
+        self.prod_out_of_stock = CatalogItem.objects.create(
+            company=self.retail_company_a,
+            name="Mechanical Keyboard",
+            sku="MK-300",
+            price=Decimal("5500.00"),
+            is_available=False,
+        )
+        Inventory.objects.create(
+            company=self.retail_company_a,
+            item=self.prod_out_of_stock,
+            is_unlimited=False,
+            quantity=Decimal("0"),  # Out of stock
+            low_stock_threshold=Decimal("5"),
+        )
+
+        # Orders for fulfillment
+        self.order_to_pack = Order.objects.create(
+            company=self.retail_company_a,
+            customer_name="Usman Ali",
+            customer_phone="+923001112233",
+            delivery_address="Faisalabad D-Ground",
+            status=Order.STATUS_NEW,
+            subtotal=Decimal("3500.00"),
+            delivery_fee=Decimal("150.00"),
+            total=Decimal("3650.00"),
+        )
+        OrderItem.objects.create(
+            order=self.order_to_pack,
+            item=self.prod_in_stock,
+            item_name=self.prod_in_stock.name,
+            quantity=Decimal("1"),
+            unit_price=self.prod_in_stock.price,
+            line_total=self.prod_in_stock.price,
+        )
+
+        self.order_ready = Order.objects.create(
+            company=self.retail_company_a,
+            customer_name="Ayesha Khan",
+            customer_phone="+923214445566",
+            delivery_address="Faisalabad Kohinoor",
+            status=Order.STATUS_READY,
+            subtotal=Decimal("1800.00"),
+            delivery_fee=Decimal("150.00"),
+            total=Decimal("1950.00"),
+        )
+
+    def test_retail_fulfillment_listing_and_kpis(self):
+        url = django_reverse("retail_fulfillment")
+        resp = self.client_a.get(url)
+        self.assertEqual(resp.status_code, drf_status.HTTP_200_OK)
+        self.assertIn("kpis", resp.data)
+        self.assertIn("results", resp.data)
+        self.assertEqual(resp.data["kpis"]["total"], 2)
+        self.assertEqual(resp.data["kpis"]["to_pack"], 1)
+        self.assertEqual(resp.data["kpis"]["ready"], 1)
+
+        # Test filter by stage
+        resp_filtered = self.client_a.get(url, {"stage": "to_pack"})
+        self.assertEqual(resp_filtered.status_code, drf_status.HTTP_200_OK)
+        self.assertEqual(len(resp_filtered.data["results"]), 1)
+        self.assertEqual(resp_filtered.data["results"][0]["id"], self.order_to_pack.id)
+
+    @patch("operations.retail_views.send_status_notification")
+    def test_retail_fulfillment_forward_status_transition(self, mock_notify):
+        mock_notify.return_value = {"ok": True, "provider": "evolution"}
+        url = django_reverse("retail_fulfillment_status", kwargs={"order_id": self.order_to_pack.id})
+
+        # Advance to preparing (packing)
+        resp = self.client_a.patch(url, {"status": "preparing"})
+        self.assertEqual(resp.status_code, drf_status.HTTP_200_OK)
+        self.order_to_pack.refresh_from_db()
+        self.assertEqual(self.order_to_pack.status, "preparing")
+        mock_notify.assert_called_once()
+
+        # Reject backward transition from preparing -> new
+        resp_bad = self.client_a.patch(url, {"status": "new"})
+        self.assertEqual(resp_bad.status_code, drf_status.HTTP_400_BAD_REQUEST)
+        self.assertIn("Invalid status transition", resp_bad.data["detail"])
+
+    @patch("operations.retail_views.send_status_notification")
+    def test_retail_returns_crud_and_status_transitions(self, mock_notify):
+        mock_notify.return_value = {"ok": True, "provider": "evolution"}
+        from operations.models import ReturnRequest
+
+        # 1. Create Return Request
+        create_url = django_reverse("retail_returns")
+        create_payload = {
+            "customer_phone": "+923001112233",
+            "customer_name": "Usman Ali",
+            "order_number": self.order_to_pack.order_number,
+            "item_summary": "1x Wireless Headphones",
+            "reason": "Faulty left audio driver",
+            "request_type": "return",
+        }
+        resp = self.client_a.post(create_url, create_payload)
+        self.assertEqual(resp.status_code, drf_status.HTTP_201_CREATED)
+        ret_id = resp.data["return_request"]["id"]
+        ret = ReturnRequest.objects.get(pk=ret_id)
+        self.assertEqual(ret.status, ReturnRequest.STATUS_PENDING)
+        self.assertTrue(ret.return_number.startswith("RET-"))
+
+        # 2. Approve Return Request
+        status_url = django_reverse("retail_return_status", kwargs={"pk": ret_id})
+        resp_approve = self.client_a.patch(status_url, {
+            "status": "approved",
+            "staff_notes": "Return approved. Please keep in original packaging.",
+        })
+        self.assertEqual(resp_approve.status_code, drf_status.HTTP_200_OK)
+        ret.refresh_from_db()
+        self.assertEqual(ret.status, "approved")
+        mock_notify.assert_called_once()
+
+        # 3. Complete Return Request
+        resp_comp = self.client_a.patch(status_url, {
+            "status": "completed",
+            "staff_notes": "Item received and refund processed.",
+        })
+        self.assertEqual(resp_comp.status_code, drf_status.HTTP_200_OK)
+        ret.refresh_from_db()
+        self.assertEqual(ret.status, "completed")
+
+        # 4. Reject backward transition from completed -> pending
+        resp_inv = self.client_a.patch(status_url, {"status": "pending"})
+        self.assertEqual(resp_inv.status_code, drf_status.HTTP_400_BAD_REQUEST)
+
+    @patch("operations.evolution_client.send_text_message")
+    def test_retail_return_approval_evolution_notification(self, mock_evolution):
+        mock_evolution.return_value = {"status": "SUCCESS"}
+        from operations.models import ReturnRequest
+        ret = ReturnRequest.objects.create(
+            company=self.retail_company_a,
+            customer_phone="03001234567",
+            customer_name="Usman Ali",
+            order_number=self.order_to_pack.order_number,
+            item_summary="1x Wireless Headphones",
+            reason="Faulty device",
+            request_type="return",
+            status=ReturnRequest.STATUS_PENDING,
+        )
+        status_url = django_reverse("retail_return_status", kwargs={"pk": ret.id})
+        resp = self.client_a.patch(status_url, {
+            "status": "approved",
+            "staff_notes": "Return approved by manager.",
+        })
+        self.assertEqual(resp.status_code, drf_status.HTTP_200_OK)
+        self.assertTrue(resp.data["notification_sent"])
+        ret.refresh_from_db()
+        self.assertEqual(ret.status, "approved")
+        mock_evolution.assert_called_once()
+        call_kwargs = mock_evolution.call_args[1]
+        self.assertEqual(call_kwargs["instance_name"], "alpha_retail_inst")
+        self.assertEqual(call_kwargs["phone"], "923001234567")
+        self.assertEqual(call_kwargs["to"], "923001234567")
+        self.assertIn("Return Request Approved", call_kwargs["text"])
+
+    @patch("operations.evolution_client.send_text_message")
+    def test_exchange_approval_creates_replacement_order_and_completes_on_delivery(self, mock_evolution):
+        mock_evolution.return_value = {"status": "SUCCESS"}
+        from operations.models import ReturnRequest, Order
+
+        # 1. Create an exchange request
+        exchange_req = ReturnRequest.objects.create(
+            company=self.retail_company_a,
+            order=self.order_to_pack,
+            order_number=self.order_to_pack.order_number,
+            customer_name="Hamza Tariq",
+            customer_phone="03009988776",
+            item_summary="1x Wireless Headphones",
+            reason="Color replacement requested",
+            request_type=ReturnRequest.TYPE_EXCHANGE,
+            status=ReturnRequest.STATUS_PENDING,
+        )
+
+        status_url = django_reverse("retail_return_status", kwargs={"pk": exchange_req.id})
+
+        # 2. Approve the exchange request -> replacement_order MUST be created
+        resp_approve = self.client_a.patch(status_url, {
+            "status": "approved",
+            "staff_notes": "Exchange approved for doorstep replacement swap",
+        })
+        self.assertEqual(resp_approve.status_code, drf_status.HTTP_200_OK)
+        exchange_req.refresh_from_db()
+        self.assertEqual(exchange_req.status, ReturnRequest.STATUS_APPROVED)
+        self.assertIsNotNone(exchange_req.replacement_order)
+
+        rep_order = exchange_req.replacement_order
+        self.assertEqual(rep_order.status, Order.STATUS_CONFIRMED)
+        self.assertEqual(rep_order.total, Decimal("0.00"))
+        self.assertIn("EXCHANGE SWAP", rep_order.notes)
+        self.assertEqual(rep_order.customer_phone, exchange_req.customer_phone)
+        self.assertEqual(resp_approve.data["replacement_order_number"], rep_order.order_number)
+
+        # 3. Advance replacement_order through fulfillment: confirmed -> preparing -> ready -> out_for_delivery -> delivered
+        fulfillment_status_url = django_reverse("retail_fulfillment_status", kwargs={"order_id": rep_order.id})
+        self.client_a.patch(fulfillment_status_url, {"status": "preparing"})
+        self.client_a.patch(fulfillment_status_url, {"status": "ready"})
+        self.client_a.patch(fulfillment_status_url, {"status": "out_for_delivery"})
+        resp_delivered = self.client_a.patch(fulfillment_status_url, {"status": "delivered"})
+        self.assertEqual(resp_delivered.status_code, drf_status.HTTP_200_OK)
+
+        # Assert ReturnRequest automatically transitioned to completed upon delivery
+        exchange_req.refresh_from_db()
+        self.assertEqual(exchange_req.status, ReturnRequest.STATUS_COMPLETED)
+        self.assertIn("Auto-completed", exchange_req.staff_notes)
+
+        # 4. Verify that approving a standard return (refund) does NOT create a replacement order
+        return_req = ReturnRequest.objects.create(
+            company=self.retail_company_a,
+            order=self.order_to_pack,
+            order_number=self.order_to_pack.order_number,
+            customer_name="Ali Khan",
+            customer_phone="03001122334",
+            item_summary="1x Wireless Headphones",
+            reason="Unwanted gift",
+            request_type=ReturnRequest.TYPE_RETURN,
+            status=ReturnRequest.STATUS_PENDING,
+        )
+        return_status_url = django_reverse("retail_return_status", kwargs={"pk": return_req.id})
+        resp_return_approve = self.client_a.patch(return_status_url, {
+            "status": "approved",
+            "staff_notes": "Return approved for refund",
+        })
+        self.assertEqual(resp_return_approve.status_code, drf_status.HTTP_200_OK)
+        return_req.refresh_from_db()
+        self.assertEqual(return_req.status, ReturnRequest.STATUS_APPROVED)
+        self.assertIsNone(return_req.replacement_order)
+
+    def test_retail_inventory_alerts(self):
+        url = django_reverse("retail_inventory_alerts")
+        resp = self.client_a.get(url)
+        self.assertEqual(resp.status_code, drf_status.HTTP_200_OK)
+        kpis = resp.data["kpis"]
+        self.assertEqual(kpis["low_stock_count"], 1)
+        self.assertEqual(kpis["out_of_stock_count"], 1)
+        self.assertEqual(kpis["total_alerts"], 2)
+
+        low_skus = [it["sku"] for it in resp.data["low_stock"]]
+        self.assertIn("GM-200", low_skus)
+
+        out_skus = [it["sku"] for it in resp.data["out_of_stock"]]
+        self.assertIn("MK-300", out_skus)
+
+    def test_retail_multi_tenant_isolation(self):
+        # Company B cannot view Company A's fulfillment orders
+        url = django_reverse("retail_fulfillment")
+        resp_b = self.client_b.get(url)
+        self.assertEqual(resp_b.status_code, drf_status.HTTP_200_OK)
+        self.assertEqual(resp_b.data["kpis"]["total"], 0)
+        self.assertEqual(len(resp_b.data["results"]), 0)
+
+        # Company B cannot modify Company A's order status
+        status_url = django_reverse("retail_fulfillment_status", kwargs={"order_id": self.order_to_pack.id})
+        resp_patch_b = self.client_b.patch(status_url, {"status": "preparing"})
+        self.assertEqual(resp_patch_b.status_code, drf_status.HTTP_404_NOT_FOUND)
+
+    def test_retail_agent_tools_and_return_request(self):
+        from operations.whatsapp_agent import (
+            get_category_agent_config,
+            execute_submit_return_request,
+            TOOL_SUBMIT_RETURN_REQUEST,
+            TOOL_GET_CATALOG_ITEMS,
+            TOOL_CREATE_ORDER,
+            TOOL_CHECK_ORDER_STATUS,
+        )
+        from operations.models import ReturnRequest
+
+        cfg = get_category_agent_config("retail")
+        self.assertEqual(cfg["key"], "retail")
+        self.assertIn(TOOL_SUBMIT_RETURN_REQUEST, cfg["tools"])
+        self.assertIn(TOOL_GET_CATALOG_ITEMS, cfg["tools"])
+        self.assertIn(TOOL_CREATE_ORDER, cfg["tools"])
+        self.assertIn(TOOL_CHECK_ORDER_STATUS, cfg["tools"])
+
+        # Test execute_submit_return_request
+        res = execute_submit_return_request(
+            company=self.retail_company_a,
+            sender_phone="+923001112233",
+            customer_name="Usman Ali",
+            order_number=self.order_to_pack.order_number,
+            item_summary="1x Wireless Headphones",
+            reason="Color mismatch",
+            request_type="exchange",
+        )
+        self.assertTrue(res["success"])
+        self.assertTrue(res["return_number"].startswith("RET-"))
+        self.assertEqual(res["request_type"], "exchange")
+        self.assertTrue(ReturnRequest.objects.filter(
+            company=self.retail_company_a,
+            return_number=res["return_number"],
+            request_type="exchange",
+            status="pending",
+        ).exists())
+
+
+
 
 
 

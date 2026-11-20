@@ -389,10 +389,46 @@ export default function RiderDashboard() {
                     <span className="rd-order-ref">#{o.order_number}</span>
                     <div style={{ fontSize: 11, color: "#64748b", marginTop: 2 }}>{o.formatted_date}</div>
                   </div>
-                  <span className={`rd-status-badge ${isOut ? "rd-status-out" : "rd-status-assigned"}`}>
-                    {isOut ? "🛵 On The Way" : "📦 Ready for Pickup"}
-                  </span>
+                  <div style={{ display: "flex", gap: "6px", alignItems: "center" }}>
+                    {(o.is_exchange || (o.notes && o.notes.includes("EXCHANGE SWAP"))) && (
+                      <span style={{
+                        background: "rgba(255, 119, 255, 0.16)",
+                        color: "#c026d3",
+                        border: "1px solid rgba(255, 119, 255, 0.4)",
+                        borderRadius: "20px",
+                        padding: "3px 8px",
+                        fontSize: "11px",
+                        fontWeight: "800"
+                      }}>
+                        🔄 SWAP
+                      </span>
+                    )}
+                    <span className={`rd-status-badge ${isOut ? "rd-status-out" : "rd-status-assigned"}`}>
+                      {isOut ? "🛵 On The Way" : "📦 Ready for Pickup"}
+                    </span>
+                  </div>
                 </div>
+
+                {(o.is_exchange || (o.notes && o.notes.includes("EXCHANGE SWAP"))) && (
+                  <div style={{
+                    margin: "10px 0 6px 0",
+                    padding: "9px 12px",
+                    background: "#fdf4ff",
+                    border: "1px solid #f0abfc",
+                    borderRadius: "10px",
+                    color: "#86198f",
+                    fontSize: "12.5px",
+                    fontWeight: "600",
+                    display: "flex",
+                    alignItems: "center",
+                    gap: "8px"
+                  }}>
+                    <span style={{ fontSize: "16px" }}>🔄</span>
+                    <div>
+                      <strong>DOORSTEP SWAP:</strong> Collect customer&apos;s original item before marking delivered!
+                    </div>
+                  </div>
+                )}
 
                 {/* Customer Details */}
                 <div className="rd-info-row">

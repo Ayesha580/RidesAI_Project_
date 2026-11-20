@@ -49,6 +49,8 @@ import PharmacyBatches from "./operations/PharmacyBatches";
 import ClinicAppointments from "./operations/ClinicAppointments";
 import ClinicDoctors from "./operations/ClinicDoctors";
 import ClinicPatients from "./operations/ClinicPatients";
+import RetailFulfillment from "./operations/RetailFulfillment";
+import RetailReturns from "./operations/RetailReturns";
 
 function Home() {
   const { user, loading } = useAuth();
@@ -65,11 +67,20 @@ function OwnerModulePage() {
   if (moduleKey === "appointments") return <ClinicAppointments />;
   if (moduleKey === "doctors") return <ClinicDoctors />;
   if (moduleKey === "patients") return <ClinicPatients />;
+  if (moduleKey === "fulfillment") return <RetailFulfillment />;
+  if (moduleKey === "returns") return <RetailReturns />;
   return <Catalog moduleKey={moduleKey} />;
 }
 function ModuleGuard({ children }) {
-  const { user } = useAuth();
+  const { user, loading } = useAuth();
   const { moduleKey } = useParams();
+  if (loading) return <Loading />;
+  if (!user) return <Navigate to="/login" replace />;
+  const roleNameLower = String(user?.role_name || "").toLowerCase();
+  const isPacker = roleNameLower.includes("packer");
+  if (isPacker && ["fulfillment", "orders"].includes(moduleKey)) {
+    return children;
+  }
   return user?.modules?.includes(moduleKey) ? children : <Navigate to="/staff/dashboard" replace />;
 }
 
@@ -83,6 +94,8 @@ function StaffModulePage() {
   if (moduleKey === "appointments") return <ClinicAppointments staff />;
   if (moduleKey === "doctors") return <ClinicDoctors staff />;
   if (moduleKey === "patients") return <ClinicPatients staff />;
+  if (moduleKey === "fulfillment") return <RetailFulfillment staff />;
+  if (moduleKey === "returns") return <RetailReturns staff />;
   if (["products", "menu", "medicines", "services"].includes(moduleKey)) return <StaffLayout title={moduleLabel(moduleKey)}><Catalog moduleKey={moduleKey} /></StaffLayout>;
   return (
     <StaffLayout title={moduleLabel(moduleKey)}>

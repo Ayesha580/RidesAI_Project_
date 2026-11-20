@@ -215,6 +215,44 @@ TOOL_BOOK_APPOINTMENT = {
     },
 }
 
+TOOL_SUBMIT_RETURN_REQUEST = {
+    "type": "function",
+    "function": {
+        "name": "submit_return_request",
+        "description": (
+            "Submits a customer return or exchange request for retail items or previously placed orders. "
+            "Creates a pending return request with return reference number (RET-YYMMDD-XXXX)."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "customer_name": {
+                    "type": "string",
+                    "description": "Full name of the customer requesting the return or exchange.",
+                },
+                "order_number": {
+                    "type": "string",
+                    "description": "Optional order reference number (e.g., 'RA-261117-XXXX') if known.",
+                },
+                "item_summary": {
+                    "type": "string",
+                    "description": "Description and quantity of the items being returned or exchanged.",
+                },
+                "reason": {
+                    "type": "string",
+                    "description": "Customer's reason for the return or exchange (e.g. 'wrong size', 'defective item', 'change of mind').",
+                },
+                "request_type": {
+                    "type": "string",
+                    "enum": ["return", "exchange"],
+                    "description": "Whether the customer wants a return (refund/credit) or an exchange for another item/size.",
+                },
+            },
+            "required": ["reason"],
+        },
+    },
+}
+
 AGENT_TOOLS = [
     TOOL_GET_CATALOG_ITEMS,
     TOOL_CREATE_ORDER,
@@ -222,6 +260,7 @@ AGENT_TOOLS = [
     TOOL_SUBMIT_PRESCRIPTION_REQUEST,
     TOOL_GET_CLINIC_DOCTORS,
     TOOL_BOOK_APPOINTMENT,
+    TOOL_SUBMIT_RETURN_REQUEST,
 ]
 
 
@@ -272,13 +311,16 @@ CATEGORY_AGENT_PROFILES = {
     },
     "retail": {
         "key": "retail",
-        "role_desc": "retail store assistant and product ordering support",
+        "role_desc": "retail store assistant, order fulfillment, and customer return/exchange support",
         "catalog_header": "STORE CATALOG & INVENTORY",
         "instructions": (
             "- Primary duty is helping shoppers explore available retail merchandise, checking product stock, "
-            "and taking orders with delivery address."
+            "taking delivery orders, checking order status, and processing returns/exchanges.\n"
+            "- PRODUCT ORDERS: Call `get_catalog_items` to verify items and prices in Rs. (PKR). Once customer confirms items and delivery address, place the order via `create_order`.\n"
+            "- ORDER TRACKING: Call `check_order_status` if the customer inquires about their recent order.\n"
+            "- RETURNS & EXCHANGES: If a customer wants to return or exchange an item, gather their details, reason, and order number (if known), then call `submit_return_request`."
         ),
-        "tools": [TOOL_GET_CATALOG_ITEMS, TOOL_CREATE_ORDER, TOOL_CHECK_ORDER_STATUS],
+        "tools": [TOOL_GET_CATALOG_ITEMS, TOOL_CREATE_ORDER, TOOL_CHECK_ORDER_STATUS, TOOL_SUBMIT_RETURN_REQUEST],
     },
 }
 
@@ -730,6 +772,79 @@ def execute_book_appointment(
     except Exception as e:
         logger.error(f"[Tool: book_appointment] Error: {e}", exc_info=True)
         return {"success": False, "error": str(e)}
+
+
+def execute_submit_return_request(
+    company: Company,
+    sender_phone: str,
+    customer_name: Optional[str] = None,
+    order_number: Optional[str] = None,
+    item_summary: Optional[str] = None,
+    reason: Optional[str] = None,
+    request_type: str = "return",
+) -> Dict[str, Any]:
+    """
+    Submits a return or exchange request strictly scoped to the tenant company.
+    Auto-associates with an existing company order if order_number or recent phone matches.
+    """
+    try:
+        from operations.models import ReturnRequest, Order
+        clean_phone = (sender_phone or "").strip()
+        clean_name = (customer_name or "").strip()
+        matched_order = None
+
+        if order_number and str(order_number).strip():
+            matched_order = Order.objects.filter(
+                company=company,
+                order_number__iexact=str(order_number).strip()
+            ).first()
+            if matched_order and not clean_name:
+                clean_name = matched_order.customer_name
+        elif clean_phone:
+            # Fallback: check most recent order for phone (last 10 digits)
+            suffix = clean_phone[-10:] if len(clean_phone) >= 10 else clean_phone
+            matched_order = Order.objects.filter(
+                company=company,
+                customer_phone__icontains=suffix
+            ).order_by("-created_at").first()
+            if matched_order:
+                order_number = matched_order.order_number
+                if not clean_name:
+                    clean_name = matched_order.customer_name
+
+        req_type = "exchange" if str(request_type).strip().lower() == "exchange" else "return"
+        ret = ReturnRequest.objects.create(
+            company=company,
+            order=matched_order,
+            order_number=order_number or (matched_order.order_number if matched_order else ""),
+            customer_name=clean_name or "Valued Customer",
+            customer_phone=clean_phone,
+            item_summary=item_summary or "",
+            reason=reason or "Customer requested return/exchange via WhatsApp AI",
+            request_type=req_type,
+            status=ReturnRequest.STATUS_PENDING,
+        )
+
+        logger.info(
+            f"[Tool: submit_return_request] Created {req_type} request {ret.return_number} "
+            f"for {clean_name} ({clean_phone}) at {company.name}."
+        )
+
+        return {
+            "success": True,
+            "return_number": ret.return_number,
+            "request_type": req_type,
+            "order_number": ret.order_number,
+            "status": ret.status,
+            "message": (
+                f"Your {req_type} request #{ret.return_number} has been submitted successfully. "
+                f"Our retail team at {company.name} will review and contact you shortly."
+            ),
+        }
+    except Exception as e:
+        logger.error(f"[Tool: submit_return_request] Error: {e}", exc_info=True)
+        return {"success": False, "error": str(e)}
+
 
 
 # ============================================================================
@@ -1213,6 +1328,16 @@ def _generate_agent_reply(
                             preferred_date=fn_args.get("preferred_date"),
                             preferred_time=fn_args.get("preferred_time"),
                             reason=fn_args.get("reason"),
+                        )
+                    elif fn_name == "submit_return_request":
+                        tool_result = execute_submit_return_request(
+                            company=company,
+                            sender_phone=sender_phone,
+                            customer_name=fn_args.get("customer_name") or customer_name,
+                            order_number=fn_args.get("order_number"),
+                            item_summary=fn_args.get("item_summary"),
+                            reason=fn_args.get("reason"),
+                            request_type=fn_args.get("request_type") or "return",
                         )
                     else:
                         tool_result = {"error": f"Tool '{fn_name}' is not recognized."}

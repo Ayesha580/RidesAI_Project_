@@ -50,6 +50,7 @@ def build_status_message(
     reference_id: str,
     new_status: str,
     reason: Optional[str] = None,
+    replacement_order_number: Optional[str] = None,
 ) -> str:
     """
     Constructs a polite, professional customer status notification message in English/Roman Urdu.
@@ -118,6 +119,47 @@ def build_status_message(
                 f"ℹ️ *Appointment Update* (Ref #{reference_id})\n\n"
                 f"Status at *{comp}*: *{_format_status_label(status_lower)}*."
             )
+    elif entity_type in ("return", "exchange"):
+        req_label = "Return" if entity_type == "return" else "Exchange"
+        if status_lower == "approved":
+            if entity_type == "exchange" and replacement_order_number:
+                msg = (
+                    f"✅ *Exchange Request Approved!* (Ref #{reference_id})\n\n"
+                    f"Thank you for contacting *{comp}*. Your exchange request has been approved! "
+                    f"Replacement Order *#{replacement_order_number}* has been created for doorstep swap.\n"
+                    f"Our rider will deliver your replacement and collect the original item. Please keep the item ready in original packaging."
+                )
+            else:
+                msg = (
+                    f"✅ *{req_label} Request Approved!* (Ref #{reference_id})\n\n"
+                    f"Thank you for contacting *{comp}*. Your {entity_type} request has been approved by our team.\n"
+                    f"Please keep items in their original condition for collection/dispatch."
+                )
+        elif status_lower == "completed":
+            if entity_type == "exchange":
+                msg = (
+                    f"🎉 *Exchange Completed!* (Ref #{reference_id})\n\n"
+                    f"Your exchange request with *{comp}* has been successfully completed via doorstep swap.\n"
+                    f"Thank you for shopping with us!"
+                )
+            else:
+                msg = (
+                    f"🎉 *Return Completed!* (Ref #{reference_id})\n\n"
+                    f"Your return request with *{comp}* has been successfully processed and completed.\n"
+                    f"Thank you for shopping with us!"
+                )
+        elif status_lower == "rejected":
+            reason_text = f"\n*Reason:* {reason}" if reason else ""
+            msg = (
+                f"❌ *{req_label} Request Rejected* (Ref #{reference_id})\n\n"
+                f"Your {entity_type} request with *{comp}* could not be approved.{reason_text}\n"
+                f"Please reply here if you have any questions."
+            )
+        else:
+            msg = (
+                f"ℹ️ *{req_label} Request Update* (Ref #{reference_id})\n\n"
+                f"Status at *{comp}*: *{_format_status_label(status_lower)}*."
+            )
     else:
         msg = (
             f"ℹ️ *Update from {comp}* (Ref #{reference_id})\n\n"
@@ -129,12 +171,15 @@ def build_status_message(
 
 def send_status_notification(
     company: Company,
-    customer_phone: Optional[str],
-    entity_type: str,
-    reference_id: str,
-    new_status: str,
+    customer_phone: Optional[str] = None,
+    entity_type: str = "order",
+    reference_id: str = "",
+    new_status: str = "",
     reason: Optional[str] = None,
     previous_status: Optional[str] = None,
+    phone: Optional[str] = None,
+    replacement_order_number: Optional[str] = None,
+    **kwargs,
 ) -> bool:
     """
     Sends an automated WhatsApp status notification to the customer.
@@ -144,7 +189,8 @@ def send_status_notification(
     - Multi-tenant routing: Prefers Evolution API instance if configured, falls back to Meta Cloud API.
     - Fault-tolerant: Never raises exceptions to the caller; logs detailed diagnostics.
     """
-    if not customer_phone:
+    target_phone = customer_phone or phone or kwargs.get("customer_phone") or kwargs.get("phone")
+    if not target_phone:
         logger.warning("[Notification] No customer phone provided for %s #%s; skipping.", entity_type, reference_id)
         return False
 
@@ -158,6 +204,7 @@ def send_status_notification(
         )
         return False
 
+    rep_order_num = replacement_order_number or kwargs.get("replacement_order_number")
     comp_name = company.name if company else "Rides AI Store"
     message_text = build_status_message(
         company_name=comp_name,
@@ -165,19 +212,20 @@ def send_status_notification(
         reference_id=str(reference_id),
         new_status=curr,
         reason=reason,
+        replacement_order_number=rep_order_num,
     )
 
-    clean_phone = normalize_pakistan_phone(customer_phone)
+    clean_phone = normalize_pakistan_phone(target_phone)
     if not clean_phone:
         logger.warning(
             "[Notification] Could not normalize customer phone '%s' for %s #%s; skipping.",
-            customer_phone, entity_type, reference_id
+            target_phone, entity_type, reference_id
         )
         return False
 
     logger.info(
         "[Notification] Preparing status notification for %s #%s (%s -> %s) to %s (raw: %s)",
-        entity_type, reference_id, prev or "initial", curr, clean_phone, customer_phone
+        entity_type, reference_id, prev or "initial", curr, clean_phone, target_phone
     )
 
     try:
@@ -188,6 +236,7 @@ def send_status_notification(
                 "[Notification] Attempting Evolution API dispatch via instance '%s' to '%s'",
                 instance_name, clean_phone
             )
+            print(f"[WhatsApp Status Notification] Sending {entity_type} #{reference_id} status '{curr}' to {clean_phone} via instance '{instance_name}'")
             res = evolution_client.send_text_message(
                 instance_name=instance_name,
                 phone=clean_phone,
@@ -198,6 +247,7 @@ def send_status_notification(
                 "[Notification] Evolution API result for %s #%s to %s (instance '%s'): %s",
                 entity_type, reference_id, clean_phone, instance_name, res
             )
+            print(f"[Evolution API Response] Instance '{instance_name}' -> {clean_phone}: {res}")
             return True
 
         # Route 2: Meta Cloud API fallback
@@ -207,11 +257,13 @@ def send_status_notification(
                 "[Notification] Attempting Meta Cloud API dispatch to '%s'",
                 clean_phone
             )
+            print(f"[WhatsApp Status Notification] Sending {entity_type} #{reference_id} status '{curr}' to {clean_phone} via Meta Cloud API")
             res = meta_service.send_text_message(to=clean_phone, text=message_text)
             logger.info(
                 "[Notification] Sent %s #%s (%s) via Meta Cloud API to %s: %s",
                 entity_type, reference_id, curr, clean_phone, res
             )
+            print(f"[Meta Cloud API Response] Sent to {clean_phone}: {res}")
             return True
 
         logger.warning(
