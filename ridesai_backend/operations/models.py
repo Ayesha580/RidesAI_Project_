@@ -301,3 +301,114 @@ class OrderPrintLog(models.Model):
         return f"PrintLog #{self.order.order_number} [{self.slip_type.upper()}] ({self.status})"
 
 
+class MedicineBatch(models.Model):
+    company = models.ForeignKey(
+        "companies.Company",
+        on_delete=models.CASCADE,
+        related_name="medicine_batches",
+        db_index=True,
+    )
+    item = models.ForeignKey(
+        "companies.CatalogItem",
+        on_delete=models.CASCADE,
+        related_name="medicine_batches",
+    )
+    batch_number = models.CharField(max_length=100)
+    expiry_date = models.DateField()
+    quantity = models.PositiveIntegerField(default=0)
+    supplier_name = models.CharField(max_length=255, blank=True, default="")
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ("expiry_date",)
+        indexes = [
+            models.Index(fields=["company", "expiry_date"]),
+            models.Index(fields=["company", "batch_number"]),
+        ]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["company", "item", "batch_number"],
+                name="unique_pharmacy_batch_per_item",
+            )
+        ]
+
+    @property
+    def status(self) -> str:
+        from datetime import date, timedelta
+        today = date.today()
+        if self.expiry_date < today:
+            return "expired"
+        elif self.expiry_date <= today + timedelta(days=30):
+            return "expiring_soon"
+        return "safe"
+
+    def __str__(self):
+        return f"Batch {self.batch_number} - {self.item.name} ({self.status})"
+
+
+class Prescription(models.Model):
+    STATUS_PENDING = "pending"
+    STATUS_APPROVED = "approved"
+    STATUS_REJECTED = "rejected"
+    STATUS_DISPENSED = "dispensed"
+
+    STATUS_CHOICES = [
+        (STATUS_PENDING, "Pending Review"),
+        (STATUS_APPROVED, "Approved"),
+        (STATUS_REJECTED, "Rejected"),
+        (STATUS_DISPENSED, "Dispensed"),
+    ]
+
+    company = models.ForeignKey(
+        "companies.Company",
+        on_delete=models.CASCADE,
+        related_name="prescriptions",
+        db_index=True,
+    )
+    prescription_number = models.CharField(max_length=32, unique=True, editable=False)
+    customer_name = models.CharField(max_length=255, blank=True, default="")
+    customer_phone = models.CharField(max_length=32, db_index=True)
+    requested_items_text = models.TextField(blank=True, default="")
+    prescription_image_url = models.TextField(blank=True, default="")
+    notes = models.TextField(blank=True, default="")
+    status = models.CharField(
+        max_length=20,
+        choices=STATUS_CHOICES,
+        default=STATUS_PENDING,
+        db_index=True,
+    )
+    pharmacist_notes = models.TextField(blank=True, default="")
+    reviewed_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="reviewed_prescriptions",
+    )
+    linked_order = models.ForeignKey(
+        Order,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="prescriptions",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ("-created_at",)
+        indexes = [
+            models.Index(fields=["company", "status", "-created_at"]),
+        ]
+
+    def save(self, *args, **kwargs):
+        if not self.prescription_number:
+            self.prescription_number = f"RX-{timezone.now():%y%m%d}-{uuid.uuid4().hex[:6].upper()}"
+        super().save(*args, **kwargs)
+
+    def __str__(self):
+        return f"{self.prescription_number} ({self.customer_phone}) - {self.status}"
+
+
+

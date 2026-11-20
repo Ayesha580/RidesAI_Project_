@@ -1,6 +1,6 @@
 
 import React, { useEffect, useState } from "react";
-import axios from "axios";
+import axiosClient from "../../api/axiosClient";
 import {
   FiPlus, FiSearch, FiEdit2, FiTrash2, FiPackage,
   FiUpload, FiDownload, FiX, FiTag, FiLayers,
@@ -8,15 +8,12 @@ import {
 } from "react-icons/fi";
 import "./Catalog.css";
 
-const API = "/api/companies/catalog";
-const getToken = () => localStorage.getItem("access") || localStorage.getItem("access_token") || localStorage.getItem("accessToken");
-
-const api = axios.create({ baseURL: API });
-api.interceptors.request.use(config => {
-  const token = getToken();
-  if (token) config.headers.Authorization = `Bearer ${token}`;
-  return config;
-});
+const api = {
+  get: (url, config) => axiosClient.get(`/companies/catalog${url}`, config),
+  post: (url, data, config) => axiosClient.post(`/companies/catalog${url}`, data, config),
+  patch: (url, data, config) => axiosClient.patch(`/companies/catalog${url}`, data, config),
+  delete: (url, config) => axiosClient.delete(`/companies/catalog${url}`, config),
+};
 
 const businessConfig = {
   restaurant: { title: "Menu", singular: "Dish", icon: "🍽", type: "product" },
@@ -48,6 +45,8 @@ const emptyForm = {
   price: "",
   cost_price: "",
   unit: "",
+  requires_prescription: false,
+  generic_name: "",
   is_available: true,
   attributes: {},
   inventory: { is_unlimited: true, quantity: 0, low_stock_threshold: 5 },
@@ -94,37 +93,38 @@ export default function Catalog({ moduleKey }) {
 
   useEffect(() => {
     loadData();
-  }, [business]);
+  }, [business, moduleKey]);
 
   const loadData = async () => {
-  setLoading(true);
-  setError("");
-  try {
-    const [itemsRes, categoriesRes, dealsRes] = await Promise.all([
-      api.get("/items/"),
-      api.get("/categories/"),
-      api.get("/deals/")
-    ]);
+    setLoading(true);
+    setError("");
+    try {
+      const [itemsRes, categoriesRes, dealsRes] = await Promise.all([
+        api.get("/items/"),
+        api.get("/categories/"),
+        api.get("/deals/")
+      ]);
 
-    const getList = data => {
-      if (Array.isArray(data)) return data;
-      if (Array.isArray(data?.results)) return data.results;
-      return [];
-    };
+      const getList = data => {
+        if (Array.isArray(data)) return data;
+        if (Array.isArray(data?.results)) return data.results;
+        if (Array.isArray(data?.data)) return data.data;
+        return [];
+      };
 
-    setItems(getList(itemsRes.data));
-    setCategories(getList(categoriesRes.data));
-    setDeals(getList(dealsRes.data));
-  } catch (err) {
-    console.log("Catalog API Error:", err.response?.data || err);
-    setError(err.response?.data?.detail || "Unable to load catalog data.");
-    setItems([]);
-    setCategories([]);
-    setDeals([]);
-  } finally {
-    setLoading(false);
-  }
-};
+      setItems(getList(itemsRes.data));
+      setCategories(getList(categoriesRes.data));
+      setDeals(getList(dealsRes.data));
+    } catch (err) {
+      console.log("Catalog API Error:", err.response?.data || err);
+      setError(err.response?.data?.detail || "Unable to load catalog data.");
+      setItems([]);
+      setCategories([]);
+      setDeals([]);
+    } finally {
+      setLoading(false);
+    }
+  };
 
   const updateForm = (key, value) => {
     setForm(prev => ({ ...prev, [key]: value }));
@@ -160,8 +160,8 @@ export default function Catalog({ moduleKey }) {
       const payload = {
         ...form,
         category: form.category || null,
-        price: form.price || "0",
-        cost_price: form.cost_price || "0",
+        price: form.price === "" ? "0" : form.price,
+        cost_price: form.cost_price === "" ? null : form.cost_price,
         inventory: {
           ...form.inventory,
           quantity: form.inventory.is_unlimited ? 0 : Number(form.inventory.quantity || 0)
@@ -175,7 +175,24 @@ export default function Catalog({ moduleKey }) {
       setModal(false);
       loadData();
     } catch (err) {
-      setError(JSON.stringify(err.response?.data || "Unable to save item."));
+      const data = err.response?.data;
+      let errMsg = "Unable to save item.";
+      if (typeof data === "string") {
+        errMsg = data;
+      } else if (data?.detail) {
+        errMsg = data.detail;
+      } else if (data?.error) {
+        errMsg = data.error;
+      } else if (data && typeof data === "object") {
+        const fieldErrors = Object.entries(data)
+          .map(([field, msgs]) => {
+            const msgStr = Array.isArray(msgs) ? msgs.join(" ") : String(msgs);
+            return `${field}: ${msgStr}`;
+          })
+          .join(" | ");
+        if (fieldErrors) errMsg = fieldErrors;
+      }
+      setError(errMsg);
     } finally {
       setSaving(false);
     }
@@ -290,9 +307,10 @@ export default function Catalog({ moduleKey }) {
     }
   };
 
-    const filteredItems = (Array.isArray(items) ? items : []).filter(item => {
-    const matchesSearch = `${item.name} ${item.sku} ${item.barcode} ${item.brand}`.toLowerCase().includes(search.toLowerCase());
-    const matchesCategory = !categoryFilter || String(item.category) === categoryFilter;
+  const filteredItems = (Array.isArray(items) ? items : []).filter(item => {
+    const searchTarget = `${item.name || ""} ${item.generic_name || ""} ${item.sku || ""} ${item.barcode || ""} ${item.brand || ""}`.toLowerCase();
+    const matchesSearch = searchTarget.includes((search || "").toLowerCase().trim());
+    const matchesCategory = !categoryFilter || String(item.category) === String(categoryFilter);
     return matchesSearch && matchesCategory;
   });
 
@@ -364,7 +382,22 @@ export default function Catalog({ moduleKey }) {
                 {filteredItems.map(item => {
                   const stock = item.inventory;
                   return <tr key={item.id}>
-                    <td><div className="catalog-item-name"><div className="catalog-item-image">{item.image ? <img src={item.image} alt="" /> : <FiPackage />}</div><div><strong>{item.name}</strong><small>{item.brand || item.description || item.item_type}</small></div></div></td>
+                    <td>
+                      <div className="catalog-item-name">
+                        <div className="catalog-item-image">{item.image ? <img src={item.image} alt="" /> : <FiPackage />}</div>
+                        <div>
+                          <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                            <strong>{item.name}</strong>
+                            {item.requires_prescription && (
+                              <span style={{ fontSize: 11, background: "#fdf2f8", color: "#db2777", border: "1px solid #fbcfe8", padding: "1px 6px", borderRadius: 4, fontWeight: 700 }}>
+                                Rx Required
+                              </span>
+                            )}
+                          </div>
+                          <small>{item.generic_name ? `Generic: ${item.generic_name} · ` : ""}{item.brand || item.description || item.item_type}</small>
+                        </div>
+                      </div>
+                    </td>
                     <td>{item.category_name || "Uncategorized"}</td>
                     <td><span>{item.sku || "—"}</span><small className="table-sub">{item.barcode || ""}</small></td>
                     <td className="price-cell">{Number(item.price).toLocaleString()}</td>
@@ -403,6 +436,23 @@ export default function Catalog({ moduleKey }) {
           {error && <div className="catalog-error">{error}</div>}
           <div className="catalog-form-grid">
             <label className="full">Name *<input required value={form.name} onChange={e => updateForm("name", e.target.value)} placeholder="Enter item name" /></label>
+            {(business === "pharmacy" || moduleKey === "medicines") && (
+              <>
+                <label className="full">Generic Name / Formula<input value={form.generic_name || ""} onChange={e => updateForm("generic_name", e.target.value)} placeholder="e.g. Paracetamol / Acetaminophen" /></label>
+                <div className="full" style={{ padding: "10px 14px", background: "#fdf2f8", border: "1px solid #fbcfe8", borderRadius: 8, display: "flex", alignItems: "center", gap: 10 }}>
+                  <input
+                    type="checkbox"
+                    id="rx_check"
+                    checked={Boolean(form.requires_prescription)}
+                    onChange={e => updateForm("requires_prescription", e.target.checked)}
+                    style={{ width: 18, height: 18, accentColor: "#ff77ff" }}
+                  />
+                  <label htmlFor="rx_check" style={{ fontSize: 13, fontWeight: 700, color: "#9d174d", cursor: "pointer", margin: 0 }}>
+                    Requires Prescription (Rx) — Customer must provide doctor's slip before dispensing
+                  </label>
+                </div>
+              </>
+            )}
             <label>Category<select value={form.category} onChange={e => updateForm("category", e.target.value)}><option value="">Select category</option>{categories.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}</select></label>
             <label>Item Type<select value={form.item_type} onChange={e => updateForm("item_type", e.target.value)}><option value="product">Product</option><option value="service">Service</option></select></label>
             <label>Price *<input required type="number" min="0" step="0.01" value={form.price} onChange={e => updateForm("price", e.target.value)} /></label>

@@ -44,6 +44,9 @@ import WhatsAppSettings from "./operations/components/agent-settings/WhatsAppSet
 import KnowledgeBaseForm from "./operations/components/agent-settings/KnowledgeBaseForm";
 import KitchenDashboard from "./operations/KitchenDashboard";
 import RiderDashboard from "./operations/RiderDashboard";
+import PharmacyPrescriptions from "./operations/PharmacyPrescriptions";
+import PharmacyBatches from "./operations/PharmacyBatches";
+
 function Home() {
   const { user, loading } = useAuth();
   if (loading) return <Loading />;
@@ -54,6 +57,8 @@ function OwnerModulePage() {
   const { moduleKey } = useParams();
   if (moduleKey === "orders" || moduleKey === "deliveries") return <OrdersDashboard />;
   if (moduleKey === "calls") return <CallsDashboard />;
+  if (moduleKey === "prescriptions") return <PharmacyPrescriptions />;
+  if (moduleKey === "expiry_tracking") return <PharmacyBatches />;
   return <Catalog moduleKey={moduleKey} />;
 }
 function ModuleGuard({ children }) {
@@ -67,6 +72,8 @@ function StaffModulePage() {
   if (moduleKey === "orders") return <OrdersDashboard staff />;
   if (moduleKey === "deliveries") return <DeliveriesDashboard />;
   if (moduleKey === "my_deliveries") return <RiderDeliveries />;
+  if (moduleKey === "prescriptions") return <PharmacyPrescriptions staff />;
+  if (moduleKey === "expiry_tracking") return <PharmacyBatches staff />;
   if (["products", "menu", "medicines", "services"].includes(moduleKey)) return <StaffLayout title={moduleLabel(moduleKey)}><Catalog moduleKey={moduleKey} /></StaffLayout>;
   return (
     <StaffLayout title={moduleLabel(moduleKey)}>

@@ -2561,6 +2561,190 @@ class Sprint1SharedCoreTests(TestCase):
         self.assertIn("Order Ready", kwargs["text"])
 
 
+class PharmacyPlatformTests(TestCase):
+    def setUp(self):
+        self.client = APIClient()
+        self.company_pharmacy = Company.objects.create(
+            name="CarePlus Pharmacy",
+            business_type="pharmacy",
+            status="active",
+            is_approved=True,
+            whatsapp_instance_name="careplus_pharma_inst",
+        )
+        self.company_other = Company.objects.create(
+            name="Other Shop",
+            business_type="retail",
+            status="active",
+            is_approved=True,
+        )
+
+        self.pharmacist = User.objects.create_user(
+            username="pharmacist_ali",
+            password="Password123!",
+            company=self.company_pharmacy,
+            role=User.ROLE_OWNER,
+        )
+        self.other_user = User.objects.create_user(
+            username="other_owner",
+            password="Password123!",
+            company=self.company_other,
+            role=User.ROLE_OWNER,
+        )
+
+        from companies.models import CatalogItem
+        self.medicine = CatalogItem.objects.create(
+            company=self.company_pharmacy,
+            name="Augmentin 625mg",
+            generic_name="Amoxicillin + Clavulanate",
+            price=Decimal("450.00"),
+            requires_prescription=True,
+            is_available=True,
+        )
+
+    def test_medicine_batch_expiry_status_and_isolation(self):
+        from operations.models import MedicineBatch
+        from datetime import date, timedelta
+
+        today = date.today()
+
+        # 1. Safe batch (expiry in 60 days)
+        b_safe = MedicineBatch.objects.create(
+            company=self.company_pharmacy,
+            item=self.medicine,
+            batch_number="AUG-SAFE-01",
+            expiry_date=today + timedelta(days=60),
+            quantity=100,
+        )
+        self.assertEqual(b_safe.status, "safe")
+
+        # 2. Expiring soon batch (expiry in 15 days)
+        b_soon = MedicineBatch.objects.create(
+            company=self.company_pharmacy,
+            item=self.medicine,
+            batch_number="AUG-SOON-02",
+            expiry_date=today + timedelta(days=15),
+            quantity=20,
+        )
+        self.assertEqual(b_soon.status, "expiring_soon")
+
+        # 3. Expired batch (expiry 5 days ago)
+        b_expired = MedicineBatch.objects.create(
+            company=self.company_pharmacy,
+            item=self.medicine,
+            batch_number="AUG-EXP-03",
+            expiry_date=today - timedelta(days=5),
+            quantity=10,
+        )
+        self.assertEqual(b_expired.status, "expired")
+
+        # 4. Unauthenticated access rejected with 401
+        resp = self.client.get("/api/pharmacy/batches/")
+        self.assertEqual(resp.status_code, 401)
+
+        # 5. Pharmacist access returns all batches & summary counts
+        self.client.force_authenticate(user=self.pharmacist)
+        resp = self.client.get("/api/pharmacy/batches/")
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.data["summary"]["total_batches"], 3)
+        self.assertEqual(resp.data["summary"]["expired_count"], 1)
+        self.assertEqual(resp.data["summary"]["expiring_soon_count"], 1)
+        self.assertEqual(resp.data["count"], 3)
+
+        # 6. Tenant isolation: Other tenant sees 0 batches
+        self.client.force_authenticate(user=self.other_user)
+        resp = self.client.get("/api/pharmacy/batches/")
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.data["summary"]["total_batches"], 0)
+        self.assertEqual(resp.data["count"], 0)
+
+    @patch("operations.evolution_client.send_text_message")
+    def test_prescription_lifecycle_and_whatsapp_notification(self, mock_evo_send):
+        mock_evo_send.return_value = {"status": "SUCCESS"}
+        from operations.models import Prescription
+
+        self.client.force_authenticate(user=self.pharmacist)
+
+        # 1. Create prescription request
+        resp = self.client.post("/api/pharmacy/prescriptions/", {
+            "customer_name": "Hamza Tariq",
+            "customer_phone": "03090139836",
+            "requested_items_text": "2x Augmentin 625mg, 1x Panadol",
+            "notes": "Prescribed by Dr. Asim at DHQ Faisalabad",
+        }, format="json")
+        self.assertEqual(resp.status_code, 201)
+        rx_id = resp.data["id"]
+        rx_number = resp.data["prescription_number"]
+        self.assertTrue(rx_number.startswith("RX-"))
+        self.assertEqual(resp.data["status"], "pending")
+
+        # 2. Approve prescription -> triggers WhatsApp notification
+        resp = self.client.patch(f"/api/pharmacy/prescriptions/{rx_id}/status/", {
+            "status": "approved",
+            "pharmacist_notes": "Prescription verified and approved by pharmacist Ali",
+        }, format="json")
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.data["status"], "approved")
+        self.assertEqual(mock_evo_send.call_count, 1)
+        args, kwargs = mock_evo_send.call_args
+        self.assertEqual(kwargs["to"], "923090139836")
+        self.assertIn("Approved", kwargs["text"])
+
+        # 3. Invalid backward transition rejected (approved -> pending)
+        resp = self.client.patch(f"/api/pharmacy/prescriptions/{rx_id}/status/", {
+            "status": "pending",
+        }, format="json")
+        self.assertEqual(resp.status_code, 400)
+        self.assertIn("Invalid prescription transition", resp.data["error"])
+
+        # 4. Mark Dispensed
+        mock_evo_send.reset_mock()
+        resp = self.client.patch(f"/api/pharmacy/prescriptions/{rx_id}/status/", {
+            "status": "dispensed",
+        }, format="json")
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.data["status"], "dispensed")
+        self.assertEqual(mock_evo_send.call_count, 1)
+
+    def test_pharmacy_ai_agent_prescription_submission_tool(self):
+        from operations.whatsapp_agent import (
+            get_category_agent_config,
+            execute_submit_prescription_request,
+            TOOL_SUBMIT_PRESCRIPTION_REQUEST,
+            execute_get_catalog_items,
+        )
+        from operations.models import Prescription
+
+        # 1. Config includes submit_prescription_request tool for pharmacy
+        cfg = get_category_agent_config("pharmacy")
+        self.assertIn(TOOL_SUBMIT_PRESCRIPTION_REQUEST, cfg["tools"])
+
+        # 2. Catalog includes requires_prescription flag
+        cat_result = execute_get_catalog_items(self.company_pharmacy)
+        self.assertTrue(cat_result["success"])
+        items = cat_result["items"]
+        augmentin = next((it for it in items if it["id"] == self.medicine.id), None)
+        self.assertIsNotNone(augmentin)
+        self.assertTrue(augmentin["requires_prescription"])
+        self.assertEqual(augmentin["generic_name"], "Amoxicillin + Clavulanate")
+
+        # 3. Execute tool: submit_prescription_request creates Prescription record
+        res = execute_submit_prescription_request(
+            company=self.company_pharmacy,
+            customer_phone="03001234567",
+            customer_name="Zainab",
+            requested_items="Augmentin 625mg 1 strip",
+            notes="Doctor advised 5 days course",
+        )
+        self.assertTrue(res["success"])
+        self.assertIn("RX-", res["prescription_number"])
+        self.assertTrue(Prescription.objects.filter(
+            company=self.company_pharmacy,
+            prescription_number=res["prescription_number"],
+            status="pending",
+        ).exists())
+
+
+
 
 
 

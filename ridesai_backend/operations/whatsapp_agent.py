@@ -21,7 +21,10 @@ from openai import OpenAI
 from .whatsapp_service import WhatsAppService
 from .whatsapp_storage import get_config_by_phone_number_id
 from .audio_service import transcribe_audio, synthesize_speech
-from operations.models import Customer, Order, OrderItem, OrderEvent, AgentConversation, AgentMessage
+from operations.models import (
+    Customer, Order, OrderItem, OrderEvent, AgentConversation, AgentMessage,
+    Prescription,
+)
 from companies.models import Company, CatalogItem, BusinessKnowledge, BusinessHours, Inventory, StockMovement
 
 logger = logging.getLogger("operations.whatsapp")
@@ -125,10 +128,40 @@ TOOL_CHECK_ORDER_STATUS = {
     },
 }
 
+TOOL_SUBMIT_PRESCRIPTION_REQUEST = {
+    "type": "function",
+    "function": {
+        "name": "submit_prescription_request",
+        "description": (
+            "Submits a prescription medicine request or doctor's prescription for pharmacist review. "
+            "Use when a customer requests prescription-required medicines (Rx) or wants to submit their prescription."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "customer_name": {
+                    "type": "string",
+                    "description": "Name of the patient or customer.",
+                },
+                "requested_items": {
+                    "type": "string",
+                    "description": "Names and dosages/quantities of the requested prescription medicines.",
+                },
+                "notes": {
+                    "type": "string",
+                    "description": "Any doctor instructions, doctor name, or customer notes.",
+                },
+            },
+            "required": ["requested_items"],
+        },
+    },
+}
+
 AGENT_TOOLS = [
     TOOL_GET_CATALOG_ITEMS,
     TOOL_CREATE_ORDER,
     TOOL_CHECK_ORDER_STATUS,
+    TOOL_SUBMIT_PRESCRIPTION_REQUEST,
 ]
 
 
@@ -153,10 +186,13 @@ CATEGORY_AGENT_PROFILES = {
         "catalog_header": "MEDICINES & HEALTHCARE PRODUCTS",
         "instructions": (
             "- Primary duty is answering inquiries about in-stock OTC medicines, wellness products, "
-            "and taking delivery orders for health supplies.\n"
+            "and taking delivery orders for healthcare supplies.\n"
+            "- OTC MEDICINES (Rx Not Required): You may take orders directly via `create_order` once the customer confirms items and delivery address.\n"
+            "- PRESCRIPTION MEDICINES (Rx Required): You CANNOT directly place orders for prescription medicines. "
+            "Instead, call `submit_prescription_request` with the medicine names and customer details, and inform the customer that their prescription request has been registered and a licensed pharmacist will review and confirm it.\n"
             "- Inform customers that prescription-only medicines require presenting a valid physical or digital doctor's prescription upon delivery."
         ),
-        "tools": [TOOL_GET_CATALOG_ITEMS, TOOL_CREATE_ORDER, TOOL_CHECK_ORDER_STATUS],
+        "tools": [TOOL_GET_CATALOG_ITEMS, TOOL_CREATE_ORDER, TOOL_CHECK_ORDER_STATUS, TOOL_SUBMIT_PRESCRIPTION_REQUEST],
     },
     "clinic": {
         "key": "clinic",
@@ -218,16 +254,24 @@ def execute_get_catalog_items(company: Company, search_query: Optional[str] = No
             try:
                 inv = getattr(item, "inventory", None)
                 if inv and not inv.is_unlimited:
+                    if inv.quantity <= 0:
+                        # Exclude out of stock items
+                        continue
                     stock_info = f"{inv.quantity} available"
             except Exception:
                 pass
 
+            rx_required = bool(getattr(item, "requires_prescription", False))
+            generic = getattr(item, "generic_name", "") or ""
+
             items_list.append({
                 "id": item.id,
                 "name": item.name,
+                "generic_name": generic,
                 "price": str(item.price),
                 "category": item.category.name if item.category else "General",
                 "description": item.description or "",
+                "requires_prescription": rx_required,
                 "stock": stock_info,
             })
 
@@ -447,6 +491,53 @@ def execute_check_order_status(
     except Exception as e:
         logger.error(f"[Tool: check_order_status] Error: {e}", exc_info=True)
         return {"found": False, "error": str(e)}
+
+
+def execute_submit_prescription_request(
+    company: Company,
+    customer_phone: str,
+    requested_items: str,
+    customer_name: Optional[str] = None,
+    notes: Optional[str] = None,
+) -> Dict[str, Any]:
+    """
+    Creates a pending Prescription record for pharmacist review on the Pharmacy Dashboard.
+    """
+    try:
+        clean_name = (customer_name or "").strip() or "Valued Customer"
+        clean_phone = (customer_phone or "").strip()
+        items_text = (requested_items or "").strip()
+        user_notes = (notes or "").strip()
+
+        if not items_text:
+            return {"success": False, "error": "Requested medicine names are required."}
+
+        rx = Prescription.objects.create(
+            company=company,
+            customer_name=clean_name,
+            customer_phone=clean_phone,
+            requested_items_text=items_text,
+            notes=user_notes,
+            status=Prescription.STATUS_PENDING,
+        )
+
+        logger.info(
+            f"[Tool: submit_prescription_request] Created prescription {rx.prescription_number} "
+            f"for {clean_name} ({clean_phone}) at {company.name}."
+        )
+
+        return {
+            "success": True,
+            "prescription_number": rx.prescription_number,
+            "status": "pending_pharmacist_review",
+            "message": (
+                f"Prescription request #{rx.prescription_number} has been registered with our licensed pharmacist. "
+                "Our pharmacy team will review and confirm your order shortly via WhatsApp."
+            ),
+        }
+    except Exception as e:
+        logger.error(f"[Tool: submit_prescription_request] Error: {e}", exc_info=True)
+        return {"success": False, "error": str(e)}
 
 
 # ============================================================================
@@ -907,6 +998,14 @@ def _generate_agent_reply(
                             company=company,
                             customer_phone=fn_args.get("customer_phone") or sender_phone,
                             order_number=fn_args.get("order_number"),
+                        )
+                    elif fn_name == "submit_prescription_request":
+                        tool_result = execute_submit_prescription_request(
+                            company=company,
+                            customer_phone=fn_args.get("customer_phone") or sender_phone,
+                            requested_items=fn_args.get("requested_items", ""),
+                            customer_name=fn_args.get("customer_name") or customer_name,
+                            notes=fn_args.get("notes", ""),
                         )
                     else:
                         tool_result = {"error": f"Tool '{fn_name}' is not recognized."}

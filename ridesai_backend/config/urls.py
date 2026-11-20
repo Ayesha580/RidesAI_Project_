@@ -12,4 +12,5 @@ urlpatterns = [
     path("api/dashboard/", include("operations.dashboard_urls")),
     path("api/kitchen/", include("operations.kitchen_urls")),
     path("api/rider/", include("operations.rider_urls")),
+    path("api/pharmacy/", include("operations.pharmacy_urls")),
 ] + static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)

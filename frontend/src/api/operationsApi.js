@@ -40,3 +40,14 @@ export const riderApi = {
   getOrders: () => api.get("/rider/orders/"),
   updateOrderStatus: (orderId, status) => api.patch(`/rider/orders/${orderId}/status/`, { status }),
 };
+
+export const pharmacyApi = {
+  getBatches: (params = {}) => api.get("/pharmacy/batches/", { params }),
+  createBatch: (data) => api.post("/pharmacy/batches/", data),
+  updateBatch: (batchId, data) => api.patch(`/pharmacy/batches/${batchId}/`, data),
+  deleteBatch: (batchId) => api.delete(`/pharmacy/batches/${batchId}/`),
+  getPrescriptions: (params = {}) => api.get("/pharmacy/prescriptions/", { params }),
+  createPrescription: (data) => api.post("/pharmacy/prescriptions/", data),
+  updatePrescriptionStatus: (prescriptionId, data) =>
+    api.patch(`/pharmacy/prescriptions/${prescriptionId}/status/`, data),
+};

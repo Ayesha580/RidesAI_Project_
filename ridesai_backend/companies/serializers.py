@@ -69,7 +69,19 @@ class ItemBatchSerializer(serializers.ModelSerializer):
 
 
 class CatalogItemSerializer(serializers.ModelSerializer):
+    category = serializers.PrimaryKeyRelatedField(
+        queryset=CatalogCategory.objects.all(),
+        required=False,
+        allow_null=True
+    )
     category_name = serializers.CharField(source="category.name", read_only=True)
+    cost_price = serializers.DecimalField(
+        max_digits=12,
+        decimal_places=2,
+        required=False,
+        allow_null=True,
+        default=0
+    )
     variants = ItemVariantSerializer(many=True, required=False)
     inventory = InventorySerializer(required=False)
     batches = ItemBatchSerializer(many=True, required=False)
@@ -79,15 +91,34 @@ class CatalogItemSerializer(serializers.ModelSerializer):
         fields = [
             "id", "category", "category_name", "name", "item_type",
             "description", "sku", "barcode", "brand", "price",
-            "cost_price", "unit", "image", "attributes", "is_available",
+            "cost_price", "unit", "image", "attributes",
+            "requires_prescription", "generic_name", "is_available",
             "variants", "inventory", "batches", "created_at", "updated_at"
         ]
         read_only_fields = ["id", "created_at", "updated_at"]
 
+    def to_internal_value(self, data):
+        if hasattr(data, "copy"):
+            data = data.copy()
+        else:
+            data = dict(data)
+
+        if data.get("category") == "":
+            data["category"] = None
+
+        if data.get("cost_price") == "":
+            data["cost_price"] = None
+
+        if data.get("price") == "":
+            data["price"] = 0
+
+        return super().to_internal_value(data)
+
     def validate_category(self, category):
         request = self.context.get("request")
-        if category and category.company_id != request.user.company_id:
-            raise serializers.ValidationError("Invalid category.")
+        if category and request and hasattr(request, "user") and getattr(request.user, "company_id", None):
+            if category.company_id != request.user.company_id:
+                raise serializers.ValidationError("Invalid category.")
         return category
 
     def create(self, validated_data):
