@@ -3924,6 +3924,189 @@ class AutoLocationFallbackTests(TestCase):
         self.assertEqual(service_areas[0]["city"], "Faisalabad")
 
 
+class RestaurantOperationsPolishTests(TestCase):
+    def setUp(self):
+        self.client = APIClient()
+        self.company_a = Company.objects.create(
+            name="Burger Hub",
+            business_type="restaurant",
+            is_approved=True,
+            subscription_status="active",
+            is_manual_override=True,
+            agent_enabled=True,
+            address="Peoples Colony, Faisalabad",
+        )
+        self.company_b = Company.objects.create(
+            name="Pizza Hub",
+            business_type="restaurant",
+            is_approved=True,
+            subscription_status="active",
+            is_manual_override=True,
+            agent_enabled=True,
+            address="Gulberg, Lahore",
+        )
+
+        self.owner_a = User.objects.create_user(
+            username="owner_burger",
+            email="owner_burger@example.com",
+            password="password123",
+            role=User.ROLE_OWNER,
+            company=self.company_a,
+        )
+        self.owner_b = User.objects.create_user(
+            username="owner_pizza",
+            email="owner_pizza@example.com",
+            password="password123",
+            role=User.ROLE_OWNER,
+            company=self.company_b,
+        )
+
+        self.item_a = CatalogItem.objects.create(
+            company=self.company_a,
+            name="Zinger Burger",
+            price=Decimal("650.00"),
+            is_available=True,
+        )
+
+        self.order_a = Order.objects.create(
+            company=self.company_a,
+            order_number="RA-261121-0001",
+            customer_name="Ali Khan",
+            customer_phone="03001234567",
+            delivery_address="Peoples Colony, Faisalabad",
+            status=Order.STATUS_CONFIRMED,
+            subtotal=Decimal("650.00"),
+            total=Decimal("650.00"),
+        )
+        OrderItem.objects.create(
+            order=self.order_a,
+            item=self.item_a,
+            item_name="Zinger Burger",
+            quantity=Decimal("1"),
+            unit_price=Decimal("650.00"),
+            line_total=Decimal("650.00"),
+        )
+
+    def test_execute_create_order_persists_special_instructions_and_notes(self):
+        from operations.whatsapp_agent import execute_create_order
+
+        items = [
+            {
+                "item_name": "Zinger Burger",
+                "quantity": 2,
+                "special_instructions": "no onions, extra spicy",
+            }
+        ]
+        res = execute_create_order(
+            company=self.company_a,
+            customer_name="Tariq Jamil",
+            customer_phone="03219876543",
+            items=items,
+            delivery_address="Peoples Colony, Faisalabad",
+            notes="Please call upon arrival",
+        )
+        self.assertTrue(res["success"])
+        order = Order.objects.get(order_number=res["order_number"])
+        self.assertIn("Please call upon arrival", order.notes)
+        self.assertIn("Zinger Burger: no onions, extra spicy", order.notes)
+
+    def test_auto_assign_rider_picks_least_busy_rider(self):
+        rider1 = User.objects.create_user(
+            username="rider1",
+            password="password123",
+            role=User.ROLE_RIDER,
+            company=self.company_a,
+        )
+        rider2 = User.objects.create_user(
+            username="rider2",
+            password="password123",
+            role=User.ROLE_RIDER,
+            company=self.company_a,
+        )
+
+        # Rider 1 already has an active delivery
+        Order.objects.create(
+            company=self.company_a,
+            order_number="RA-BUSY-1",
+            customer_name="Busy Customer",
+            customer_phone="03009999999",
+            delivery_address="Faisalabad",
+            status=Order.STATUS_OUT_FOR_DELIVERY,
+            assigned_rider=rider1,
+        )
+
+        self.client.force_authenticate(user=self.owner_a)
+        res = self.client.post(f"/api/operations/orders/{self.order_a.id}/auto-assign-rider/")
+        self.assertEqual(res.status_code, 200)
+        self.assertTrue(res.data["success"])
+        self.assertEqual(res.data["rider"]["id"], rider2.id)
+
+        self.order_a.refresh_from_db()
+        self.assertEqual(self.order_a.assigned_rider, rider2)
+        self.assertEqual(self.order_a.status, Order.STATUS_ASSIGNED)
+        self.assertTrue(DeliveryAssignment.objects.filter(order=self.order_a, rider=rider2).exists())
+
+    def test_dashboard_auto_assign_rider_endpoint(self):
+        rider = User.objects.create_user(
+            username="rider_dash",
+            password="password123",
+            role=User.ROLE_RIDER,
+            company=self.company_a,
+        )
+
+        self.client.force_authenticate(user=self.owner_a)
+        res = self.client.post(f"/api/dashboard/orders/{self.order_a.id}/auto-assign-rider/")
+        self.assertEqual(res.status_code, 200)
+        self.assertTrue(res.data["success"])
+        self.assertEqual(res.data["rider"]["id"], rider.id)
+
+    def test_auto_assign_rider_returns_400_when_no_riders(self):
+        # Company A has no riders
+        self.client.force_authenticate(user=self.owner_a)
+        res = self.client.post(f"/api/operations/orders/{self.order_a.id}/auto-assign-rider/")
+        self.assertEqual(res.status_code, 400)
+        self.assertIn("No active riders available", res.data["error"])
+
+    def test_auto_assign_rider_enforces_multi_tenant_isolation(self):
+        # Rider belongs ONLY to Company B
+        User.objects.create_user(
+            username="rider_pizza",
+            password="password123",
+            role=User.ROLE_RIDER,
+            company=self.company_b,
+        )
+
+        # Company A owner cannot see Company B riders and gets 400 No active riders
+        self.client.force_authenticate(user=self.owner_a)
+        res_a = self.client.post(f"/api/operations/orders/{self.order_a.id}/auto-assign-rider/")
+        self.assertEqual(res_a.status_code, 400)
+
+        # Company B owner cannot auto-assign Company A's order -> 404
+        self.client.force_authenticate(user=self.owner_b)
+        res_b = self.client.post(f"/api/operations/orders/{self.order_a.id}/auto-assign-rider/")
+        self.assertEqual(res_b.status_code, 404)
+
+    def test_receipt_payload_includes_branding_and_assigned_rider(self):
+        from operations.printing import build_receipt_payload
+        rider = User.objects.create_user(
+            username="rider_fast",
+            password="password123",
+            role=User.ROLE_RIDER,
+            company=self.company_a,
+        )
+        self.order_a.assigned_rider = rider
+        self.order_a.notes = "Allergy: nut allergy. Extra spicy."
+        self.order_a.save()
+
+        payload = build_receipt_payload(self.order_a, company=self.company_a)
+        self.assertIn("Rides Technologies", payload["business"]["header"])
+        self.assertIn("Rides Technologies", payload["business"]["footer"])
+        self.assertEqual(payload["order"]["assigned_rider_name"], "rider_fast")
+        self.assertTrue(payload["order"]["has_notes"])
+        self.assertIn("nut allergy", payload["order"]["notes"])
+
+
+
 
 
 

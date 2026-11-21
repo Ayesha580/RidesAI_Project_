@@ -18,6 +18,7 @@ export const operationsApi = {
   updateConversation: (data) => api.patch("/operations/agent/conversations/", data),
   whatsappConnectStatus: () => api.get("/operations/whatsapp/connect/"),
   whatsappConnectGenerate: () => api.post("/operations/whatsapp/connect/"),
+  autoAssignRider: (orderId) => api.post(`/operations/orders/${orderId}/auto-assign-rider/`),
 };
 
 export const dashboardApi = {
@@ -26,6 +27,7 @@ export const dashboardApi = {
   sendConversationReply: (conversationKey, data) => api.post(`/dashboard/conversations/${conversationKey}/reply/`, data),
   getOrders: (params = {}) => api.get("/dashboard/orders/", { params }),
   updateOrderStatus: (orderId, data) => api.patch(`/dashboard/orders/${orderId}/status/`, data),
+  autoAssignRider: (orderId) => api.post(`/dashboard/orders/${orderId}/auto-assign-rider/`),
   getOrderReceipt: (orderId, type = "invoice") => api.get(`/dashboard/orders/${orderId}/receipt/`, { params: { type } }),
   printOrderReceipt: (orderId, data) => api.post(`/dashboard/orders/${orderId}/print/`, data),
   getCalls: (params = {}) => api.get("/dashboard/calls/", { params }),

@@ -24,7 +24,7 @@ from rest_framework.views import APIView
 
 from companies.models import Company
 from operations.models import (
-    AgentConversation, AgentMessage, Order, OrderItem, OrderEvent,
+    AgentConversation, AgentMessage, Order, OrderItem, OrderEvent, DeliveryAssignment,
     VoiceCall, CallEvent, OrderPrintLog
 )
 from operations.printing import (
@@ -456,6 +456,86 @@ class DashboardOrderStatusAPIView(APIView):
             "status": order.status,
             "status_display": order.get_status_display(),
         })
+
+
+class DashboardOrderAutoAssignRiderAPIView(APIView):
+    """
+    POST /api/dashboard/orders/<int:order_pk>/auto-assign-rider/
+    Auto-assigns the least busy active delivery rider to the order.
+    Strict tenant isolation enforced.
+    """
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, order_pk):
+        company = _get_request_company(request)
+        if not company:
+            return Response({"detail": "User has no associated company."}, status=status.HTTP_403_FORBIDDEN)
+
+        order = get_object_or_404(Order, pk=order_pk, company=company)
+
+        from django.db.models import Q
+        from accounts.models import User
+        from operations.services.dispatch_service import assign_best_rider
+
+        rider_filter = (
+            Q(role="rider")
+            | Q(staff_role__name__iexact="rider")
+            | Q(staff_role__name__iexact="delivery boy")
+            | Q(staff_role__name__iexact="delivery")
+        )
+        has_riders = User.objects.filter(company=company, is_active=True).filter(rider_filter).exists()
+        if not has_riders:
+            return Response(
+                {
+                    "error": "No active riders available. Please add a rider in Employees.",
+                    "detail": "No active riders available. Please add a rider in Employees.",
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        rider = assign_best_rider(order)
+        if not rider:
+            return Response(
+                {
+                    "error": "No active riders available. Please add a rider in Employees.",
+                    "detail": "No active riders available. Please add a rider in Employees.",
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        assignment, _ = DeliveryAssignment.objects.update_or_create(
+            order=order,
+            defaults={
+                "company": company,
+                "rider": rider,
+                "assigned_by": request.user,
+                "status": Order.STATUS_ASSIGNED,
+            },
+        )
+        order.assigned_rider = rider
+        if order.status in (
+            Order.STATUS_NEW,
+            Order.STATUS_PENDING,
+            Order.STATUS_CONFIRMED,
+            Order.STATUS_PREPARING,
+            Order.STATUS_PREPARED,
+            Order.STATUS_READY,
+        ):
+            order.status = Order.STATUS_ASSIGNED
+        order.save(update_fields=["assigned_rider", "status", "updated_at"])
+
+        return Response({
+            "success": True,
+            "order_id": order.id,
+            "order_number": order.order_number,
+            "status": order.status,
+            "rider": {
+                "id": rider.id,
+                "name": rider.get_full_name() or rider.username,
+                "phone": getattr(rider, "phone", "") or "",
+            },
+            "message": f"Successfully auto-assigned to {rider.get_full_name() or rider.username}.",
+        }, status=status.HTTP_200_OK)
 
 
 class DashboardCallsAPIView(APIView):

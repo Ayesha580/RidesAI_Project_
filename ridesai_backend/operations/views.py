@@ -1319,3 +1319,75 @@ class PublicAgentWidgetScriptAPIView(APIView):
         return response
 
 
+class OrderAutoAssignRiderAPIView(BusinessAPIView):
+    required_business_permission = None
+
+    def post(self, request, order_id):
+        order = get_object_or_404(Order, pk=order_id, company=self.company)
+
+        from django.db.models import Q
+        from accounts.models import User
+        from operations.services.dispatch_service import assign_best_rider
+
+        rider_filter = (
+            Q(role="rider")
+            | Q(staff_role__name__iexact="rider")
+            | Q(staff_role__name__iexact="delivery boy")
+            | Q(staff_role__name__iexact="delivery")
+        )
+        has_riders = User.objects.filter(company=self.company, is_active=True).filter(rider_filter).exists()
+        if not has_riders:
+            return Response(
+                {
+                    "error": "No active riders available. Please add a rider in Employees.",
+                    "detail": "No active riders available. Please add a rider in Employees.",
+                },
+                status=400,
+            )
+
+        rider = assign_best_rider(order)
+        if not rider:
+            return Response(
+                {
+                    "error": "No active riders available. Please add a rider in Employees.",
+                    "detail": "No active riders available. Please add a rider in Employees.",
+                },
+                status=400,
+            )
+
+        assignment, _ = DeliveryAssignment.objects.update_or_create(
+            order=order,
+            defaults={
+                "company": self.company,
+                "rider": rider,
+                "assigned_by": request.user,
+                "status": Order.STATUS_ASSIGNED,
+            },
+        )
+        order.assigned_rider = rider
+        if order.status in (
+            Order.STATUS_NEW,
+            Order.STATUS_PENDING,
+            Order.STATUS_CONFIRMED,
+            Order.STATUS_PREPARING,
+            Order.STATUS_PREPARED,
+            Order.STATUS_READY,
+        ):
+            order.status = Order.STATUS_ASSIGNED
+        order.save(update_fields=["assigned_rider", "status", "updated_at"])
+
+        return Response({
+            "success": True,
+            "order_id": order.id,
+            "order_number": order.order_number,
+            "status": order.status,
+            "rider": {
+                "id": rider.id,
+                "name": rider.get_full_name() or rider.username,
+                "phone": getattr(rider, "phone", "") or "",
+            },
+            "message": f"Successfully auto-assigned to {rider.get_full_name() or rider.username}.",
+        }, status=200)
+
+
+

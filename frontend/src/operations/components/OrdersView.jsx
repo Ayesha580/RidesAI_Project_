@@ -425,6 +425,7 @@ export default function OrdersView() {
   const [receiptModalSlipType, setReceiptModalSlipType] = useState("invoice");
   const [autoTriggerPrint, setAutoTriggerPrint] = useState(false);
   const [autoPrintToast, setAutoPrintToast] = useState(null);
+  const [autoAssigningId, setAutoAssigningId] = useState(null);
 
   // User preference persisted in localStorage
   const [autoPrintPopup, setAutoPrintPopup] = useState(() => {
@@ -525,6 +526,32 @@ export default function OrdersView() {
       await loadOrders(orderPage);
     } catch (err) {
       alert("Failed to update order status: " + errorText(err));
+    }
+  };
+
+  const handleAutoAssignRider = async (orderId) => {
+    setAutoAssigningId(orderId);
+    try {
+      const res = await dashboardApi.autoAssignRider(orderId);
+      const data = res.data;
+      if (data.success && data.rider) {
+        setOrders((prev) =>
+          prev.map((ord) =>
+            ord.id === orderId
+              ? {
+                  ...ord,
+                  status: data.status || "assigned",
+                  status_display: data.status === "assigned" ? "Assigned" : ord.status_display,
+                  assigned_rider: data.rider,
+                }
+              : ord
+          )
+        );
+      }
+    } catch (err) {
+      alert("Failed to auto-assign rider: " + errorText(err));
+    } finally {
+      setAutoAssigningId(null);
     }
   };
 
@@ -677,6 +704,23 @@ export default function OrdersView() {
                             </span>
                           ))}
                         </div>
+                        {o.notes && (
+                          <div
+                            style={{
+                              marginTop: 6,
+                              padding: "4px 8px",
+                              borderRadius: 6,
+                              background: "#fffbeb",
+                              border: "1px dashed #d97706",
+                              color: "#92400e",
+                              fontSize: 11.5,
+                              fontWeight: 600,
+                              lineHeight: 1.3,
+                            }}
+                          >
+                            ⚠️ Special Note: {o.notes}
+                          </div>
+                        )}
                       </td>
                       <td>
                         <strong style={{ fontSize: 14.5, color: "#166534" }}>Rs. {o.total}</strong>
@@ -704,8 +748,28 @@ export default function OrdersView() {
                             🛵 {o.assigned_rider.name}
                           </div>
                         ) : (
-                          <div style={{ fontSize: 11, color: "#94a3b8", marginTop: 4 }}>
-                            Unassigned
+                          <div style={{ marginTop: 4 }}>
+                            <button
+                              onClick={() => handleAutoAssignRider(o.id)}
+                              disabled={autoAssigningId === o.id || isTerminalStatus(o.status)}
+                              style={{
+                                background: "#ff77ff",
+                                color: "#ffffff",
+                                border: "none",
+                                borderRadius: 6,
+                                padding: "3px 8px",
+                                fontSize: 11,
+                                fontWeight: 700,
+                                cursor: isTerminalStatus(o.status) ? "not-allowed" : "pointer",
+                                display: "inline-flex",
+                                alignItems: "center",
+                                gap: 4,
+                                boxShadow: "0 2px 6px rgba(255, 119, 255, 0.3)",
+                              }}
+                              title="Auto-assign the least busy delivery rider"
+                            >
+                              🛵 {autoAssigningId === o.id ? "Assigning..." : "Auto-Assign Rider"}
+                            </button>
                           </div>
                         )}
                       </td>

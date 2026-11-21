@@ -22,9 +22,10 @@ def build_receipt_payload(order, company=None, slip_type="invoice"):
     # Format business info
     business_info = {
         "name": getattr(comp, "name", "Rides AI Store") if comp else "Rides AI Store",
+        "branding": "Owned by Rides Technologies",
         "phone": getattr(comp, "phone", "") or getattr(comp, "agent_support_phone", "") or "",
         "address": getattr(comp, "address", "") or "",
-        "header": getattr(comp, "receipt_header", "") or "",
+        "header": getattr(comp, "receipt_header", "") or "Owned by Rides Technologies",
         "footer": getattr(comp, "receipt_footer", "") or "Thank you for your order! Powered by Rides Technologies",
         "printer_name": getattr(comp, "printer_name", "SpeedX SP-200U") if comp else "SpeedX SP-200U",
         "currency_symbol": currency_symbol,
@@ -34,6 +35,12 @@ def build_receipt_payload(order, company=None, slip_type="invoice"):
     
     # Format order info
     notes_str = (order.notes or "").strip()
+    rider = getattr(order, "assigned_rider", None)
+    if not rider and hasattr(order, "delivery") and order.delivery:
+        rider = order.delivery.rider
+    rider_name = (rider.get_full_name() or rider.username) if rider else None
+    rider_phone = (getattr(rider, "phone", "") or "") if rider else ""
+
     order_info = {
         "id": order.id,
         "order_number": order.order_number,
@@ -45,6 +52,8 @@ def build_receipt_payload(order, company=None, slip_type="invoice"):
         "delivery_address": order.delivery_address or "",
         "notes": notes_str,
         "has_notes": bool(notes_str),
+        "assigned_rider_name": rider_name,
+        "assigned_rider_phone": rider_phone,
     }
     
     # Format items

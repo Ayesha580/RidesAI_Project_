@@ -579,9 +579,12 @@ export default function ThermalReceiptModal({
                   <>
                     <div className="trm-paper-header">
                       <div className="trm-store-title">{biz.name || "RIDES AI STORE"}</div>
+                      <div style={{ fontSize: 10, color: "#64748b", margin: "2px 0 4px", fontWeight: 700 }}>
+                        Owned by Rides Technologies
+                      </div>
                       {biz.address && <div>{biz.address}</div>}
                       {biz.phone && <div>Tel: {biz.phone}</div>}
-                      {biz.header && <div>{biz.header}</div>}
+                      {biz.header && biz.header !== "Owned by Rides Technologies" && <div>{biz.header}</div>}
                     </div>
 
                     <div className="trm-divider" />
@@ -599,6 +602,14 @@ export default function ThermalReceiptModal({
                     {ord.delivery_address && (
                       <div style={{ marginTop: 2 }}>
                         <span>Address: {ord.delivery_address}</span>
+                      </div>
+                    )}
+                    {(ord.assigned_rider_name || ord.assigned_rider?.name) && (
+                      <div className="trm-row" style={{ marginTop: 2 }}>
+                        <span>Rider:</span>
+                        <span style={{ fontWeight: 700, color: "#2563eb" }}>
+                          🛵 {ord.assigned_rider_name || ord.assigned_rider?.name}
+                        </span>
                       </div>
                     )}
 
@@ -658,6 +669,9 @@ export default function ThermalReceiptModal({
 
                     <div className="trm-paper-footer">
                       <div>{biz.footer || "Thank you for ordering!"}</div>
+                      <div style={{ fontSize: 9.5, color: "#94a3b8", marginTop: 4, letterSpacing: "0.5px" }}>
+                        Powered by Rides Technologies
+                      </div>
                     </div>
                   </>
                 ) : (
@@ -665,6 +679,9 @@ export default function ThermalReceiptModal({
                   <>
                     <div className="trm-paper-header">
                       <div className="trm-store-title">*** KOT ***</div>
+                      <div style={{ fontSize: 10, color: "#64748b", margin: "2px 0 4px", fontWeight: 700 }}>
+                        Owned by Rides Technologies
+                      </div>
                       <div style={{ fontSize: 18, fontWeight: 900, marginTop: 4 }}>
                         ORDER #{ord.order_number}
                       </div>
@@ -674,6 +691,11 @@ export default function ThermalReceiptModal({
                       <div style={{ fontSize: 11, marginTop: 2 }}>
                         Customer: {ord.customer_name} ({ord.customer_phone})
                       </div>
+                      {(ord.assigned_rider_name || ord.assigned_rider?.name) && (
+                        <div style={{ fontSize: 11, marginTop: 3, fontWeight: 700, color: "#2563eb" }}>
+                          Rider: 🛵 {ord.assigned_rider_name || ord.assigned_rider?.name}
+                        </div>
+                      )}
                     </div>
 
                     <div className="trm-divider-double" />

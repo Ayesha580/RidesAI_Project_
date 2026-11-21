@@ -188,6 +188,8 @@ export default function App() {
       />
       <Route path="/owner/settings" element={<AuthOnly><OwnerSettings /></AuthOnly>} />
       <Route path="/owner/billing" element={<Navigate to="/owner/settings?tab=billing" replace />} />
+      <Route path="/owner/tables" element={<Navigate to="/owner/m/tables" replace />} />
+      <Route path="/owner/reservations" element={<Navigate to="/owner/m/reservations" replace />} />
 
       <Route path="/staff/dashboard" element={<Guard roles={["staff"]}><StaffDashboard /></Guard>} />
       <Route path="/kitchen/dashboard" element={<Guard roles={["kitchen", "owner"]}><KitchenDashboard /></Guard>} />

@@ -30,6 +30,11 @@ from companies.models import Company, CatalogItem, BusinessKnowledge, BusinessHo
 
 logger = logging.getLogger("operations.whatsapp")
 
+PAKISTAN_CITIES = [
+    "Karachi", "Lahore", "Faisalabad", "Rawalpindi", "Gujranwala", "Peshawar",
+    "Multan", "Islamabad", "Quetta", "Sialkot", "Hyderabad", "Bahawalpur", "Sargodha"
+]
+
 
 # ============================================================================
 # OpenAI / Groq Tool Schemas (Phase 3 Tool Calling)
@@ -523,6 +528,16 @@ def execute_create_order(
                     "notes": raw_item.get("special_instructions", ""),
                 })
 
+            # Consolidate general notes and item-specific special instructions into order.notes
+            combined_notes_parts = []
+            if clean_notes:
+                combined_notes_parts.append(clean_notes)
+            for r in resolved_items:
+                item_instr = str(r.get("notes") or "").strip()
+                if item_instr and item_instr.lower() not in clean_notes.lower():
+                    combined_notes_parts.append(f"{r['item_name']}: {item_instr}")
+            consolidated_notes = " | ".join(combined_notes_parts)
+
             # Create Order
             order = Order.objects.create(
                 company=company,
@@ -533,7 +548,7 @@ def execute_create_order(
                 subtotal=subtotal,
                 delivery_fee=Decimal("0.00"),
                 total=subtotal,
-                notes=clean_notes,
+                notes=consolidated_notes,
                 source="agent",
             )
 
@@ -914,6 +929,9 @@ def get_effective_service_areas(company: Optional[Company]) -> List[str]:
         # Fallback 2: Company address
         if company.address and company.address.strip():
             addr = company.address.strip()
+            matched = [c for c in PAKISTAN_CITIES if c.lower() in addr.lower()]
+            if matched:
+                return matched
             segments = [s.strip() for s in addr.split(",") if s.strip()]
             countries = {"pakistan", "pk", "usa", "us", "uk", "uae", "canada"}
             cities = [s for s in segments if s.lower() not in countries]
@@ -1146,6 +1164,7 @@ STRICT TOOL CALLING RULES:
    - Under NO circumstances loop or ask "What would you like to order?" if the customer has already stated the items in prior turns. Maintain full multi-turn context and combine the remembered items with the provided address and contact details to call `create_order`.
    - When the customer provides their contact info and confirms (e.g., 'hanjee', 'hanjee krden', 'ji kar dein', 'haan', 'done', 'ok', 'confirm', 'yes', 'bhej do'): IMMEDIATELY call `create_order` using the items, name, phone, and address from the conversation history, and return the confirmation.
    - After `create_order` succeeds, provide a cheerful confirmation containing the *order number*, items, total in Pakistani Rupees (e.g., *Total:* Rs. 850.00), and estimated delivery time (30-45 mins).
+   - KITCHEN NOTES & SPECIAL INSTRUCTIONS / ALLERGIES: If the customer mentions any dietary requests, allergies, preparation instructions, or food customizations (such as 'no onions', 'extra spicy', 'nut allergy', 'no mayo', 'less oil', 'no cheese', or delivery gate codes), you MUST capture them into the `notes` argument or item `special_instructions` when calling `create_order` so the kitchen and dispatch team are alerted.
    - DELIVERY AREA VALIDATION:
      * Our active delivery service areas are: {delivery_zones_str}.
      * Accept delivery addresses in or near {delivery_zones_str} naturally.

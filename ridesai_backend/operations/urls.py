@@ -2,6 +2,7 @@ from django.urls import path
 from .views import (OrderCatalogAPIView, OrderListCreateAPIView, OrderStatusAPIView, RiderDeliveryAPIView,
                     DeliveryAssignAPIView, DeliveryListAPIView, DeliveryRiderListAPIView, AgentSettingsAPIView,
                     AgentTogglePauseAPIView, AgentChatAPIView, AgentConversationListAPIView, OrderAssignAPIView,
+                    OrderAutoAssignRiderAPIView,
                     PublicAgentChatAPIView, PublicAgentCatalogAPIView, PublicAgentConversationAPIView,
                     PublicAgentWidgetScriptAPIView, WhatsAppWebhookAPIView, WhatsAppSettingsAPIView)
 from .calling_views import IncomingAICallWebhookView
@@ -12,6 +13,7 @@ urlpatterns = [
     path("orders/", OrderListCreateAPIView.as_view(), name="orders"),
     path("orders/<int:order_id>/status/", OrderStatusAPIView.as_view(), name="order-status"),
     path("orders/<int:order_id>/assign/", OrderAssignAPIView.as_view(), name="order-assign"),
+    path("orders/<int:order_id>/auto-assign-rider/", OrderAutoAssignRiderAPIView.as_view(), name="order-auto-assign-rider"),
     path("deliveries/my/", RiderDeliveryAPIView.as_view(), name="my-deliveries"),
     path("deliveries/", DeliveryListAPIView.as_view(), name="deliveries"),
     path("deliveries/assign/", DeliveryAssignAPIView.as_view(), name="assign-delivery"),
