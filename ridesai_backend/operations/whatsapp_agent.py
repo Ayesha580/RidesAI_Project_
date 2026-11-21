@@ -1664,10 +1664,46 @@ def process_incoming_whatsapp_message(
                 "reply_text": unconfigured_reply,
             }
 
+        company_obj = context.get("company")
+        from billing.services import get_access_state, consume_company_message
+        access_state = get_access_state(company_obj)
+        if access_state != "ok":
+            logger.warning(
+                f"[WhatsApp Agent] Company '{company_obj.name}' subscription is inactive (status: {access_state}). "
+                f"Rejecting message from {sender_phone}."
+            )
+            inactive_reply = (
+                f"Thank you for contacting {company_obj.name}. Our automated assistant is currently unavailable. "
+                f"Please reach out to us directly."
+            )
+            _dispatch_whatsapp_text(company=company_obj, phone=sender_phone, text=inactive_reply, service=service)
+            return {
+                "success": False,
+                "error": "subscription_inactive",
+                "reply_text": inactive_reply,
+            }
+
+        try:
+            consume_company_message(company_obj, count=1)
+        except Exception as e:
+            logger.warning(
+                f"[WhatsApp Agent] Company '{company_obj.name}' monthly message/voice limit reached: {e}. "
+                f"Rejecting message from {sender_phone}."
+            )
+            limit_reply = (
+                f"Thank you for contacting {company_obj.name}. Our automated voice and messaging assistant has "
+                f"reached its monthly limit. Please contact us directly at {company_obj.phone or 'our official number'}."
+            )
+            _dispatch_whatsapp_text(company=company_obj, phone=sender_phone, text=limit_reply, service=service)
+            return {
+                "success": False,
+                "error": "monthly_limit_reached",
+                "reply_text": limit_reply,
+            }
+
         # Step 2: Audio / Voice Message Cost & Rate Limiting Check
         is_voice_message = (msg_type == "audio" or bool(media_id) or bool(audio_bytes))
         if is_voice_message:
-            company_obj = context.get("company")
             allowed, limit_msg, customer = check_and_enforce_voice_limit(
                 company=company_obj,
                 phone=sender_phone,

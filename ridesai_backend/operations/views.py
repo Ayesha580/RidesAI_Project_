@@ -548,9 +548,11 @@ class PublicAgentCatalogAPIView(APIView):
 
     def get(self, request, public_id):
         from companies.models import Company
+        from billing.services import get_access_state, check_company_monthly_limit
         company = get_object_or_404(Company, agent_public_id=public_id)
         if not company.agent_enabled or get_access_state(company) != "ok":
             return Response({"detail": "This business catalogue is not currently available."}, status=404)
+        has_quota, _ = check_company_monthly_limit(company)
         rows = CatalogItem.objects.filter(company=company, is_available=True).select_related("inventory")[:300]
         result = []
         for item in rows:
@@ -562,9 +564,16 @@ class PublicAgentCatalogAPIView(APIView):
             })
         from companies.models import ServiceArea
         areas = list(ServiceArea.objects.filter(company=company, is_active=True).values("name", "area_type", "city", "country", "radius_km", "delivery_fee"))
-        return Response({"business": company.name, "items": result, "service_areas": areas,
-                         "can_order": "create_order" in (company.agent_allowed_actions or []),
-                         "can_handover": "handover" in (company.agent_allowed_actions or [])})
+        return Response({
+            "business": company.name,
+            "items": result,
+            "service_areas": areas,
+            "can_order": "create_order" in (company.agent_allowed_actions or []),
+            "can_handover": "handover" in (company.agent_allowed_actions or []),
+            "monthly_limit_reached": not has_quota,
+            "messages_used": company.messages_used,
+            "message_limit": company.message_limit,
+        })
 
 
 class PublicAgentChatAPIView(APIView):
@@ -575,16 +584,46 @@ class PublicAgentChatAPIView(APIView):
     def post(self, request, public_id):
         import base64
         from companies.models import Company, CatalogItem
+        from billing.services import get_access_state, consume_company_message
         from operations.audio_service import transcribe_audio, synthesize_speech, clean_text_for_tts, transliterate_to_roman_urdu
         from operations.whatsapp_agent import _generate_agent_reply, get_business_context_for_company
 
         company = get_object_or_404(Company, agent_public_id=public_id)
         if not company.agent_enabled:
-            return Response({"detail": "This business assistant is not currently available."}, status=404)
-        if get_access_state(company) != "ok":
-            return Response({"detail": "This business assistant is temporarily unavailable."}, status=503)
+            return Response(
+                {
+                    "error": "agent_disabled",
+                    "detail": "This business assistant is not currently available.",
+                    "message": "This business assistant is not currently available.",
+                },
+                status=404,
+            )
 
-        # 1. Accept customer audio (base64 or file upload) or speech-to-text transcript
+        # 1. Billing access state check BEFORE calling STT/LLM/TTS
+        if get_access_state(company) != "ok":
+            return Response(
+                {
+                    "error": "subscription_inactive",
+                    "detail": "This business's AI Voice Agent is temporarily unavailable due to an inactive subscription. Please contact the business directly.",
+                    "message": "This business's AI Voice Agent is temporarily unavailable due to an inactive subscription. Please contact the business directly.",
+                },
+                status=402,
+            )
+
+        # 2. Monthly voice/message quota check & atomic consumption BEFORE STT/LLM/TTS
+        try:
+            consume_company_message(company)
+        except Exception:
+            return Response(
+                {
+                    "error": "monthly_limit_reached",
+                    "detail": "This business's AI Voice Agent has reached its monthly usage limit. Please contact the business directly.",
+                    "message": "This business's AI Voice Agent has reached its monthly usage limit. Please contact the business directly.",
+                },
+                status=402,
+            )
+
+        # 3. Accept customer audio (base64 or file upload) or speech-to-text transcript
         raw_audio = request.data.get("audio") or request.data.get("audio_base64") or request.FILES.get("audio")
         message = (request.data.get("message") or "").strip()
         transcript = None
@@ -609,11 +648,6 @@ class PublicAgentChatAPIView(APIView):
             return Response({"message": "A voice message or speech transcript is required."}, status=400)
 
         message = transliterate_to_roman_urdu(message)
-
-        try:
-            consume_company_message(company)
-        except Exception as exc:
-            return Response({"detail": str(exc)}, status=429)
 
         key = request.data.get("conversation_id")
         if key:

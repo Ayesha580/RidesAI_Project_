@@ -152,17 +152,25 @@ def approve_company(company, start_trial=True, notify=True):
         )
 
     return company
+def is_billing_exempt_email(email: str) -> bool:
+    """
+    Checks if an email is exempt from upfront payment (e.g. ayeshaarshed145@gmail.com).
+    Exempt emails receive exactly 1 month (30 days) of free trial access upon registration.
+    Case-insensitive matching. Strict exclusivity.
+    """
+    if not email:
+        return False
+    exempt_list = getattr(settings, "BILLING_EXEMPT_EMAILS", ["ayeshaarshed145@gmail.com"])
+    clean_email = str(email).strip().lower()
+    return any(clean_email == str(e).strip().lower() for e in exempt_list)
+
+
 def get_access_state(company):
     if not company:
         return "payment_required"
 
-    # Phase 2: Manual override or active subscription status
+    # Manual override or active paid subscription
     if getattr(company, "is_manual_override", False) or getattr(company, "subscription_status", "") == "active":
-        return "ok"
-
-    now = timezone.now()
-    trial_ends = getattr(company, "trial_ends_at", None)
-    if trial_ends and now < trial_ends:
         return "ok"
 
     if not company.is_approved:
@@ -174,7 +182,16 @@ def get_access_state(company):
         return "suspended"
 
     if not company.polar_subscription_id and not company.trial_ends_at:
-        return "payment_required"   
+        return "payment_required"
+
+    now = timezone.now()
+    if company.trial_ends_at and not company.polar_subscription_id:
+        if company.grace_ends_at and now >= company.grace_ends_at:
+            return "suspended"
+        if now < company.trial_ends_at or (company.grace_ends_at and now < company.grace_ends_at):
+            return "ok"
+        return "payment_required"
+
     return "ok"
 
 
@@ -189,8 +206,26 @@ def refresh_message_period(company):
     return company
 
 
+def check_company_monthly_limit(company, count=1):
+    """
+    Checks whether company has remaining monthly voice/message quota.
+    Returns (is_allowed, error_code).
+    """
+    if not company:
+        return False, "no_company"
+    now = timezone.now()
+    start = company.message_period_started_at
+    if not start or (now - start).days >= 30:
+        company.messages_used = 0
+        company.message_period_started_at = now
+        company.save(update_fields=["messages_used", "message_period_started_at"])
+    if company.messages_used + count > company.message_limit:
+        return False, "monthly_limit_reached"
+    return True, ""
+
+
 def consume_company_message(company, count=1):
-    """Atomically consume AI quota before processing each accepted message."""
+    """Atomically consume AI quota before processing each accepted message/voice turn."""
     from django.db import transaction
     from django.db.models import F
     from rest_framework.exceptions import ValidationError
@@ -204,7 +239,11 @@ def consume_company_message(company, count=1):
             company.message_period_started_at = now
             company.save(update_fields=["messages_used", "message_period_started_at"])
         if company.messages_used + count > company.message_limit:
-            raise ValidationError({"code": "message_limit_reached", "detail": "Your monthly message limit has been reached. Please review your subscription."})
+            raise ValidationError({
+                "code": "monthly_limit_reached",
+                "detail": "This business's AI Voice Agent has reached its monthly usage limit. Please contact the business directly.",
+                "message": "This business's AI Voice Agent has reached its monthly usage limit. Please contact the business directly.",
+            })
         Company.objects.filter(pk=company.pk).update(messages_used=F("messages_used") + count)
         company.refresh_from_db(fields=["messages_used", "message_limit", "message_period_started_at"])
     return company

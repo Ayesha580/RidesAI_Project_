@@ -92,15 +92,32 @@ class BillingOverviewAPIView(APIView):
 
         refresh_grace_state(company)
         plan = company.plan or get_default_plan()
+        if not plan:
+            plan = Plan.objects.filter(is_active=True).order_by("price", "id").first()
+
+        plan_price = None
+        if plan and plan.price is not None:
+            try:
+                plan_price = float(plan.price)
+            except (ValueError, TypeError):
+                plan_price = None
+
+        monthly_limit_reached = bool(company.message_limit > 0 and company.messages_used >= company.message_limit)
+        messages_remaining = max(company.message_limit - company.messages_used, 0)
+
         if not company.polar_subscription_id:
             if not company.trial_ends_at:
                 return Response({
                     "status": "payment_required",
-                    "plan": plan.name if plan else None,
+                    "plan": plan.name if plan else "Standard",
+                    "billing_cycle": plan.billing_cycle if plan else "monthly",
+                    "amount_due": plan_price,
+                    "plan_price": plan_price,
                     "can_subscribe": True,
                     "message_limit": company.message_limit,
                     "messages_used": company.messages_used,
-                    "messages_remaining": max(company.message_limit - company.messages_used, 0),
+                    "messages_remaining": messages_remaining,
+                    "monthly_limit_reached": monthly_limit_reached,
                     "payment_history": [{"id": p.id, "amount": str(p.amount) if p.amount is not None else None, "currency": p.currency, "status": p.status, "created_at": p.created_at} for p in PaymentTransaction.objects.filter(company=company).order_by("-created_at")[:50]],
                 })
             now = timezone.now()
@@ -108,9 +125,10 @@ class BillingOverviewAPIView(APIView):
             return Response({
                 "status": "trial_expired" if expired else "trialing",
                 "payment_status": company.payment_status,
-                "plan": plan.name if plan else None,
-                "billing_cycle": plan.billing_cycle if plan else None,
-                "amount_due": plan.price if plan else None,
+                "plan": plan.name if plan else "Standard",
+                "billing_cycle": plan.billing_cycle if plan else "monthly",
+                "amount_due": plan_price,
+                "plan_price": plan_price,
                 "next_due_date": company.trial_ends_at,
                 "days_left": max((company.trial_ends_at - now).days, 0),
                 "cancel_at_period_end": False,
@@ -119,7 +137,8 @@ class BillingOverviewAPIView(APIView):
                 "polar_subscription_id": company.polar_subscription_id,
                 "message_limit": company.message_limit,
                 "messages_used": company.messages_used,
-                "messages_remaining": max(company.message_limit - company.messages_used, 0),
+                "messages_remaining": messages_remaining,
+                "monthly_limit_reached": monthly_limit_reached,
                 "payment_history": [{"id": p.id, "amount": str(p.amount) if p.amount is not None else None, "currency": p.currency, "status": p.status, "created_at": p.created_at} for p in PaymentTransaction.objects.filter(company=company).order_by("-created_at")[:50]],
             })
 
@@ -140,9 +159,10 @@ class BillingOverviewAPIView(APIView):
                 return Response({
                     "status": mock_status,
                     "payment_status": company.payment_status,
-                    "plan": company.plan.name if company.plan else None,
-                    "billing_cycle": company.plan.billing_cycle if company.plan else None,
-                    "amount_due": company.plan.price if company.plan else None,
+                    "plan": plan.name if plan else "Standard",
+                    "billing_cycle": plan.billing_cycle if plan else "monthly",
+                    "amount_due": plan_price,
+                    "plan_price": plan_price,
                     "next_due_date": mock_meta.get("period_end"),
                     "days_left": None,
                     "cancel_at_period_end": bool(mock_meta.get("cancel_at_period_end")),
@@ -155,7 +175,8 @@ class BillingOverviewAPIView(APIView):
                     "mock": True,
                     "message_limit": company.message_limit,
                     "messages_used": company.messages_used,
-                    "messages_remaining": max(company.message_limit - company.messages_used, 0),
+                    "messages_remaining": messages_remaining,
+                    "monthly_limit_reached": monthly_limit_reached,
                     "payment_history": [{
                         "id": p.id, "amount": str(p.amount) if p.amount is not None else None,
                         "currency": p.currency, "status": p.status, "created_at": p.created_at,
@@ -179,9 +200,10 @@ class BillingOverviewAPIView(APIView):
         return Response({
             "status": "canceling" if cancel_at_period_end else sub.get("status"),
             "payment_status": company.payment_status,
-            "plan": plan.name if plan else None,
-            "billing_cycle": plan.billing_cycle if plan else None,
-            "amount_due": plan.price if plan else None,
+            "plan": plan.name if plan else "Standard",
+            "billing_cycle": plan.billing_cycle if plan else "monthly",
+            "amount_due": plan_price,
+            "plan_price": plan_price,
             "next_due_date": period_end,
             "days_left": days_left,
             "cancel_at_period_end": cancel_at_period_end,
@@ -191,7 +213,8 @@ class BillingOverviewAPIView(APIView):
             "polar_subscription_id": None,
             "message_limit": company.message_limit,
             "messages_used": company.messages_used,
-            "messages_remaining": max(company.message_limit - company.messages_used, 0),
+            "messages_remaining": messages_remaining,
+            "monthly_limit_reached": monthly_limit_reached,
             "payment_history": [{
                 "id": p.id, "amount": str(p.amount) if p.amount is not None else None,
                 "currency": p.currency, "status": p.status, "created_at": p.created_at,

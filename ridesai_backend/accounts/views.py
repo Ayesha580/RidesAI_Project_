@@ -149,6 +149,9 @@ class RegisterAPIView(APIView):
 
         try:
             with transaction.atomic():
+                from billing.services import is_billing_exempt_email
+                is_exempt = is_billing_exempt_email(email)
+                now = timezone.now()
                 company = Company.objects.create(
                     name=business_name,
                     business_type=d.get("business_type", ""),
@@ -159,13 +162,17 @@ class RegisterAPIView(APIView):
                     email=email,
                     phone=d["phone"],
                     plan=plan,
-                    message_limit=getattr(settings, "DEFAULT_MESSAGE_LIMIT", 1000),
+                    message_limit=getattr(settings, "DEFAULT_CLIENT_MESSAGE_LIMIT", getattr(settings, "DEFAULT_MESSAGE_LIMIT", 1000)),
                     business_registration_document=d.get("business_registration_document"),
                     cnic_front=d["cnic_front"],
                     cnic_back=d["cnic_back"],
                     passport_size_photo=d["passport_size_photo"],
-                    status=Company.STATUS_PENDING,
-                    is_approved=False,
+                    status=Company.STATUS_ACTIVE if is_exempt else Company.STATUS_PENDING,
+                    is_approved=True if is_exempt else False,
+                    approved_at=now if is_exempt else None,
+                    subscription_status="trial" if is_exempt else Company.SUBSCRIPTION_TRIAL,
+                    trial_ends_at=now + timedelta(days=30) if is_exempt else None,
+                    is_manual_override=False,
                 )
 
                 user = User(
@@ -276,8 +283,21 @@ class VerifyEmailAPIView(APIView):
             user.save(update_fields=["email_verified"])
 
             company = user.company
-            if company and not company.is_approved:
-                approve_company(company, start_trial=False, notify=False)
+            if company:
+                from billing.services import is_billing_exempt_email
+                is_exempt = is_billing_exempt_email(user.email) or is_billing_exempt_email(company.email)
+                if is_exempt:
+                    now = timezone.now()
+                    company.is_approved = True
+                    company.approved_at = now
+                    company.status = Company.STATUS_ACTIVE
+                    company.subscription_status = "trial"
+                    company.trial_ends_at = now + timedelta(days=30)
+                    company.payment_status = Company.PAYMENT_OK
+                    company.is_manual_override = False
+                    company.save(update_fields=["is_approved", "approved_at", "status", "subscription_status", "trial_ends_at", "payment_status", "is_manual_override"])
+                elif not company.is_approved:
+                    approve_company(company, start_trial=False, notify=False)
 
             EmailVerificationToken.objects.filter(
                 user=user,

@@ -20,6 +20,7 @@ export default function PublicAgentPage() {
   const conversationIdRef = useRef(null);
   const [messages, setMessages] = useState([]);
   const [error, setError] = useState("");
+  const [monthlyLimitReached, setMonthlyLimitReached] = useState(false);
 
   // Voice Interaction State: "idle" | "listening" | "processing" | "speaking"
   const [voiceState, setVoiceState] = useState("idle");
@@ -66,6 +67,10 @@ export default function PublicAgentPage() {
         setCatalog(data.items || []);
         setServiceAreas(data.service_areas || []);
         if (data.business) setBusinessName(data.business);
+        if (data.monthly_limit_reached) {
+          setMonthlyLimitReached(true);
+          setError("This business's AI Voice Agent has reached its monthly usage limit. Please contact the business directly.");
+        }
       })
       .catch((err) =>
         setError(err.response?.data?.detail || "This business assistant is currently unavailable.")
@@ -181,7 +186,21 @@ export default function PublicAgentPage() {
       // Auto-play voice reply
       playVoiceResponse(data.audio_url, reply);
     } catch (err) {
-      setError(err.response?.data?.detail || "Voice processing failed. Please try speaking again.");
+      const errData = err.response?.data;
+      if (
+        err.response?.status === 402 ||
+        errData?.error === "monthly_limit_reached" ||
+        errData?.error === "subscription_inactive"
+      ) {
+        setMonthlyLimitReached(true);
+        setError(
+          errData?.message ||
+            errData?.detail ||
+            "This business's AI Voice Agent has reached its monthly usage limit. Please contact the business directly."
+        );
+      } else {
+        setError(errData?.detail || errData?.message || "Voice processing failed. Please try speaking again.");
+      }
       setVoiceState("idle");
     }
   };
@@ -410,6 +429,7 @@ export default function PublicAgentPage() {
 
   // Main Action: Toggle Mic Button
   const handleMicClick = () => {
+    if (monthlyLimitReached) return;
     if (voiceState === "speaking") {
       // Mute / stop talking
       stopAllAudio();
@@ -849,14 +869,40 @@ export default function PublicAgentPage() {
             gap: "12px",
           }}
         >
+          {/* Monthly Limit Reached Warning Banner */}
+          {monthlyLimitReached && (
+            <div
+              style={{
+                width: "100%",
+                maxWidth: "480px",
+                background: "#fef2f2",
+                border: "1px solid #fecaca",
+                borderRadius: "12px",
+                padding: "12px 16px",
+                textAlign: "center",
+                color: "#991b1b",
+                fontSize: "13px",
+                fontWeight: "600",
+                boxSizing: "border-box",
+              }}
+            >
+              ⚠️ Monthly Voice Limit Reached
+              <p style={{ margin: "4px 0 0 0", fontSize: "12px", fontWeight: "400", color: "#b91c1c" }}>
+                This business has reached its monthly AI voice usage quota. Please contact the business directly.
+              </p>
+            </div>
+          )}
+
           {/* Main Glowing 🎤 Voice Button */}
           <div style={{ position: "relative" }}>
             <button
               type="button"
               onClick={handleMicClick}
-              disabled={voiceState === "processing"}
+              disabled={voiceState === "processing" || monthlyLimitReached}
               aria-label={
-                voiceState === "listening"
+                monthlyLimitReached
+                  ? "Monthly usage limit reached"
+                  : voiceState === "listening"
                   ? "Stop recording and send"
                   : voiceState === "speaking"
                   ? "Mute audio playback"
@@ -868,7 +914,9 @@ export default function PublicAgentPage() {
                 height: "82px",
                 borderRadius: "50%",
                 background:
-                  voiceState === "listening"
+                  monthlyLimitReached
+                    ? "#cbd5e1"
+                    : voiceState === "listening"
                     ? "linear-gradient(135deg, #d946ef 0%, #ff77ff 100%)"
                     : voiceState === "speaking"
                     ? "linear-gradient(135deg, #0284c7 0%, #38bdf8 100%)"
@@ -877,19 +925,28 @@ export default function PublicAgentPage() {
                     : "linear-gradient(135deg, #ff77ff 0%, #ec4899 100%)",
                 border: "4px solid #ffffff",
                 boxShadow:
-                  voiceState === "listening"
+                  monthlyLimitReached
+                    ? "none"
+                    : voiceState === "listening"
                     ? "0 0 25px rgba(217, 70, 239, 0.8)"
                     : "0 10px 20px rgba(255, 119, 255, 0.35)",
                 color: "#ffffff",
                 fontSize: "32px",
-                cursor: voiceState === "processing" ? "wait" : "pointer",
+                cursor:
+                  monthlyLimitReached
+                    ? "not-allowed"
+                    : voiceState === "processing"
+                    ? "wait"
+                    : "pointer",
                 display: "grid",
                 placeItems: "center",
                 transition: "all 0.25s ease",
                 outline: "none",
               }}
             >
-              {voiceState === "listening" ? (
+              {monthlyLimitReached ? (
+                "🔒"
+              ) : voiceState === "listening" ? (
                 "⏹"
               ) : voiceState === "speaking" ? (
                 "🔊"
@@ -903,7 +960,16 @@ export default function PublicAgentPage() {
 
           {/* Voice Status Label & Equalizer Animation */}
           <div style={{ textAlign: "center" }}>
-            {voiceState === "idle" && (
+            {monthlyLimitReached ? (
+              <div>
+                <strong style={{ fontSize: "16px", color: "#991b1b", display: "block" }}>
+                  Monthly Limit Reached
+                </strong>
+                <span style={{ fontSize: "12px", color: "#64748b" }}>
+                  Microphone is disabled until the next billing cycle
+                </span>
+              </div>
+            ) : voiceState === "idle" ? (
               <div>
                 <strong style={{ fontSize: "16px", color: "#0f172a", display: "block" }}>
                   Tap to Speak
@@ -912,7 +978,7 @@ export default function PublicAgentPage() {
                   100% voice experience · Speak naturally
                 </span>
               </div>
-            )}
+            ) : null}
 
             {voiceState === "listening" && (
               <div>

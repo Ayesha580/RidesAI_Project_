@@ -3659,6 +3659,104 @@ class PublicVoiceAgentMultiTurnOrderTests(TestCase):
         mock_transcribe.assert_called_once()
 
 
+class MonthlyVoiceLimitEnforcementTests(TestCase):
+    def setUp(self):
+        import uuid
+        from rest_framework.test import APIClient
+        self.client = APIClient()
+        self.company = Company.objects.create(
+            name="Voice Limit Test Store",
+            business_type="restaurant",
+            is_approved=True,
+            subscription_status="active",
+            is_manual_override=True,
+            agent_enabled=True,
+            agent_public_id=uuid.uuid4(),
+            message_limit=10,
+            messages_used=0,
+            message_period_started_at=timezone.now(),
+        )
+
+    @patch("operations.audio_service.transcribe_audio")
+    @patch("operations.whatsapp_agent._generate_agent_reply")
+    def test_public_voice_agent_blocks_when_monthly_limit_reached(self, mock_agent_reply, mock_transcribe):
+        self.company.messages_used = 10
+        self.company.save(update_fields=["messages_used"])
+
+        import base64
+        fake_audio = "data:audio/webm;base64," + base64.b64encode(b"audio_bytes").decode("ascii")
+
+        res = self.client.post(
+            f"/api/operations/public/agent/{self.company.agent_public_id}/chat/",
+            {
+                "audio_base64": fake_audio,
+                "message": "",
+            },
+            format="json",
+        )
+
+        self.assertEqual(res.status_code, 402)
+        self.assertEqual(res.data["error"], "monthly_limit_reached")
+        self.assertIn("monthly usage limit", res.data["message"])
+        mock_transcribe.assert_not_called()
+        mock_agent_reply.assert_not_called()
+
+    def test_public_agent_catalog_reflects_monthly_limit_reached(self):
+        self.company.messages_used = 10
+        self.company.save(update_fields=["messages_used"])
+
+        res = self.client.get(f"/api/operations/public/agent/{self.company.agent_public_id}/catalog/")
+        self.assertEqual(res.status_code, 200)
+        self.assertTrue(res.data["monthly_limit_reached"])
+        self.assertEqual(res.data["messages_used"], 10)
+        self.assertEqual(res.data["message_limit"], 10)
+
+    @patch("operations.audio_service.transcribe_audio")
+    @patch("operations.whatsapp_agent._generate_agent_reply")
+    @patch("operations.whatsapp_agent._dispatch_whatsapp_text")
+    def test_whatsapp_voice_agent_blocks_when_monthly_limit_reached(self, mock_dispatch, mock_agent_reply, mock_transcribe):
+        from operations.whatsapp_agent import process_incoming_whatsapp_message
+        self.company.messages_used = 10
+        self.company.save(update_fields=["messages_used"])
+
+        result = process_incoming_whatsapp_message(
+            sender_phone="923001234567",
+            message_text="",
+            phone_number_id="test_phone_id",
+            msg_type="audio",
+            company=self.company,
+            audio_bytes=b"dummy_bytes",
+        )
+
+        self.assertFalse(result["success"])
+        self.assertEqual(result["error"], "monthly_limit_reached")
+        mock_transcribe.assert_not_called()
+        mock_agent_reply.assert_not_called()
+        mock_dispatch.assert_called_once()
+
+    @patch("operations.whatsapp_agent._dispatch_whatsapp_text")
+    def test_whatsapp_voice_agent_blocks_when_subscription_inactive(self, mock_dispatch):
+        from operations.whatsapp_agent import process_incoming_whatsapp_message
+        self.company.subscription_status = "inactive"
+        self.company.is_manual_override = False
+        self.company.trial_ends_at = timezone.now() - timedelta(days=10)
+        self.company.grace_ends_at = timezone.now() - timedelta(days=5)
+        self.company.payment_status = Company.PAYMENT_SUSPENDED
+        self.company.save()
+
+        result = process_incoming_whatsapp_message(
+            sender_phone="923001234567",
+            message_text="Hello",
+            phone_number_id="test_phone_id",
+            company=self.company,
+        )
+
+        self.assertFalse(result["success"])
+        self.assertEqual(result["error"], "subscription_inactive")
+        mock_dispatch.assert_called_once()
+
+
+
 
 
 

@@ -159,6 +159,33 @@ export default function BillingTab({ suspended }) {
       : null;
   const hasPortal = !info.can_subscribe && info.status !== "pending_approval";
 
+  // Voice Usage calculations
+  const messagesUsed = info.messages_used ?? 0;
+  const messageLimit = info.message_limit ?? 0;
+  const limitReached = Boolean(
+    info.monthly_limit_reached || (messageLimit > 0 && messagesUsed >= messageLimit)
+  );
+  const usagePct = messageLimit > 0 ? Math.min(100, Math.round((messagesUsed / messageLimit) * 100)) : 0;
+  const isHighUsage = usagePct >= 90 || limitReached;
+  const barColor = isHighUsage ? "#ef4444" : "#ff77ff";
+
+  // Price calculations
+  const rawPrice = info.plan_price ?? info.amount_due;
+  const numPrice = Number(rawPrice);
+  const hasNumericPrice =
+    rawPrice !== null && rawPrice !== undefined && rawPrice !== "" && !isNaN(numPrice);
+  const formattedPrice = hasNumericPrice
+    ? Number.isInteger(numPrice)
+      ? String(numPrice)
+      : numPrice.toFixed(2)
+    : null;
+  const priceDisplay = hasNumericPrice ? `$${formattedPrice}` : "-";
+  const payButtonLabel = busy
+    ? "Please wait..."
+    : hasNumericPrice
+    ? `Pay now ($${formattedPrice})`
+    : "Select a Plan";
+
   return (
     <div className="se-stack">
       {suspended && (
@@ -190,6 +217,138 @@ export default function BillingTab({ suspended }) {
       )}
       {error && <div className="ad-alert" role="alert">{error}</div>}
 
+      {/* ---------- Monthly AI Voice Usage Meter Card ---------- */}
+      <section
+        className="se-card"
+        style={{
+          border: limitReached ? "1.5px solid #fca5a5" : "1px solid var(--ol-border,#ececf1)",
+          background: limitReached ? "#fffbfb" : "#ffffff",
+        }}
+      >
+        <div className="se-plan-top">
+          <div>
+            <span className="se-eyebrow">Usage & Capacity</span>
+            <h2 style={{ margin: "4px 0 0", fontSize: "20px" }}>Monthly AI Voice Usage</h2>
+          </div>
+          {limitReached ? (
+            <span
+              className="se-badge red"
+              style={{
+                background: "#fee2e2",
+                color: "#b91c1c",
+                fontWeight: "700",
+                border: "1px solid #fca5a5",
+              }}
+            >
+              Limit Reached — Voice Agent Paused
+            </span>
+          ) : isHighUsage ? (
+            <span
+              className="se-badge amber"
+              style={{
+                background: "#fef3c7",
+                color: "#92400e",
+                fontWeight: "700",
+                border: "1px solid #fde68a",
+              }}
+            >
+              Quota Low ({100 - usagePct}% remaining)
+            </span>
+          ) : (
+            <span
+              className="se-badge pink"
+              style={{
+                background: "#ffe3ff",
+                color: "#7a1f7a",
+                fontWeight: "700",
+              }}
+            >
+              Active Voice Quota
+            </span>
+          )}
+        </div>
+
+        <p className="se-sub" style={{ margin: "4px 0 16px" }}>
+          Spoken customer orders, phone inquiries, and WhatsApp voice notes across your store.
+        </p>
+
+        <div style={{ marginBottom: 10 }}>
+          <div
+            style={{
+              display: "flex",
+              justifyContent: "space-between",
+              alignItems: "baseline",
+              marginBottom: 8,
+              flexWrap: "wrap",
+              gap: 6,
+            }}
+          >
+            <strong style={{ fontSize: "18px", color: isHighUsage ? "#b91c1c" : "#0f172a" }}>
+              {messagesUsed} / {messageLimit}{" "}
+              <span style={{ fontSize: "14px", fontWeight: "500", color: "#64748b" }}>
+                voice interactions used
+              </span>
+            </strong>
+            <span
+              style={{
+                fontSize: "13px",
+                fontWeight: "700",
+                color: isHighUsage ? "#b91c1c" : "#a855f7",
+              }}
+            >
+              {usagePct}% used ({Math.max(0, messageLimit - messagesUsed)} remaining)
+            </span>
+          </div>
+
+          <div
+            style={{
+              height: 12,
+              background: "#f1f5f9",
+              borderRadius: 99,
+              overflow: "hidden",
+              border: "1px solid #e2e8f0",
+            }}
+          >
+            <div
+              style={{
+                height: "100%",
+                width: `${usagePct}%`,
+                background: barColor,
+                borderRadius: 99,
+                transition: "width 0.4s ease, background-color 0.3s ease",
+              }}
+            />
+          </div>
+        </div>
+
+        {limitReached ? (
+          <div
+            style={{
+              background: "#fef2f2",
+              border: "1px solid #fecaca",
+              borderRadius: "10px",
+              padding: "10px 14px",
+              color: "#991b1b",
+              fontSize: "13px",
+              marginTop: "12px",
+              display: "flex",
+              gap: "8px",
+              alignItems: "center",
+            }}
+          >
+            <span style={{ fontSize: "16px" }}>⚠️</span>
+            <div>
+              <strong>Voice assistant is paused on your public web agent and WhatsApp line.</strong>{" "}
+              Customer voice calls and spoken notes will not be processed until your rolling 30-day allowance resets or you upgrade your plan.
+            </div>
+          </div>
+        ) : (
+          <small style={{ display: "block", color: "#64748b", marginTop: 8 }}>
+            Usage resets automatically every rolling 30 days. No text fallback is permitted when limits are reached.
+          </small>
+        )}
+      </section>
+
       <div className="se-bill">
         {/* ---------- Current plan + renewal ---------- */}
         <section className="se-card">
@@ -202,8 +361,8 @@ export default function BillingTab({ suspended }) {
           </div>
 
           <div className="se-price">
-            <strong>${info.amount_due ?? "-"}</strong>
-            <small>/ {cycleLabel(info.billing_cycle)}</small>
+            <strong>{priceDisplay}</strong>
+            <small>/ {cycleLabel(info.billing_cycle || "monthly")}</small>
           </div>
 
           {trialPct !== null && (
@@ -220,8 +379,8 @@ export default function BillingTab({ suspended }) {
             <div><dt>{dateLabel(info.status)}</dt><dd>{fmtDate(info.next_due_date)}</dd></div>
             <div><dt>Days left</dt><dd>{info.days_left ?? "-"}</dd></div>
             <div><dt>Billing cycle</dt><dd style={{ textTransform: "capitalize" }}>{info.billing_cycle || "-"}</dd></div>
-            {info.status === "active" && (
-              <div><dt>Next payment</dt><dd>${info.amount_due}</dd></div>
+            {info.status === "active" && hasNumericPrice && (
+              <div><dt>Next payment</dt><dd>${formattedPrice}</dd></div>
             )}
             {info.grace_ends_at && (
               <div className="warn"><dt>Grace period ends</dt><dd>{fmtDate(info.grace_ends_at)}</dd></div>
@@ -231,7 +390,7 @@ export default function BillingTab({ suspended }) {
           <div className="se-actions">
             {info.can_subscribe && (
               <button className="ad-btn ad-btn-primary" onClick={payNow} disabled={busy}>
-                {busy ? "Please wait..." : `Pay now ($${info.amount_due})`}
+                {payButtonLabel}
               </button>
             )}
             {info.status === "canceling" && (
