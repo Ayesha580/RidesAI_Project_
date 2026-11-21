@@ -570,7 +570,25 @@ export default function ConversationsView() {
                     </div>
                     <div className="cv-card-body">
                       <div className="cv-card-top">
-                        <span className="cv-card-name">{c.customer_name}</span>
+                        <span className="cv-card-name">
+                          {c.customer_name}
+                          {c.is_voice && (
+                            <span
+                              style={{
+                                marginLeft: 6,
+                                fontSize: "10.5px",
+                                background: "#fdf2f8",
+                                color: "#db2777",
+                                border: "1px solid #fbcfe8",
+                                padding: "1px 6px",
+                                borderRadius: "10px",
+                                fontWeight: "600",
+                              }}
+                            >
+                              🎤 Voice
+                            </span>
+                          )}
+                        </span>
                         <span className="cv-card-time">
                           {new Date(c.last_message_at || c.updated_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
                         </span>
@@ -673,6 +691,24 @@ export default function ConversationsView() {
                           <span className="cv-role-tag">
                             {isCustomer ? "Customer" : m.role === "human" ? "Staff Agent" : "AI Assistant"}
                           </span>
+                          {(m.is_voice || m.metadata?.is_voice) && (
+                            <>
+                              <span>•</span>
+                              <span
+                                style={{
+                                  fontSize: "10.5px",
+                                  background: "#fdf2f8",
+                                  color: "#db2777",
+                                  border: "1px solid #fbcfe8",
+                                  padding: "1px 5px",
+                                  borderRadius: "6px",
+                                  fontWeight: "600",
+                                }}
+                              >
+                                🎤 Voice
+                              </span>
+                            </>
+                          )}
                           <span>•</span>
                           <span>{m.time_formatted || new Date(m.created_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</span>
                         </div>

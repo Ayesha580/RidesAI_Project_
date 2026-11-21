@@ -6,6 +6,9 @@ export const authApi = {
   register: (formData) => axiosClient.post("/accounts/register/", formData),
   verifyEmail: (otp, email) => axiosClient.post("/accounts/verify-email/", { otp, email }),
   resendVerification: (email) => axiosClient.post("/accounts/resend-verification/", { email }),
+  forgotPassword: (email) => axiosClient.post("/accounts/forgot-password/", { email }),
+  resetPassword: (uid, token, new_password) =>
+    axiosClient.post("/accounts/reset-password/", { uid, token, new_password }),
   me: () => axiosClient.get("/accounts/me/"),
 
   // Super admin

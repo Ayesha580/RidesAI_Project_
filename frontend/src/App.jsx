@@ -15,6 +15,8 @@ import PaymentSuccess from "./pages/PaymentSuccess";
 import PendingApproval from "./pages/PendingApproval";
 import Register from "./pages/Register";
 import VerifyEmail from "./pages/VerifyEmail";
+import ForgotPassword from "./pages/ForgotPassword";
+import ResetPassword from "./pages/ResetPassword";
 import OwnerSettings from "./owner/pages/OwnerSettings";
 
 // owner
@@ -117,6 +119,8 @@ export default function App() {
     <Routes>
       <Route path="/" element={<Home />} />
       <Route path="/login" element={<Login />} />
+      <Route path="/forgot-password" element={<ForgotPassword />} />
+      <Route path="/reset-password/:uid/:token" element={<ResetPassword />} />
       <Route path="/register" element={<Register />} />
       <Route path="/verify-email" element={<VerifyEmail />} />
       <Route path="/admin-login" element={<AdminLogin />} />

@@ -191,7 +191,7 @@ class WhatsAppAgentToolCallingTests(TestCase):
         result = execute_create_order(
             company=self.company_a,
             customer_name="John Doe",
-            customer_phone="+1234567890",
+            customer_phone="+923009988771",
             items=items_payload,
             delivery_address="456 Elm Street, Apt 2B",
             notes="Please leave at the door",
@@ -205,7 +205,7 @@ class WhatsAppAgentToolCallingTests(TestCase):
         order = Order.objects.get(order_number=result["order_number"])
         self.assertEqual(order.company, self.company_a)
         self.assertEqual(order.customer_name, "John Doe")
-        self.assertEqual(order.customer_phone, "+1234567890")
+        self.assertEqual(order.customer_phone, "+923009988771")
         self.assertEqual(order.delivery_address, "456 Elm Street, Apt 2B")
         self.assertEqual(order.status, Order.STATUS_NEW)
         self.assertEqual(order.source, "agent")
@@ -254,7 +254,7 @@ class WhatsAppAgentToolCallingTests(TestCase):
         res1 = execute_create_order(
             company=self.company_a,
             customer_name="Buyer 1",
-            customer_phone="+1234",
+            customer_phone="+923009988772",
             items=[{"item_name": "Cheeseburger", "quantity": 2}],
             delivery_address="Address 1",
         )
@@ -267,7 +267,7 @@ class WhatsAppAgentToolCallingTests(TestCase):
         res2 = execute_create_order(
             company=self.company_a,
             customer_name="Buyer 2",
-            customer_phone="+5678",
+            customer_phone="+923009988773",
             items=[{"item_name": "Cheeseburger", "quantity": 2}],
             delivery_address="Address 2",
         )
@@ -440,7 +440,7 @@ class WhatsAppAgentToolCallingTests(TestCase):
 
         with patch.object(settings, "OPENAI_API_KEY", "sk-mock-valid-key-for-test"):
             res1 = process_incoming_whatsapp_message(
-                sender_phone="+923001234567",
+                sender_phone="+923009876543",
                 message_text="",
                 phone_number_id="test_evo_inst_multiturn",
                 customer_name="Ali Khan",
@@ -466,7 +466,7 @@ class WhatsAppAgentToolCallingTests(TestCase):
         ))
 
         # Verify Turn 1 was recorded in AgentConversation
-        conv = AgentConversation.objects.filter(company=self.company_a, customer_phone="+923001234567").first()
+        conv = AgentConversation.objects.filter(company=self.company_a, customer_phone="+923009876543").first()
         self.assertIsNotNone(conv)
         self.assertEqual(conv.messages.count(), 2)
 
@@ -499,7 +499,7 @@ class WhatsAppAgentToolCallingTests(TestCase):
 
         with patch.object(settings, "OPENAI_API_KEY", "sk-mock-valid-key-for-test"):
             res2 = process_incoming_whatsapp_message(
-                sender_phone="+923001234567",
+                sender_phone="+923009876543",
                 message_text="Hanjee krden",
                 phone_number_id="test_evo_inst_multiturn",
                 customer_name="Ali Khan",
@@ -513,7 +513,7 @@ class WhatsAppAgentToolCallingTests(TestCase):
         self.assertIn("Order confirm ho gaya", res2["reply_text"])
 
         # Verify an order was created in the database
-        created_order = Order.objects.filter(company=self.company_a, customer_phone="+923001234567").first()
+        created_order = Order.objects.filter(company=self.company_a, customer_phone="+923009876543").first()
         self.assertIsNotNone(created_order)
         self.assertEqual(created_order.delivery_address, "777 Market St")
         self.assertEqual(created_order.items.count(), 2)
@@ -3331,6 +3331,335 @@ class RetailPlatformTests(TestCase):
             request_type="exchange",
             status="pending",
         ).exists())
+
+
+class PublicVoiceAgentMultiTurnOrderTests(TestCase):
+    def setUp(self):
+        import uuid
+        from rest_framework.test import APIClient
+        self.client = APIClient()
+        self.company = Company.objects.create(
+            name="Burger King",
+            agent_enabled=True,
+            agent_public_id=uuid.uuid4(),
+            business_type="restaurant",
+            is_approved=True,
+            status="active",
+            subscription_status="active",
+            is_manual_override=True,
+        )
+        self.item_burger = CatalogItem.objects.create(
+            company=self.company,
+            name="Zinger Burger",
+            price=Decimal("650.00"),
+            description="Crispy chicken fillet with lettuce and mayo",
+            is_available=True,
+        )
+        self.item_fries = CatalogItem.objects.create(
+            company=self.company,
+            name="Crispy Fries",
+            price=Decimal("250.00"),
+            description="Golden salted french fries",
+            is_available=True,
+        )
+
+    @patch("operations.audio_service.synthesize_speech", return_value=b"MOCK_TTS_BYTES")
+    @patch("operations.whatsapp_agent.OpenAI")
+    def test_three_turn_voice_agent_order_and_no_menu_spam(self, mock_openai_cls, mock_synth):
+        import json
+        mock_client = MagicMock()
+        mock_openai_cls.return_value = mock_client
+
+        url = f"/api/operations/public/agent/{self.company.agent_public_id}/chat/"
+
+        with patch.object(settings, "OPENAI_API_KEY", "sk-mock-valid-key-for-test"):
+            # Turn 1: Customer asks for menu
+            turn1_resp = MagicMock()
+            turn1_msg = MagicMock()
+            turn1_msg.tool_calls = None
+            turn1_msg.content = "We have Zinger Burger for 650 rupees and Crispy Fries for 250 rupees. What would you like to order?"
+            turn1_resp.choices = [MagicMock(message=turn1_msg)]
+            mock_client.chat.completions.create.return_value = turn1_resp
+
+            res1 = self.client.post(url, {"message": "What is on the menu?"}, format="json")
+            self.assertEqual(res1.status_code, 200)
+            self.assertTrue(len(res1.data["menu_items"]) > 0, "Turn 1 menu request should return menu_items")
+            conv_id = res1.data["conversation_id"]
+            self.assertIsNotNone(conv_id)
+            self.assertIsNone(res1.data["order_summary"])
+
+            # Turn 2: Customer specifies items, AI asks for address
+            turn2_resp = MagicMock()
+            turn2_msg = MagicMock()
+            turn2_msg.tool_calls = None
+            turn2_msg.content = "Your order is 1 Zinger Burger and 1 Crispy Fries. Total is 900 rupees. Please provide your name, phone number, and delivery address to confirm and place your order."
+            turn2_resp.choices = [MagicMock(message=turn2_msg)]
+            mock_client.chat.completions.create.return_value = turn2_resp
+
+            res2 = self.client.post(
+                url,
+                {"message": "I want 1 Crispy Fries and 1 Zinger Burger", "conversation_id": conv_id},
+                format="json",
+            )
+            self.assertEqual(res2.status_code, 200)
+            self.assertEqual(res2.data["conversation_id"], conv_id)
+            self.assertEqual(res2.data["menu_items"], [], "Turn 2 ordering/address request should return menu_items: []")
+            self.assertIsNone(res2.data["order_summary"])
+
+            # Turn 3: Customer provides address, name, phone, and confirms order
+            turn3_tool_call = MagicMock()
+            turn3_tool_call.id = "call_create_order_turn3"
+            turn3_tool_call.function.name = "create_order"
+            turn3_tool_call.function.arguments = json.dumps({
+                "items": [
+                    {"item_name": "Zinger Burger", "quantity": 1},
+                    {"item_name": "Crispy Fries", "quantity": 1},
+                ],
+                "customer_name": "Ali",
+                "customer_phone": "03009876543",
+                "delivery_address": "133 A New Satellite Town",
+            })
+            turn3_first_msg = MagicMock()
+            turn3_first_msg.tool_calls = [turn3_tool_call]
+            turn3_first_msg.content = None
+
+            turn3_second_msg = MagicMock()
+            turn3_second_msg.tool_calls = None
+            turn3_second_msg.content = "Your order #RA-998877 has been placed! Total is 900 rupees and will be delivered in 30-45 minutes."
+
+            mock_client.chat.completions.create.side_effect = [
+                MagicMock(choices=[MagicMock(message=turn3_first_msg)]),
+                MagicMock(choices=[MagicMock(message=turn3_second_msg)]),
+            ]
+
+            res3 = self.client.post(
+                url,
+                {
+                    "message": "My name is Ali, phone 03009876543, address 133 A New Satellite Town, confirm order",
+                    "conversation_id": conv_id,
+                },
+                format="json",
+            )
+            self.assertEqual(res3.status_code, 200)
+            self.assertEqual(res3.data["conversation_id"], conv_id)
+            self.assertEqual(res3.data["menu_items"], [], "Turn 3 confirmation should return menu_items: []")
+            self.assertIsNotNone(res3.data["order_summary"])
+
+            # Verify order in DB
+            order = Order.objects.filter(company=self.company, customer_phone="03009876543").first()
+            self.assertIsNotNone(order, "Order should be created in DB from speech turn")
+            self.assertEqual(order.customer_name, "Ali")
+            self.assertEqual(order.status, "new")
+            self.assertIn("Satellite Town", order.delivery_address)
+            self.assertEqual(order.items.count(), 2)
+            self.assertEqual(order.total, Decimal("900.00"))
+
+    @patch("openai.OpenAI")
+    def test_transcribe_audio_uses_multilingual_conditioning_prompt(self, mock_openai_cls):
+        from operations.audio_service import transcribe_audio, DEFAULT_STT_PROMPT
+
+        mock_client = MagicMock()
+        mock_openai_cls.return_value = mock_client
+        mock_resp = MagicMock()
+        mock_resp.text = "menu bhej do"
+        mock_client.audio.transcriptions.create.return_value = mock_resp
+
+        with patch.object(settings, "OPENAI_API_KEY", "sk-mock-valid-key-for-test"):
+            with patch.object(settings, "GROQ_API_KEY", ""):
+                result = transcribe_audio(b"FAKE_AUDIO_BYTES_OVER_100" * 5)
+
+        self.assertEqual(result, "menu bhej do")
+        mock_client.audio.transcriptions.create.assert_called_once()
+        _, kwargs = mock_client.audio.transcriptions.create.call_args
+        self.assertIn("prompt", kwargs)
+        self.assertIn("Urdu", kwargs["prompt"])
+
+    def test_dashboard_conversations_voice_indicator(self):
+        from operations.models import AgentConversation, AgentMessage
+        from django.contrib.auth import get_user_model
+
+        User = get_user_model()
+        owner = User.objects.create_user(
+            username="voice_owner@bk.pk",
+            email="voice_owner@bk.pk",
+            password="testpassword",
+            company=self.company,
+        )
+        conv = AgentConversation.objects.create(
+            company=self.company,
+            customer_phone="03009998877",
+            customer_name="Voice Caller",
+        )
+        AgentMessage.objects.create(
+            conversation=conv,
+            role="user",
+            content="Audio message",
+            metadata={"is_voice": True},
+        )
+        AgentMessage.objects.create(
+            conversation=conv,
+            role="assistant",
+            content="Voice response",
+            metadata={"is_voice": True},
+        )
+
+        self.client.force_authenticate(user=owner)
+        res_list = self.client.get("/api/dashboard/conversations/")
+        self.assertEqual(res_list.status_code, 200)
+        found = next((c for c in res_list.data["results"] if c["conversation_key"] == str(conv.conversation_key)), None)
+        self.assertIsNotNone(found)
+        self.assertTrue(found["is_voice"])
+        self.assertTrue(found["messages"][0]["is_voice"])
+
+        res_detail = self.client.get(f"/api/dashboard/conversations/{conv.conversation_key}/")
+        self.assertEqual(res_detail.status_code, 200)
+        self.assertTrue(res_detail.data["is_voice"])
+        self.assertTrue(res_detail.data["messages"][0]["is_voice"])
+
+    def test_create_order_rejects_dummy_phone_and_valued_customer_and_updates_conversation(self):
+        import json
+        from operations.whatsapp_agent import execute_create_order, _generate_agent_reply
+        from operations.models import AgentConversation
+
+        items_payload = [{"item_name": "Zinger Burger", "quantity": 1}]
+
+        # 1. Reject 'Valued Customer' placeholder
+        res_placeholder = execute_create_order(
+            company=self.company,
+            customer_name="Valued Customer",
+            customer_phone="03009876543",
+            items=items_payload,
+            delivery_address="Faisalabad Street 1",
+        )
+        self.assertFalse(res_placeholder["success"])
+        self.assertIn("missing real customer name or phone number", res_placeholder["error"])
+
+        # 2. Reject dummy phone number '03001234567'
+        res_dummy_phone = execute_create_order(
+            company=self.company,
+            customer_name="Usman Tariq",
+            customer_phone="03001234567",
+            items=items_payload,
+            delivery_address="Faisalabad Street 1",
+        )
+        self.assertFalse(res_dummy_phone["success"])
+        self.assertIn("missing real customer name or phone number", res_dummy_phone["error"])
+
+        # 3. Reject short phone number '< 10 digits'
+        res_short_phone = execute_create_order(
+            company=self.company,
+            customer_name="Usman Tariq",
+            customer_phone="0300123",
+            items=items_payload,
+            delivery_address="Faisalabad Street 1",
+        )
+        self.assertFalse(res_short_phone["success"])
+        self.assertIn("missing real customer name or phone number", res_short_phone["error"])
+
+        # 4. Succeeds with real details
+        res_success = execute_create_order(
+            company=self.company,
+            customer_name="Usman Tariq",
+            customer_phone="03009876543",
+            items=items_payload,
+            delivery_address="Faisalabad Street 1",
+        )
+        self.assertTrue(res_success["success"])
+        self.assertEqual(res_success["customer_name"], "Usman Tariq")
+
+        # 5. Conversation update when tool succeeds with real details
+        conv = AgentConversation.objects.create(
+            company=self.company,
+            customer_name="Valued Customer",
+            customer_phone="",
+        )
+
+        mock_tool_call = MagicMock()
+        mock_tool_call.id = "call_real_contact_tool"
+        mock_tool_call.function.name = "create_order"
+        mock_tool_call.function.arguments = json.dumps({
+            "items": [{"item_name": "Zinger Burger", "quantity": 1}],
+            "customer_name": "Usman Tariq",
+            "customer_phone": "03009876543",
+            "delivery_address": "House 100 Faisalabad",
+        })
+
+        mock_first = MagicMock(tool_calls=[mock_tool_call], content=None)
+        mock_second = MagicMock(tool_calls=None, content="Order confirmed!")
+
+        with patch("operations.whatsapp_agent.OpenAI") as mock_openai_cls:
+            mock_client = MagicMock()
+            mock_openai_cls.return_value = mock_client
+            mock_client.chat.completions.create.side_effect = [
+                MagicMock(choices=[MagicMock(message=mock_first)]),
+                MagicMock(choices=[MagicMock(message=mock_second)]),
+            ]
+
+            biz_context = {"company": self.company}
+            _generate_agent_reply(
+                message_text="My name is Usman Tariq, phone 03009876543, confirm order",
+                customer_name="Valued Customer",
+                context=biz_context,
+                conversation_obj=conv,
+                record_turn=False,
+            )
+
+        conv.refresh_from_db()
+        self.assertEqual(conv.customer_name, "Usman Tariq", "Conversation customer_name must be updated from 'Valued Customer'")
+        self.assertEqual(conv.customer_phone, "03009876543", "Conversation customer_phone must be updated from empty")
+
+    @patch("openai.OpenAI")
+    def test_transliterate_devanagari_and_urdu_script_to_roman_urdu(self, mock_openai_cls):
+        from operations.audio_service import transliterate_to_roman_urdu
+
+        mock_client = MagicMock()
+        mock_openai_cls.return_value = mock_client
+        mock_resp = MagicMock()
+        mock_resp.choices = [MagicMock(message=MagicMock(content="Menu bhej do"))]
+        mock_client.chat.completions.create.return_value = mock_resp
+
+        # 1. Non-latin text (Devanagari) triggers transliteration
+        with patch.object(settings, "OPENAI_API_KEY", "sk-mock-valid-key-for-test"):
+            with patch.object(settings, "GROQ_API_KEY", ""):
+                result = transliterate_to_roman_urdu("मेन्यू भेज दो")
+
+        self.assertEqual(result, "Menu bhej do")
+        mock_client.chat.completions.create.assert_called_once()
+
+        # 2. Latin English/Roman Urdu text bypasses transliteration (0 LLM calls)
+        mock_client.chat.completions.create.reset_mock()
+        clean_result = transliterate_to_roman_urdu("I want 1 Zinger Burger and Fries")
+        self.assertEqual(clean_result, "I want 1 Zinger Burger and Fries")
+        mock_client.chat.completions.create.assert_not_called()
+
+    @patch("operations.audio_service.transcribe_audio")
+    @patch("operations.views.PublicAgentChatAPIView._public_action")
+    def test_public_agent_chat_handles_audio_base64_mediarecorder_payload(self, mock_action, mock_transcribe):
+        import base64
+        mock_transcribe.return_value = "mera phone number 03090139836 hai"
+
+        fake_audio_bytes = b"RIFF....WAVEfmt ....data" + b"\x00" * 100
+        encoded_audio = "data:audio/webm;base64," + base64.b64encode(fake_audio_bytes).decode("ascii")
+
+        with patch("operations.whatsapp_agent._generate_agent_reply") as mock_agent_reply:
+            mock_agent_reply.return_value = "Ji maine aapka number 03090139836 note kar liya hai."
+
+            res = self.client.post(
+                f"/api/operations/public/agent/{self.company.agent_public_id}/chat/",
+                {
+                    "audio_base64": encoded_audio,
+                    "message": "",
+                },
+                format="json",
+            )
+
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.data["transcript"], "mera phone number 03090139836 hai")
+        self.assertIn("03090139836", res.data["reply_text"])
+        mock_transcribe.assert_called_once()
+
+
+
 
 
 

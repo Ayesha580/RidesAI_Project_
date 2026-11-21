@@ -532,6 +532,13 @@ class AgentChatAPIView(BusinessAPIView):
 
 class PublicAgentThrottle(AnonRateThrottle):
     scope = "agent_public"
+    rate = "120/minute"
+
+    def get_rate(self):
+        try:
+            return super().get_rate()
+        except Exception:
+            return "120/minute"
 
 
 class PublicAgentCatalogAPIView(APIView):
@@ -566,52 +573,208 @@ class PublicAgentChatAPIView(APIView):
     throttle_classes = [PublicAgentThrottle]
 
     def post(self, request, public_id):
-        from companies.models import Company
+        import base64
+        from companies.models import Company, CatalogItem
+        from operations.audio_service import transcribe_audio, synthesize_speech, clean_text_for_tts, transliterate_to_roman_urdu
+        from operations.whatsapp_agent import _generate_agent_reply, get_business_context_for_company
+
         company = get_object_or_404(Company, agent_public_id=public_id)
         if not company.agent_enabled:
             return Response({"detail": "This business assistant is not currently available."}, status=404)
         if get_access_state(company) != "ok":
             return Response({"detail": "This business assistant is temporarily unavailable."}, status=503)
+
+        # 1. Accept customer audio (base64 or file upload) or speech-to-text transcript
+        raw_audio = request.data.get("audio") or request.data.get("audio_base64") or request.FILES.get("audio")
         message = (request.data.get("message") or "").strip()
+        transcript = None
+
+        if raw_audio:
+            audio_bytes = None
+            if hasattr(raw_audio, "read"):
+                audio_bytes = raw_audio.read()
+            elif isinstance(raw_audio, str):
+                if "," in raw_audio:
+                    raw_audio = raw_audio.split(",", 1)[1]
+                try:
+                    audio_bytes = base64.b64decode(raw_audio)
+                except Exception:
+                    pass
+            if audio_bytes and len(audio_bytes) > 50:
+                transcript = transcribe_audio(audio_bytes, filename="voice.webm")
+                if transcript and transcript.strip():
+                    message = transcript.strip()
+
         if not message:
-            return Response({"message": "A message is required."}, status=400)
+            return Response({"message": "A voice message or speech transcript is required."}, status=400)
+
+        message = transliterate_to_roman_urdu(message)
+
         try:
             consume_company_message(company)
         except Exception as exc:
             return Response({"detail": str(exc)}, status=429)
+
         key = request.data.get("conversation_id")
         if key:
             conversation = get_object_or_404(AgentConversation, conversation_key=key, company=company)
         else:
-            conversation = AgentConversation.objects.create(company=company,
+            conversation = AgentConversation.objects.create(
+                company=company,
                 customer_name=str(request.data.get("customer_name", ""))[:160],
                 customer_email=request.data.get("customer_email", ""),
-                customer_phone=request.data.get("customer_phone", ""))
-        AgentMessage.objects.create(conversation=conversation, role="user", content=message)
+                customer_phone=request.data.get("customer_phone", "")
+            )
+
+        AgentMessage.objects.create(
+            conversation=conversation,
+            role="user",
+            content=message,
+            metadata={"is_voice": True, "has_audio": bool(raw_audio)}
+        )
+
         if conversation.status == "human":
             answer = "Your conversation has been handed to the business team. A team member will reply here."
             result = None
-            return Response({"business": company.name, "conversation_id": str(conversation.conversation_key),
-                             "answer": answer, "status": conversation.status, "action_result": result})
+            return Response({
+                "business": company.name,
+                "conversation_id": str(conversation.conversation_key),
+                "transcript": message,
+                "reply_text": answer,
+                "answer": answer,
+                "status": conversation.status,
+                "action_result": result,
+                "menu_items": [],
+                "order_summary": None,
+                "audio_base64": None,
+                "audio_url": None,
+            })
+
         action = request.data.get("action") or {}
         if not action:
             match = re.search(r"\bRA-\d{6}-[A-F0-9]{8}\b", message, re.IGNORECASE)
             if match:
-                action = {"type": "lookup_order", "order_number": match.group(0),
-                          "customer_phone": conversation.customer_phone,
-                          "customer_email": conversation.customer_email}
+                action = {
+                    "type": "lookup_order",
+                    "order_number": match.group(0),
+                    "customer_phone": conversation.customer_phone,
+                    "customer_email": conversation.customer_email
+                }
+
         result = self._public_action(company, conversation, action) if action else None
+
+        biz_context = get_business_context_for_company(company)
+        if result:
+            biz_context["action_result"] = result
+
         if result and result.get("status") == "human":
             answer = "I’ve passed your conversation to the business team. A team member will reply here."
         else:
-            helper = AgentChatAPIView()
-            context = helper._business_context(company, conversation, include_customer_orders=False)
-            history = list(conversation.messages.order_by("-created_at").values("role", "content")[:12])[::-1]
-            answer = helper._generate_answer(company, context, history, result)
-        AgentMessage.objects.create(conversation=conversation, role="assistant", content=answer,
-            metadata={"action_result": result or {}})
-        return Response({"business": company.name, "conversation_id": str(conversation.conversation_key),
-                         "answer": answer, "status": conversation.status, "action_result": result})
+            # Shared multi-tenant category-aware AI agent
+            api_key = getattr(settings, "OPENAI_API_KEY", "") or os.environ.get("OPENAI_API_KEY", "")
+            if api_key and len(api_key.strip()) > 10:
+                answer = _generate_agent_reply(
+                    message_text=message,
+                    customer_name=conversation.customer_name or "Valued Customer",
+                    context=biz_context,
+                    sender_phone=conversation.customer_phone or "",
+                    is_voice_note=True,
+                    record_turn=False,
+                    conversation_obj=conversation,
+                )
+            else:
+                helper = AgentChatAPIView()
+                context = helper._business_context(company, conversation, include_customer_orders=False)
+                history = list(conversation.messages.order_by("-created_at").values("role", "content")[:12])[::-1]
+                answer = helper._generate_answer(company, context, history, result)
+
+        # Extract structured details for read-only customer screen
+        menu_items = []
+        lower_ans = answer.lower()
+        lower_msg = message.lower()
+
+        is_asking_menu = any(
+            kw in lower_msg for kw in [
+                "menu", "catalog", "rate list", "price list", "kya items", "what do you have",
+                "show items", "list items", "what's available", "what is available", "kya mil",
+                "prices", "cost"
+            ]
+        )
+        is_order_confirmation_or_address = any(
+            kw in lower_ans for kw in [
+                "address", "confirm your order", "placed your order", "order #", "order number",
+                "order has been", "delivery address", "total is", "total is rs"
+            ]
+        ) or any(
+            kw in lower_msg for kw in [
+                "confirm", "hanjee", "bhej do", "yes", "my address", "deliver to", "phone"
+            ]
+        )
+
+        should_return_menu = (
+            is_asking_menu or (
+                (lower_ans.count("rs.") >= 2 or lower_ans.count("rupees") >= 2 or lower_ans.count("•") >= 2)
+            )
+        ) and not is_order_confirmation_or_address
+
+        if should_return_menu:
+            catalog_rows = CatalogItem.objects.filter(company=company, is_available=True).select_related("inventory")[:8]
+            for itm in catalog_rows:
+                inventory = getattr(itm, "inventory", None)
+                in_stock = (inventory.is_unlimited or inventory.quantity > 0) if inventory else True
+                menu_items.append({
+                    "id": itm.id,
+                    "name": itm.name,
+                    "price": str(itm.price),
+                    "unit": itm.unit or "",
+                    "description": itm.description or "",
+                    "in_stock": in_stock,
+                })
+
+        order_summary = None
+        if result and result.get("success") and result.get("order_number"):
+            order_summary = {
+                "order_number": result.get("order_number"),
+                "total": str(result.get("total", "0.00")),
+                "status": result.get("status", "confirmed"),
+            }
+        elif biz_context.get("order_summary"):
+            order_summary = biz_context.get("order_summary")
+
+        # Synthesize TTS voice reply
+        audio_base64 = None
+        audio_url = None
+        tts_bytes = synthesize_speech(clean_text_for_tts(answer))
+        if tts_bytes:
+            audio_base64 = base64.b64encode(tts_bytes).decode("utf-8")
+            audio_url = f"data:audio/mp3;base64,{audio_base64}"
+
+        AgentMessage.objects.create(
+            conversation=conversation,
+            role="assistant",
+            content=answer,
+            metadata={
+                "is_voice": True,
+                "has_audio": bool(audio_base64),
+                "action_result": result or {},
+                "menu_items": menu_items,
+                "order_summary": order_summary,
+            }
+        )
+
+        return Response({
+            "business": company.name,
+            "conversation_id": str(conversation.conversation_key),
+            "transcript": message,
+            "reply_text": answer,
+            "answer": answer,
+            "audio_base64": audio_base64,
+            "audio_url": audio_url,
+            "menu_items": menu_items,
+            "order_summary": order_summary,
+            "status": conversation.status,
+            "action_result": result,
+        })
 
     def _public_action(self, company, conversation, action):
         name = action.get("type")
@@ -669,10 +832,18 @@ class PublicAgentConversationAPIView(APIView):
         if not company.agent_enabled or get_access_state(company) != "ok":
             return Response({"detail": "This business assistant is not currently available."}, status=404)
         conversation = get_object_or_404(AgentConversation, company=company, conversation_key=conversation_id)
-        return Response({"status": conversation.status, "messages": [
-            {"role": message.role, "content": message.content, "created_at": message.created_at}
-            for message in conversation.messages.all()[:100]
-        ]})
+        return Response({
+            "status": conversation.status,
+            "messages": [
+                {
+                    "role": message.role,
+                    "content": message.content,
+                    "created_at": message.created_at,
+                    "metadata": message.metadata or {},
+                }
+                for message in conversation.messages.all()[:100]
+            ]
+        })
 
 
 class AgentConversationListAPIView(BusinessAPIView):

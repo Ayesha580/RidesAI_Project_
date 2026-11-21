@@ -10,6 +10,7 @@ and dispatches voice/text responses via Meta WhatsApp Cloud API using WhatsAppSe
 import json
 import logging
 import os
+import re
 from decimal import Decimal
 from typing import Optional, Dict, Any, List
 
@@ -96,6 +97,10 @@ TOOL_CREATE_ORDER = {
                 "customer_name": {
                     "type": "string",
                     "description": "Name of the customer placing the order.",
+                },
+                "customer_phone": {
+                    "type": "string",
+                    "description": "Contact phone number of the customer placing the order.",
                 },
                 "notes": {
                     "type": "string",
@@ -410,9 +415,30 @@ def execute_create_order(
     if not delivery_address or not delivery_address.strip():
         return {"success": False, "error": "Delivery address is required to place an order."}
 
-    clean_name = (customer_name or "").strip() or "Valued Customer"
+    clean_name = (customer_name or "").strip()
     clean_phone = (customer_phone or "").strip()
     clean_notes = (notes or "").strip()
+
+    DISALLOWED_NAMES = {"valued customer", "customer", "guest", "unknown", "user", "client", "none", "n/a"}
+    DUMMY_PHONES = {
+        "03001234567", "03000000000", "03001111111", "03123456789",
+        "1234567890", "923001234567", "+923001234567", "0000000000"
+    }
+
+    phone_digits = re.sub(r"\D", "", clean_phone)
+    if (
+        not clean_name
+        or clean_name.lower() in DISALLOWED_NAMES
+        or not clean_phone
+        or len(phone_digits) < 10
+        or clean_phone in DUMMY_PHONES
+        or phone_digits in DUMMY_PHONES
+        or phone_digits == "0000000000"
+    ):
+        return {
+            "success": False,
+            "error": "Cannot place order yet: missing real customer name or phone number. Politely ask the customer for their name and phone number.",
+        }
 
     try:
         with transaction.atomic():
@@ -1068,16 +1094,20 @@ GLOBAL HEALTH & DIETARY GUARDRAILS (PRD MANDATORY):
 STRICT TOOL CALLING RULES:
 1. Tool `get_catalog_items`:
    - Use when the customer asks what you sell, asks to see the menu/catalog, asks for prices, or searches for a product/service.
+   - ROMAN URDU & URDU INQUIRIES: Phrases like 'menu bhej do', 'menu bhejo', 'pehle menu toh bhejo', 'menu dikhao', 'kya items hain', 'rate list', 'kya price hai' are 100% valid catalog requests. NEVER say you can only help with orders or deflect—immediately list the items and prices!
 2. Tool `create_order`:
-   - Active for ordering verticals. Use ONLY when the customer has specified what they want to order AND provided their delivery address.
-   - If the customer lists items to order but has NOT provided an address yet: do NOT call `create_order`. Instead, list their selected items with prices in Rs., calculate the total in Rs., and ask them: "Please provide your delivery address to confirm and place your order."
-   - If items and address are already discussed, ask the customer for final confirmation or confirm the order.
-   - When the customer confirms (e.g., 'hanjee', 'hanjee krden', 'ji kar dein', 'haan', 'done', 'ok', 'confirm', 'yes', 'bhej do'): IMMEDIATELY call `create_order` using the items and address from the conversation history, and return the confirmation.
+   - Active for ordering verticals. Use ONLY when the customer has specified what they want to order, provided their real full name and real phone number, AND provided their delivery address.
+   - MANDATORY REAL CONTACT RULE: If the customer's real name or phone number is unknown (e.g., web voice customer or name is 'Valued Customer'), you MUST ask for their full name, phone number, and delivery address before confirming or creating an order. NEVER invent or guess a dummy phone number (e.g. '03001234567') or use 'Valued Customer'.
+   - If the customer lists items to order but has NOT provided an address, name, or phone number yet: do NOT call `create_order`. Instead, list their selected items with prices in Rs., calculate the total in Rs., and ask them: "Please provide your full name, phone number, and delivery address to confirm and place your order."
+   - When spoken by the customer, extract their real name, phone number, and delivery address and combine with items from conversation history to immediately call `create_order`.
+   - Under NO circumstances loop or ask "What would you like to order?" if the customer has already stated the items in prior turns. Maintain full multi-turn context and combine the remembered items with the provided address and contact details to call `create_order`.
+   - When the customer provides their contact info and confirms (e.g., 'hanjee', 'hanjee krden', 'ji kar dein', 'haan', 'done', 'ok', 'confirm', 'yes', 'bhej do'): IMMEDIATELY call `create_order` using the items, name, phone, and address from the conversation history, and return the confirmation.
    - After `create_order` succeeds, provide a cheerful confirmation containing the *order number*, items, total in Pakistani Rupees (e.g., *Total:* Rs. 850.00), and estimated delivery time (30-45 mins).
 3. Tool `check_order_status`:
    - Use when the customer asks about order status, tracking, or previous orders.
 
 STRICT CONVERSATIONAL & LOCALIZATION RULES:
+- MULTILINGUAL INQUIRIES: English, Urdu, and Pakistani Roman Urdu requests about menus, items, prices, orders, delivery, medicines, appointments, or products (e.g., 'menu', 'bhej', 'bhejo', 'dikhao', 'chahiye', 'order', 'rate', 'price', 'kya hai') are ALWAYS valid in-scope inquiries. NEVER reject them, and NEVER deflect with 'I can only help with food orders'.
 - CURRENCY RULE: Always quote all prices in Pakistani Rupees using `Rs.` (never use `$` or dollars). When speaking in voice mode, speak naturally as 'rupees' (e.g., '850 rupees').
 - FORBIDDEN HINDI VOCABULARY: Under NO circumstances use formal Hindi words (strictly FORBIDDEN: 'kripya', 'pushti', 'dhanyavaad', 'namaste', 'aabhar', 'kripya pushti karein'). Use natural Pakistani Roman Urdu (e.g. 'shukriya', 'theek hai', 'order confirm kar diya hai', 'bhej dein') or clear English.
 - CONFIRMATION UNDERSTANDING: Understand Pakistani Roman Urdu confirmations such as 'hanjee', 'hanjee krden', 'ji kar dein', 'haan', 'done', 'ok', 'confirm', 'bhej do', 'yes' as YES to the previous order summary—immediately call the order placement tool (`create_order`) and confirm the order. NEVER reply with a welcome greeting if a conversation is already in progress.
@@ -1166,6 +1196,8 @@ def _generate_agent_reply(
     context: Any = None,
     sender_phone: str = "",
     is_voice_note: bool = False,
+    record_turn: bool = True,
+    conversation_obj: Optional[Any] = None,
 ) -> str:
     """
     Generates a dynamic response using OpenAI's gpt-4o-mini model with full tool calling:
@@ -1201,10 +1233,27 @@ def _generate_agent_reply(
     if not company:
         return _build_fallback_reply(message_text, customer_name, context)
 
-    # Multi-turn memory: Load recent conversation history (last 10 messages from past 24 hours)
+    # Multi-turn memory: Load recent conversation history (last 12 messages from past 24 hours or conversation_obj)
     history_messages: List[Dict[str, str]] = []
     has_prior_history = False
-    if company and sender_phone:
+
+    if conversation_obj:
+        try:
+            msgs = list(conversation_obj.messages.order_by("-created_at")[:15])
+            # If the most recent message matches the current turn's user message, skip it
+            if msgs and msgs[0].role == "user" and (msgs[0].content or "").strip() == str(message_text).strip():
+                msgs = msgs[1:]
+            msgs.reverse()
+            for m in msgs:
+                role = "assistant" if m.role == "assistant" else "user"
+                content_str = (m.content or "").strip()
+                if content_str:
+                    history_messages.append({"role": role, "content": content_str})
+            if history_messages:
+                has_prior_history = True
+        except Exception as e:
+            logger.warning(f"[WhatsApp Agent] Could not load history from conversation_obj: {e}")
+    elif company and sender_phone:
         try:
             from operations.models import AgentConversation
             from datetime import timedelta
@@ -1212,7 +1261,7 @@ def _generate_agent_reply(
             if conv:
                 recent_msgs = list(
                     conv.messages.filter(created_at__gte=timezone.now() - timedelta(hours=24))
-                    .order_by("-created_at")[:10]
+                    .order_by("-created_at")[:12]
                 )
                 recent_msgs.reverse()
                 for m in recent_msgs:
@@ -1292,14 +1341,46 @@ def _generate_agent_reply(
                             search_query=fn_args.get("search_query"),
                         )
                     elif fn_name == "create_order":
+                        phone_arg = (fn_args.get("customer_phone") or "").strip() or sender_phone
+                        if not phone_arg and conversation_obj and conversation_obj.customer_phone:
+                            phone_arg = conversation_obj.customer_phone.strip()
+                        name_arg = (fn_args.get("customer_name") or "").strip() or customer_name
+                        if (not name_arg or name_arg == "Valued Customer") and conversation_obj and conversation_obj.customer_name:
+                            name_arg = conversation_obj.customer_name.strip()
+
                         tool_result = execute_create_order(
                             company=company,
-                            customer_name=fn_args.get("customer_name") or customer_name,
-                            customer_phone=fn_args.get("customer_phone") or sender_phone,
+                            customer_name=name_arg,
+                            customer_phone=phone_arg,
                             items=fn_args.get("items", []),
                             delivery_address=fn_args.get("delivery_address", ""),
                             notes=fn_args.get("notes", ""),
                         )
+                        if tool_result.get("success"):
+                            context["order_summary"] = {
+                                "order_number": tool_result.get("order_number"),
+                                "total": str(tool_result.get("total", "0.00")),
+                                "status": "confirmed",
+                            }
+                            context["last_tool_result"] = tool_result
+                            if conversation_obj:
+                                updated_fields = []
+                                real_name = tool_result.get("customer_name") or name_arg
+                                real_phone = phone_arg
+                                if real_name and real_name.lower() not in ("valued customer", "customer", "guest"):
+                                    if not conversation_obj.customer_name or conversation_obj.customer_name.lower() in ("valued customer", "customer", "guest"):
+                                        conversation_obj.customer_name = real_name
+                                        updated_fields.append("customer_name")
+                                if real_phone and len(re.sub(r"\D", "", real_phone)) >= 10:
+                                    if not conversation_obj.customer_phone or conversation_obj.customer_phone in DUMMY_PHONES:
+                                        conversation_obj.customer_phone = real_phone
+                                        updated_fields.append("customer_phone")
+                                if updated_fields:
+                                    updated_fields.append("updated_at")
+                                    try:
+                                        conversation_obj.save(update_fields=updated_fields)
+                                    except Exception as err:
+                                        logger.warning(f"[WhatsApp Agent] Could not update conversation customer info: {err}")
                     elif fn_name == "check_order_status":
                         tool_result = execute_check_order_status(
                             company=company,
@@ -1368,12 +1449,14 @@ def _generate_agent_reply(
                 final_content = second_response.choices[0].message.content
                 if final_content and final_content.strip():
                     reply = final_content.strip()
-                    record_conversation_turn(company, sender_phone, customer_name, message_text, reply, is_voice=is_voice_note)
+                    if record_turn:
+                        record_conversation_turn(company, sender_phone, customer_name, message_text, reply, is_voice=is_voice_note)
                     return reply
 
             elif response_msg.content and response_msg.content.strip():
                 reply = response_msg.content.strip()
-                record_conversation_turn(company, sender_phone, customer_name, message_text, reply, is_voice=is_voice_note)
+                if record_turn:
+                    record_conversation_turn(company, sender_phone, customer_name, message_text, reply, is_voice=is_voice_note)
                 return reply
 
         except Exception as e:
@@ -1382,7 +1465,8 @@ def _generate_agent_reply(
 
     # Fallback when OpenAI key is missing, invalid, or request fails
     fallback_reply = _build_fallback_reply(message_text, customer_name, context)
-    record_conversation_turn(company, sender_phone, customer_name, message_text, fallback_reply, is_voice=is_voice_note)
+    if record_turn:
+        record_conversation_turn(company, sender_phone, customer_name, message_text, fallback_reply, is_voice=is_voice_note)
     return fallback_reply
 
 
@@ -1666,6 +1750,9 @@ def process_incoming_whatsapp_message(
                     "dispatch_result": dispatch_res,
                 }
 
+        from operations.audio_service import transliterate_to_roman_urdu
+        message_text = transliterate_to_roman_urdu(message_text)
+
         logger.info(f"[WhatsApp Agent] Processing incoming message from {sender_phone} ({clean_name}): '{message_text}'")
         print(f"[WhatsApp Agent] Processing message from {sender_phone}: '{message_text}'")
 
@@ -1683,26 +1770,38 @@ def process_incoming_whatsapp_message(
         is_voice_dispatched = False
         company_obj = context.get("company")
 
-        # Voice-first response: If customer sent a voice note, synthesize and send a voice reply
-        if is_voice_message:
-            logger.info(f"[WhatsApp Voice Agent] Customer sent voice note. Synthesizing voice reply for {sender_phone}...")
-            print(f"[WhatsApp Voice Agent] Synthesizing TTS voice note for {sender_phone}...")
+        # Voice-first response: Prioritize replying with a Voice Note (TTS) for every response
+        logger.info(f"[WhatsApp Voice Agent] Voice-First Policy: Synthesizing voice reply for {sender_phone}...")
+        print(f"[WhatsApp Voice Agent] Synthesizing TTS voice note for {sender_phone}...")
 
-            from operations.audio_service import clean_text_for_tts
-            tts_text = clean_text_for_tts(reply_text)
+        from operations.audio_service import clean_text_for_tts
+        tts_text = clean_text_for_tts(reply_text)
 
-            audio_bytes = synthesize_speech(tts_text)
-            if audio_bytes:
-                audio_res = _dispatch_whatsapp_audio(company=company_obj, phone=sender_phone, audio_bytes=audio_bytes, service=service)
-                if audio_res and audio_res.get("success"):
-                    dispatch_result = audio_res
-                    is_voice_dispatched = True
-                else:
-                    logger.warning("[WhatsApp Voice Agent] Audio dispatch failed. Falling back to text message.")
-                    print("[WhatsApp Voice Agent Warning] Audio dispatch failed. Falling back to text.")
+        audio_bytes = synthesize_speech(tts_text)
+        if audio_bytes:
+            audio_res = _dispatch_whatsapp_audio(company=company_obj, phone=sender_phone, audio_bytes=audio_bytes, service=service)
+            if audio_res and audio_res.get("success"):
+                dispatch_result = audio_res
+                is_voice_dispatched = True
+
+                # Optionally send a short clean text/caption ONLY when displaying structured details
+                # like a menu list, order summary, or invoice reference
+                lower_reply = reply_text.lower()
+                has_structured_details = any(
+                    marker in lower_reply for marker in [
+                        "#ra-", "#ord-", "rs.", "total:", "order #", "prescription #",
+                        "appointment #", "return #", "menu", "catalog", "rupees",
+                        "#rx-", "#apt-", "\n-", "\n*", "\n•", "\n1.", "\n2."
+                    ]
+                )
+                if has_structured_details:
+                    logger.info(f"[WhatsApp Voice Agent] Sending accompanying structured text summary to {sender_phone}...")
+                    _dispatch_whatsapp_text(company=company_obj, phone=sender_phone, text=reply_text, service=service)
             else:
-                logger.warning("[WhatsApp Voice Agent] Speech synthesis failed. Falling back to text message.")
-                print("[WhatsApp Voice Agent Warning] TTS failed. Falling back to text.")
+                logger.warning("[WhatsApp Voice Agent] Audio dispatch failed. Falling back to text message.")
+                print("[WhatsApp Voice Agent Warning] Audio dispatch failed. Falling back to text.")
+        else:
+            logger.info("[WhatsApp Voice Agent] TTS audio not generated or unavailable. Falling back to text message.")
 
         # Fallback to text message if voice response was not used or failed
         if not dispatch_result or not dispatch_result.get("success"):

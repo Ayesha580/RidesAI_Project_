@@ -162,6 +162,11 @@ class DashboardConversationsAPIView(APIView):
         for conv in current_page_obj:
             msgs = list(conv.messages.all().order_by("created_at"))
             last_msg = msgs[-1] if msgs else None
+            conv_is_voice = any(
+                bool((m.metadata or {}).get("is_voice"))
+                for m in msgs
+                if isinstance(m.metadata, dict)
+            )
 
             results.append({
                 "id": conv.id,
@@ -171,6 +176,7 @@ class DashboardConversationsAPIView(APIView):
                 "customer_email": conv.customer_email or "",
                 "status": conv.status,
                 "status_display": conv.get_status_display() if hasattr(conv, "get_status_display") else conv.status.capitalize(),
+                "is_voice": conv_is_voice,
                 "last_message": last_msg.content if last_msg else "No messages yet",
                 "last_message_at": (last_msg.created_at if last_msg else conv.updated_at).isoformat(),
                 "created_at": conv.created_at.isoformat(),
@@ -181,6 +187,7 @@ class DashboardConversationsAPIView(APIView):
                         "id": m.id,
                         "role": m.role,  # user, assistant, human, system
                         "content": m.content,
+                        "is_voice": bool((m.metadata or {}).get("is_voice")) if isinstance(m.metadata, dict) else False,
                         "metadata": m.metadata,
                         "created_at": m.created_at.isoformat(),
                         "time_formatted": m.created_at.strftime("%I:%M %p"),
@@ -212,6 +219,11 @@ class DashboardConversationDetailAPIView(APIView):
 
         conv = get_object_or_404(AgentConversation, company=company, conversation_key=conversation_key)
         msgs = list(conv.messages.all().order_by("created_at"))
+        conv_is_voice = any(
+            bool((m.metadata or {}).get("is_voice"))
+            for m in msgs
+            if isinstance(m.metadata, dict)
+        )
 
         return Response({
             "id": conv.id,
@@ -220,6 +232,7 @@ class DashboardConversationDetailAPIView(APIView):
             "customer_name": conv.customer_name or "Valued Customer",
             "customer_email": conv.customer_email,
             "status": conv.status,
+            "is_voice": conv_is_voice,
             "created_at": conv.created_at.isoformat(),
             "updated_at": conv.updated_at.isoformat(),
             "messages": [
@@ -227,6 +240,7 @@ class DashboardConversationDetailAPIView(APIView):
                     "id": m.id,
                     "role": m.role,
                     "content": m.content,
+                    "is_voice": bool((m.metadata or {}).get("is_voice")) if isinstance(m.metadata, dict) else False,
                     "metadata": m.metadata,
                     "created_at": m.created_at.isoformat(),
                     "time_formatted": m.created_at.strftime("%I:%M %p"),

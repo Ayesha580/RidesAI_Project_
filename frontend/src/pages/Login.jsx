@@ -133,21 +133,34 @@ export default function Login() {
             )}
 
             <div className="au-field">
-              <label htmlFor="username">Username</label>
+              <label htmlFor="username">Username or Email</label>
               <input
                 id="username"
                 name="username"
                 value={form.username}
                 onChange={change}
                 autoComplete="username"
-                placeholder="Enter your username"
+                placeholder="Enter your username or email"
                 required
               />
               {fieldErrors.username && <small className="au-field-error">{fieldErrors.username}</small>}
             </div>
 
             <div className="au-field">
-              <label htmlFor="password">Password</label>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                <label htmlFor="password">Password</label>
+                <Link
+                  to="/forgot-password"
+                  style={{
+                    fontSize: "12px",
+                    color: "#c026d3",
+                    textDecoration: "none",
+                    fontWeight: "600",
+                  }}
+                >
+                  Forgot Password?
+                </Link>
+              </div>
               <input
                 id="password"
                 type="password"

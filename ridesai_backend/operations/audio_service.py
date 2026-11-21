@@ -9,24 +9,107 @@ with automatic fallback to OpenAI Whisper.
 import io
 import logging
 import os
+import re
 from typing import Optional
 
 from django.conf import settings
 
 logger = logging.getLogger("operations.whatsapp")
 
+NON_LATIN_SCRIPT_PATTERN = re.compile(r"[\u0900-\u097F\u0600-\u06FF]")
 
-def transcribe_audio(audio_bytes: bytes, filename: str = "audio.ogg") -> Optional[str]:
+DEFAULT_STT_PROMPT = (
+    "Customer speaking in English, Urdu, or Roman Urdu about restaurant menu, food orders, "
+    "medicines, pharmacy, clinic appointments, or retail products. Phrases: menu bhej do, "
+    "order karna hai, kya items hain, rate kya hai, zinger burger, fries, panadol. "
+    "Pakistani phone numbers and digits: 03001234567, 03090139836, 03123456789, address, street."
+)
+
+
+def transliterate_to_roman_urdu(text: str) -> str:
+    """
+    Transliterates text containing Devanagari (Hindi) or Arabic/Urdu script into natural Roman Urdu
+    using Groq (llama-3.1-8b-instant) or OpenAI (gpt-4o-mini).
+    Ensures spoken Urdu voice notes transcribed into Hindi/Urdu script are stored & processed as clean Roman Urdu.
+    """
+    if not text or not NON_LATIN_SCRIPT_PATTERN.search(text):
+        return text
+
+    instruction = (
+        "Transliterate the following spoken Urdu/Hindi customer message into natural Roman Urdu using "
+        "ONLY English/Latin letters (keep English words like menu, burger, fries, order, delivery as-is). "
+        "Do NOT translate meaning away or add commentary. Return ONLY the Roman Urdu sentence."
+    )
+
+    # 1. Try Groq (high-speed LLM)
+    groq_api_key = getattr(settings, "GROQ_API_KEY", "") or os.environ.get("GROQ_API_KEY", "")
+    if groq_api_key and len(groq_api_key.strip()) > 5:
+        try:
+            from groq import Groq
+            client = Groq(api_key=groq_api_key.strip(), timeout=10.0)
+            chat_completion = client.chat.completions.create(
+                messages=[
+                    {"role": "system", "content": instruction},
+                    {"role": "user", "content": text},
+                ],
+                model=getattr(settings, "GROQ_CHAT_MODEL", "llama-3.1-8b-instant"),
+                temperature=0.0,
+                max_tokens=150,
+            )
+            res = (chat_completion.choices[0].message.content or "").strip()
+            if res.startswith('"') and res.endswith('"'):
+                res = res[1:-1].strip()
+            if res:
+                logger.info(f"[Audio STT] Transliterated non-Latin script '{text}' -> '{res}' via Groq")
+                return res
+        except Exception as e:
+            logger.warning(f"[Audio STT] Groq transliteration failed: {e}")
+
+    # 2. Fallback to OpenAI (gpt-4o-mini)
+    openai_api_key = getattr(settings, "OPENAI_API_KEY", "") or os.environ.get("OPENAI_API_KEY", "")
+    if openai_api_key and len(openai_api_key.strip()) > 10:
+        try:
+            from openai import OpenAI
+            client = OpenAI(api_key=openai_api_key.strip(), timeout=10.0)
+            chat_completion = client.chat.completions.create(
+                messages=[
+                    {"role": "system", "content": instruction},
+                    {"role": "user", "content": text},
+                ],
+                model=getattr(settings, "OPENAI_MODEL", "gpt-4o-mini"),
+                temperature=0.0,
+                max_tokens=150,
+            )
+            res = (chat_completion.choices[0].message.content or "").strip()
+            if res.startswith('"') and res.endswith('"'):
+                res = res[1:-1].strip()
+            if res:
+                logger.info(f"[Audio STT] Transliterated non-Latin script '{text}' -> '{res}' via OpenAI")
+                return res
+        except Exception as e:
+            logger.warning(f"[Audio STT] OpenAI transliteration failed: {e}")
+
+    return text
+
+
+def transcribe_audio(
+    audio_bytes: bytes,
+    filename: str = "audio.ogg",
+    prompt: Optional[str] = None,
+) -> Optional[str]:
     """
     Transcribes audio bytes into text using Groq's whisper-large-v3 (or OpenAI fallback).
 
     :param audio_bytes: Binary audio payload (typically .ogg Opus from WhatsApp Meta Cloud API).
     :param filename: Filename hint for the multipart payload, defaults to 'audio.ogg'.
-    :return: Transcribed text string, or None if transcription fails.
+    :param prompt: Optional conditioning prompt to guide Whisper STT on domain/multilingual vocabulary.
+    :return: Transcribed text string (transliterated to Roman Urdu if Devanagari/Urdu script), or None.
     """
     if not audio_bytes or len(audio_bytes) < 100:
         logger.warning(f"[Audio STT] Audio payload is too small ({len(audio_bytes) if audio_bytes else 0} bytes).")
         return None
+
+    stt_prompt = (prompt or DEFAULT_STT_PROMPT).strip()
 
     # Step 1: Try Groq whisper-large-v3 (Ultra-fast STT)
     groq_api_key = getattr(settings, "GROQ_API_KEY", "") or os.environ.get("GROQ_API_KEY", "")
@@ -43,11 +126,13 @@ def transcribe_audio(audio_bytes: bytes, filename: str = "audio.ogg") -> Optiona
                 file=(filename, audio_bytes),
                 model=stt_model,
                 temperature=0.0,
+                prompt=stt_prompt,
             )
 
             text = getattr(transcription, "text", "") or ""
             text = text.strip()
             if text:
+                text = transliterate_to_roman_urdu(text)
                 logger.info(f"[Audio STT] Groq transcription succeeded: '{text}'")
                 print(f"[STT Output] Voice Transcribed via Groq: '{text}'")
                 return text
@@ -68,11 +153,13 @@ def transcribe_audio(audio_bytes: bytes, filename: str = "audio.ogg") -> Optiona
             transcription = client.audio.transcriptions.create(
                 file=(filename, audio_bytes),
                 model="whisper-1",
+                prompt=stt_prompt,
             )
 
             text = getattr(transcription, "text", "") or ""
             text = text.strip()
             if text:
+                text = transliterate_to_roman_urdu(text)
                 logger.info(f"[Audio STT] OpenAI transcription succeeded: '{text}'")
                 print(f"[STT Output] Voice Transcribed via OpenAI Whisper: '{text}'")
                 return text

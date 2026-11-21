@@ -18,6 +18,8 @@ urlpatterns = [
     path("register/", views.RegisterAPIView.as_view()),
     path("verify-email/", views.VerifyEmailAPIView.as_view()),
     path("resend-verification/", views.ResendVerificationEmailAPIView.as_view()),
+    path("forgot-password/", views.ForgotPasswordAPIView.as_view()),
+    path("reset-password/", views.ResetPasswordAPIView.as_view()),
     path("login/", views.LoginAPIView.as_view()),
     path("token/refresh/", TokenRefreshView.as_view()),
     path("me/", views.MeAPIView.as_view()),

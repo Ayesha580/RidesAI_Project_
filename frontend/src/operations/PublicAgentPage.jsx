@@ -1,103 +1,1103 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useParams } from "react-router-dom";
 import api from "../api/axiosClient";
-import VoiceControls from "./components/VoiceControls";
 
 export default function PublicAgentPage() {
   const { publicId } = useParams();
-  const [customer, setCustomer] = useState({ name: "", email: "", phone: "" });
-  const [message, setMessage] = useState("");
-  const [conversationId, setConversationId] = useState(null);
-  const [messages, setMessages] = useState([]);
-  const [sending, setSending] = useState(false);
-  const [error, setError] = useState("");
+
+  // Tenant / Business Info
+  const [businessName, setBusinessName] = useState("Business Assistant");
+  const [businessType, setBusinessType] = useState("restaurant");
   const [catalog, setCatalog] = useState([]);
-  const [canOrder, setCanOrder] = useState(false);
-  const [canHandover, setCanHandover] = useState(false);
-  const [showOrder, setShowOrder] = useState(false);
-  const [orderForm, setOrderForm] = useState({ item_id: "", quantity: "1", fulfillment_type: "delivery", address: "", city: "", country: "", latitude: "", longitude: "" });
-  const [confirmOrder, setConfirmOrder] = useState(false);
-  const [businessName, setBusinessName] = useState("Business assistant");
-  const [lastAssistantReply, setLastAssistantReply] = useState("");
+  const [serviceAreas, setServiceAreas] = useState([]);
+
+  // Customer contact info (optional / for orders)
+  const [customer, setCustomer] = useState({ name: "", email: "", phone: "" });
+  const [showContactModal, setShowContactModal] = useState(false);
+
+  // Conversation & Read-only Display State
+  const [conversationId, setConversationId] = useState(null);
+  const conversationIdRef = useRef(null);
+  const [messages, setMessages] = useState([]);
+  const [error, setError] = useState("");
+
+  // Voice Interaction State: "idle" | "listening" | "processing" | "speaking"
+  const [voiceState, setVoiceState] = useState("idle");
+  const [interimTranscript, setInterimTranscript] = useState("");
+  const [recordingSeconds, setRecordingSeconds] = useState(0);
+
+  // Audio & Speech refs
+  const recognitionRef = useRef(null);
+  const currentAudioRef = useRef(null);
+  const mediaStreamRef = useRef(null);
+  const mediaRecorderRef = useRef(null);
+  const audioChunksRef = useRef([]);
+  const isRecordingRef = useRef(false);
+  const recordingTimerRef = useRef(null);
+  const transcriptBufferRef = useRef("");
+  const messagesEndRef = useRef(null);
+
+  const SpeechRecognition =
+    typeof window !== "undefined"
+      ? window.SpeechRecognition || window.webkitSpeechRecognition
+      : null;
+  const canSynthesize = typeof window !== "undefined" && "speechSynthesis" in window;
+
+  const formatTimer = (secs) => {
+    const mins = Math.floor(secs / 60);
+    const remainder = secs % 60;
+    return `${mins}:${remainder < 10 ? "0" : ""}${remainder}`;
+  };
+
+  // Auto-scroll transcript feed to bottom
+  const scrollToBottom = () => {
+    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  };
+
   useEffect(() => {
-    api.get(`/operations/public/agent/${publicId}/catalog/`).then(({ data }) => {
-      setCatalog(data.items || []); setCanOrder(!!data.can_order); setCanHandover(!!data.can_handover); setBusinessName(data.business || "Business assistant");
-    }).catch((err) => setError(err.response?.data?.detail || "This business assistant is unavailable."));
+    scrollToBottom();
+  }, [messages, interimTranscript, voiceState]);
+
+  // Load business catalog and info
+  useEffect(() => {
+    api
+      .get(`/operations/public/agent/${publicId}/catalog/`)
+      .then(({ data }) => {
+        setCatalog(data.items || []);
+        setServiceAreas(data.service_areas || []);
+        if (data.business) setBusinessName(data.business);
+      })
+      .catch((err) =>
+        setError(err.response?.data?.detail || "This business assistant is currently unavailable.")
+      );
+
+    return () => {
+      stopAllAudio();
+      stopAllRecording();
+    };
   }, [publicId]);
-  const sendPayload = async (text, action = null) => {
-    setMessages((list) => [...list, { role: "user", content: text }]); setSending(true); setError("");
-    try {
-      const { data } = await api.post(`/operations/public/agent/${publicId}/chat/`, {
-        message: text, action, conversation_id: conversationId, customer_name: customer.name,
-        customer_email: customer.email, customer_phone: customer.phone,
+
+  const stopAllAudio = () => {
+    if (currentAudioRef.current) {
+      currentAudioRef.current.pause();
+      currentAudioRef.current = null;
+    }
+    if (canSynthesize) {
+      window.speechSynthesis.cancel();
+    }
+  };
+
+  // Play audio response (TTS audio_url or browser SpeechSynthesis fallback)
+  const playVoiceResponse = (audioUrl, text) => {
+    stopAllAudio();
+    setVoiceState("speaking");
+
+    if (audioUrl) {
+      const audio = new Audio(audioUrl);
+      currentAudioRef.current = audio;
+      audio.onended = () => {
+        setVoiceState("idle");
+        currentAudioRef.current = null;
+      };
+      audio.onerror = () => {
+        // Fallback to browser SpeechSynthesis if audio element fails
+        fallbackSpeak(text);
+      };
+      audio.play().catch(() => {
+        fallbackSpeak(text);
       });
-      setConversationId(data.conversation_id); setLastAssistantReply(data.answer || ""); setMessages((list) => [...list, { role: "assistant", content: data.answer }]);
-    } catch (err) { setError(err.response?.data?.detail || "The assistant is temporarily unavailable."); }
-    finally { setSending(false); }
+    } else {
+      fallbackSpeak(text);
+    }
   };
-  const send = async (e) => {
-    e.preventDefault(); if (!message.trim()) return;
-    const text = message.trim(); setMessage(""); await sendPayload(text);
+
+  const fallbackSpeak = (text) => {
+    if (!canSynthesize || !text) {
+      setVoiceState("idle");
+      return;
+    }
+    window.speechSynthesis.cancel();
+    const utterance = new SpeechSynthesisUtterance(text);
+    utterance.lang = "en-US";
+    utterance.rate = 0.95;
+    utterance.onend = () => setVoiceState("idle");
+    utterance.onerror = () => setVoiceState("idle");
+    window.speechSynthesis.speak(utterance);
   };
-  const placeOrder = async (e) => {
-    e.preventDefault();
-    if (!customer.name.trim() || !orderForm.item_id) { setError("Enter your name and select an available item."); return; }
-    const item = catalog.find((x) => String(x.id) === String(orderForm.item_id));
-    if (orderForm.fulfillment_type === "delivery" && (!orderForm.address.trim() || !orderForm.city.trim() || !orderForm.country.trim())) { setError("Enter the full delivery address, city and country."); return; }
-    if (!confirmOrder) { setError("Please confirm the order summary before submitting."); return; }
-    setShowOrder(false);
-    await sendPayload(`Please place this confirmed ${orderForm.fulfillment_type} order for ${item?.name || "the selected item"}.`, {
-      type: "create_order", confirmed: true, data: { customer_name: customer.name, customer_email: customer.email,
-        customer_phone: customer.phone, fulfillment_type: orderForm.fulfillment_type,
-        delivery_address: orderForm.fulfillment_type === "delivery" ? orderForm.address : "",
-        city: orderForm.city, country: orderForm.country, latitude: orderForm.latitude || null, longitude: orderForm.longitude || null,
-        items: [{ item_id: Number(orderForm.item_id), quantity: orderForm.quantity }] },
-    });
-    setConfirmOrder(false);
-  };
-  const handover = () => sendPayload("Please connect me to a human team member.", { type: "handover" });
-  const refreshConversation = async () => {
-    if (!conversationId) return;
+
+  // Send spoken voice payload to backend
+  const sendVoiceMessage = async (spokenText, audioBase64 = null) => {
+    if (!spokenText?.trim() && !audioBase64) {
+      setVoiceState("idle");
+      return;
+    }
+
+    const optimisticText = spokenText?.trim() || "🎤 Processing voice note...";
+    // Append customer spoken message to read-only feed
+    setMessages((prev) => [...prev, { role: "user", content: optimisticText, is_voice: true }]);
+    setVoiceState("processing");
+    setError("");
+    setInterimTranscript("");
+
     try {
-      const { data } = await api.get(`/operations/public/agent/${publicId}/conversation/${conversationId}/`);
-      setMessages(data.messages || []);
-    } catch (err) { setError(err.response?.data?.detail || "Could not refresh this conversation."); }
+      const activeConvId = conversationIdRef.current || conversationId;
+      const { data } = await api.post(`/operations/public/agent/${publicId}/chat/`, {
+        message: spokenText?.trim() || "",
+        audio_base64: audioBase64,
+        audio: audioBase64,
+        conversation_id: activeConvId,
+        customer_name: customer.name,
+        customer_email: customer.email,
+        customer_phone: customer.phone,
+      });
+
+      if (data?.conversation_id) {
+        conversationIdRef.current = data.conversation_id;
+        setConversationId(data.conversation_id);
+      }
+      const reply = data.reply_text || data.answer || "";
+      const actualTranscript = data.transcript || optimisticText;
+
+      // Update the optimistic customer message with Whisper's full transcript
+      setMessages((prev) => {
+        const next = [...prev];
+        for (let i = next.length - 1; i >= 0; i--) {
+          if (next[i].role === "user") {
+            next[i] = { ...next[i], content: actualTranscript };
+            break;
+          }
+        }
+        next.push({
+          role: "assistant",
+          content: reply,
+          audio_url: data.audio_url || null,
+          menu_items: data.menu_items || [],
+          order_summary: data.order_summary || null,
+          action_result: data.action_result || null,
+        });
+        return next;
+      });
+
+      // Auto-play voice reply
+      playVoiceResponse(data.audio_url, reply);
+    } catch (err) {
+      setError(err.response?.data?.detail || "Voice processing failed. Please try speaking again.");
+      setVoiceState("idle");
+    }
   };
-  return <main style={{ minHeight: "100vh", background: "#f8fafc", display: "grid", placeItems: "center", padding: 18 }}>
-    <section style={{ width: "min(680px,100%)", background: "white", border: "1px solid #e5e7eb", borderRadius: 18, padding: 20, boxShadow: "0 12px 35px rgba(15,23,42,.06)" }}>
-      <h1 style={{ margin: 0 }}>{businessName}</h1><p style={{ color: "#64748b", marginTop: 6 }}>Ask about products, services, prices or your order.</p>
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(160px,1fr))", gap: 8, marginBottom: 12 }}>
-        <input placeholder="Your name" value={customer.name} onChange={(e) => setCustomer({ ...customer, name: e.target.value })} />
-        <input type="email" placeholder="Your email (optional)" value={customer.email} onChange={(e) => setCustomer({ ...customer, email: e.target.value })} />
-        <input placeholder="Your phone (optional)" value={customer.phone} onChange={(e) => setCustomer({ ...customer, phone: e.target.value })} />
+
+  // Start Voice Recording (MediaRecorder as PRIMARY capture)
+  const startListening = async () => {
+    setError("");
+    stopAllAudio();
+    transcriptBufferRef.current = "";
+    audioChunksRef.current = [];
+    setInterimTranscript("");
+    setRecordingSeconds(0);
+
+    // 1. Primary: MediaRecorder with manual tap-to-start / tap-to-stop
+    try {
+      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+        throw new Error("Microphone access is not supported in this browser.");
+      }
+
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      mediaStreamRef.current = stream;
+
+      let mimeType = "";
+      if (typeof MediaRecorder !== "undefined") {
+        if (MediaRecorder.isTypeSupported("audio/webm;codecs=opus")) {
+          mimeType = "audio/webm;codecs=opus";
+        } else if (MediaRecorder.isTypeSupported("audio/webm")) {
+          mimeType = "audio/webm";
+        } else if (MediaRecorder.isTypeSupported("audio/mp4")) {
+          mimeType = "audio/mp4";
+        }
+      }
+
+      const options = mimeType ? { mimeType } : undefined;
+      const mediaRecorder = new MediaRecorder(stream, options);
+      mediaRecorderRef.current = mediaRecorder;
+
+      mediaRecorder.ondataavailable = (event) => {
+        if (event.data && event.data.size > 0) {
+          audioChunksRef.current.push(event.data);
+        }
+      };
+
+      mediaRecorder.start(200); // 200ms slice interval
+      isRecordingRef.current = true;
+      setVoiceState("listening");
+
+      // Start live timer
+      if (recordingTimerRef.current) clearInterval(recordingTimerRef.current);
+      recordingTimerRef.current = setInterval(() => {
+        setRecordingSeconds((prev) => prev + 1);
+      }, 1000);
+    } catch (micErr) {
+      console.error("Microphone capture error:", micErr);
+      setError("Microphone permission was denied or not available. Please allow microphone access and tap again.");
+      setVoiceState("idle");
+      return;
+    }
+
+    // 2. Optional Browser SpeechRecognition for live visual interim text feedback only
+    // Crucial: continuous=true and onend DOES NOT stop recording or send!
+    if (SpeechRecognition) {
+      try {
+        const recognition = new SpeechRecognition();
+        recognition.lang = navigator.language || "en-US";
+        recognition.interimResults = true;
+        recognition.continuous = true;
+        recognition.maxAlternatives = 1;
+
+        recognition.onresult = (event) => {
+          let interim = "";
+          let final = "";
+          for (let i = event.resultIndex; i < event.results.length; ++i) {
+            const trans = event.results[i][0].transcript;
+            if (event.results[i].isFinal) {
+              final += trans;
+            } else {
+              interim += trans;
+            }
+          }
+          if (final) {
+            transcriptBufferRef.current = (transcriptBufferRef.current + " " + final).trim();
+            setInterimTranscript(transcriptBufferRef.current);
+          } else {
+            setInterimTranscript((transcriptBufferRef.current + " " + interim).trim());
+          }
+        };
+
+        recognition.onerror = (event) => {
+          console.warn("SpeechRecognition interim note:", event.error);
+        };
+
+        recognition.onend = () => {
+          // If browser speech recognition cuts out on silence, NEVER stop recording!
+          // Auto-restart recognition if still recording, so user keeps seeing live text
+          if (isRecordingRef.current) {
+            try {
+              recognition.start();
+            } catch {
+              /* ignore restart error */
+            }
+          }
+        };
+
+        recognitionRef.current = recognition;
+        try {
+          recognition.start();
+        } catch {
+          /* ignore recognition start error */
+        }
+      } catch (err) {
+        console.warn("SpeechRecognition initialization note:", err);
+      }
+    }
+  };
+
+  // Stop recording and send audio to backend Whisper
+  const stopListeningAndSend = () => {
+    isRecordingRef.current = false;
+    if (recordingTimerRef.current) {
+      clearInterval(recordingTimerRef.current);
+      recordingTimerRef.current = null;
+    }
+
+    // Stop live SpeechRecognition
+    if (recognitionRef.current) {
+      try {
+        recognitionRef.current.onend = null;
+        recognitionRef.current.stop();
+      } catch {
+        /* already stopped */
+      }
+      recognitionRef.current = null;
+    }
+
+    const currentRecorder = mediaRecorderRef.current;
+    if (currentRecorder && currentRecorder.state !== "inactive") {
+      setVoiceState("processing");
+
+      currentRecorder.onstop = () => {
+        try {
+          const mimeType = currentRecorder.mimeType || "audio/webm";
+          const audioBlob = new Blob(audioChunksRef.current, { type: mimeType });
+
+          // Release mic hardware tracks
+          if (mediaStreamRef.current) {
+            mediaStreamRef.current.getTracks().forEach((track) => track.stop());
+            mediaStreamRef.current = null;
+          }
+
+          const spokenHint = transcriptBufferRef.current.trim() || interimTranscript.trim();
+
+          if (audioBlob.size > 100) {
+            const reader = new FileReader();
+            reader.readAsDataURL(audioBlob);
+            reader.onloadend = () => {
+              const base64Data = reader.result;
+              sendVoiceMessage(spokenHint, base64Data);
+            };
+          } else {
+            if (spokenHint) {
+              sendVoiceMessage(spokenHint, null);
+            } else {
+              setVoiceState("idle");
+              setInterimTranscript("");
+            }
+          }
+        } catch (blobErr) {
+          console.error("Audio blob processing error:", blobErr);
+          const spokenHint = transcriptBufferRef.current.trim() || interimTranscript.trim();
+          if (spokenHint) {
+            sendVoiceMessage(spokenHint, null);
+          } else {
+            setVoiceState("idle");
+          }
+        }
+      };
+
+      try {
+        currentRecorder.stop();
+      } catch (err) {
+        console.error("Error stopping recorder:", err);
+        setVoiceState("idle");
+      }
+    } else {
+      // Fallback if no media recorder was active
+      if (mediaStreamRef.current) {
+        mediaStreamRef.current.getTracks().forEach((track) => track.stop());
+        mediaStreamRef.current = null;
+      }
+      const spokenHint = transcriptBufferRef.current.trim() || interimTranscript.trim();
+      if (spokenHint) {
+        sendVoiceMessage(spokenHint, null);
+      } else {
+        setVoiceState("idle");
+        setInterimTranscript("");
+      }
+    }
+  };
+
+  const stopAllRecording = () => {
+    isRecordingRef.current = false;
+    if (recordingTimerRef.current) {
+      clearInterval(recordingTimerRef.current);
+      recordingTimerRef.current = null;
+    }
+    if (recognitionRef.current) {
+      try {
+        recognitionRef.current.onend = null;
+        recognitionRef.current.stop();
+      } catch {}
+      recognitionRef.current = null;
+    }
+    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== "inactive") {
+      try {
+        mediaRecorderRef.current.onstop = null;
+        mediaRecorderRef.current.stop();
+      } catch {}
+      mediaRecorderRef.current = null;
+    }
+    if (mediaStreamRef.current) {
+      mediaStreamRef.current.getTracks().forEach((t) => t.stop());
+      mediaStreamRef.current = null;
+    }
+  };
+
+  // Main Action: Toggle Mic Button
+  const handleMicClick = () => {
+    if (voiceState === "speaking") {
+      // Mute / stop talking
+      stopAllAudio();
+      setVoiceState("idle");
+    } else if (voiceState === "listening") {
+      // Customer tapped again to finish speaking and send uncut audio!
+      stopListeningAndSend();
+    } else if (voiceState === "idle") {
+      // Start recording
+      startListening();
+    }
+  };
+
+  return (
+    <main
+      style={{
+        minHeight: "100vh",
+        background: "linear-gradient(180deg, #fdf4ff 0%, #f8fafc 100%)",
+        display: "flex",
+        flexDirection: "column",
+        alignItems: "center",
+        justifyContent: "space-between",
+        padding: "16px",
+        fontFamily: "system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif",
+      }}
+    >
+      <style>{`
+        @keyframes pulseRing {
+          0% {
+            box-shadow: 0 0 0 0 rgba(255, 119, 255, 0.7);
+          }
+          70% {
+            box-shadow: 0 0 0 26px rgba(255, 119, 255, 0);
+          }
+          100% {
+            box-shadow: 0 0 0 0 rgba(255, 119, 255, 0);
+          }
+        }
+        @keyframes waveBars {
+          0%, 100% { height: 6px; }
+          50% { height: 26px; }
+        }
+        .voice-mic-active {
+          animation: pulseRing 1.8s infinite;
+        }
+        .wave-bar {
+          width: 4px;
+          background: #ff77ff;
+          border-radius: 2px;
+          display: inline-block;
+          animation: waveBars 1s infinite ease-in-out;
+        }
+        .wave-bar:nth-child(2) { animation-delay: 0.15s; }
+        .wave-bar:nth-child(3) { animation-delay: 0.3s; }
+        .wave-bar:nth-child(4) { animation-delay: 0.45s; }
+        .wave-bar:nth-child(5) { animation-delay: 0.6s; }
+      `}</style>
+
+      {/* Container Box */}
+      <div
+        style={{
+          width: "100%",
+          maxWidth: "680px",
+          display: "flex",
+          flexDirection: "column",
+          gap: "14px",
+          margin: "0 auto",
+        }}
+      >
+        {/* Top Header Card with Mandatory Branding */}
+        <header
+          style={{
+            background: "#ffffff",
+            border: "1px solid #f0abfc",
+            borderRadius: "20px",
+            padding: "18px 22px",
+            boxShadow: "0 10px 25px -5px rgba(255, 119, 255, 0.12)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+            flexWrap: "wrap",
+            gap: "12px",
+          }}
+        >
+          <div>
+            <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+              <span
+                style={{
+                  fontSize: "10px",
+                  fontWeight: "700",
+                  textTransform: "uppercase",
+                  letterSpacing: "0.08em",
+                  background: "#fae8ff",
+                  color: "#c026d3",
+                  padding: "3px 8px",
+                  borderRadius: "12px",
+                }}
+              >
+                100% Voice AI
+              </span>
+              <span style={{ fontSize: "12px", color: "#64748b" }}>Live Customer Line</span>
+            </div>
+            {/* Prominent Business Name */}
+            <h1
+              style={{
+                fontSize: "24px",
+                fontWeight: "800",
+                color: "#0f172a",
+                margin: "4px 0 2px 0",
+              }}
+            >
+              {businessName}
+            </h1>
+            {/* Mandatory Subtitle Branding */}
+            <p
+              style={{
+                fontSize: "12px",
+                fontWeight: "600",
+                color: "#a855f7",
+                margin: 0,
+                letterSpacing: "0.02em",
+              }}
+            >
+              Owned by Rides Technologies
+            </p>
+          </div>
+
+          {/* Customer Details Pill / Button */}
+          <button
+            type="button"
+            onClick={() => setShowContactModal(true)}
+            style={{
+              background: "#faf5ff",
+              border: "1px solid #e9d5ff",
+              borderRadius: "14px",
+              padding: "8px 14px",
+              fontSize: "12px",
+              fontWeight: "600",
+              color: "#7e22ce",
+              cursor: "pointer",
+              display: "flex",
+              alignItems: "center",
+              gap: "6px",
+            }}
+          >
+            <span>👤</span>
+            <span>{customer.name || customer.phone ? `${customer.name || customer.phone}` : "Add Details (Optional)"}</span>
+          </button>
+        </header>
+
+        {/* Read-Only Transcript & Cards Feed */}
+        <section
+          aria-live="polite"
+          style={{
+            background: "#ffffff",
+            border: "1px solid #e2e8f0",
+            borderRadius: "20px",
+            height: "50vh",
+            minHeight: "360px",
+            overflowY: "auto",
+            padding: "18px",
+            display: "flex",
+            flexDirection: "column",
+            gap: "16px",
+            boxShadow: "0 4px 18px rgba(15, 23, 42, 0.04)",
+          }}
+        >
+          {messages.length === 0 ? (
+            <div
+              style={{
+                margin: "auto",
+                textAlign: "center",
+                padding: "24px 12px",
+                maxWidth: "420px",
+              }}
+            >
+              <div
+                style={{
+                  width: "56px",
+                  height: "56px",
+                  borderRadius: "28px",
+                  background: "#fae8ff",
+                  display: "grid",
+                  placeItems: "center",
+                  fontSize: "26px",
+                  margin: "0 auto 12px auto",
+                }}
+              >
+                🎙️
+              </div>
+              <h3 style={{ margin: "0 0 6px 0", color: "#1e293b", fontSize: "18px", fontWeight: "700" }}>
+                Welcome to {businessName}
+              </h3>
+              <p style={{ margin: "0 0 16px 0", color: "#64748b", fontSize: "14px", lineHeight: 1.5 }}>
+                Tap the microphone below to speak directly with our AI assistant. You can ask about our menu, prices, doctor timings, or place an order.
+              </p>
+              <div style={{ display: "flex", flexDirection: "column", gap: "8px", alignItems: "center" }}>
+                <span style={{ fontSize: "12px", fontWeight: "600", color: "#a855f7" }}>Try saying:</span>
+                <span
+                  style={{
+                    background: "#f8fafc",
+                    border: "1px dashed #cbd5e1",
+                    padding: "6px 14px",
+                    borderRadius: "16px",
+                    fontSize: "12px",
+                    color: "#475569",
+                  }}
+                >
+                  "What is on the menu today?"
+                </span>
+                <span
+                  style={{
+                    background: "#f8fafc",
+                    border: "1px dashed #cbd5e1",
+                    padding: "6px 14px",
+                    borderRadius: "16px",
+                    fontSize: "12px",
+                    color: "#475569",
+                  }}
+                >
+                  "I want to place an order for delivery"
+                </span>
+              </div>
+            </div>
+          ) : (
+            messages.map((m, idx) => (
+              <div
+                key={idx}
+                style={{
+                  display: "flex",
+                  flexDirection: "column",
+                  alignItems: m.role === "user" ? "flex-end" : "flex-start",
+                  gap: "6px",
+                }}
+              >
+                {/* Speaker Label */}
+                <span
+                  style={{
+                    fontSize: "11px",
+                    fontWeight: "700",
+                    color: m.role === "user" ? "#a855f7" : "#64748b",
+                    textTransform: "uppercase",
+                    letterSpacing: "0.04em",
+                    display: "flex",
+                    alignItems: "center",
+                    gap: "4px",
+                  }}
+                >
+                  {m.role === "user" ? "🎤 You (Spoken)" : "🤖 Assistant (Voice)"}
+                </span>
+
+                {/* Spoken Text Bubble */}
+                <div
+                  style={{
+                    maxWidth: "88%",
+                    padding: "12px 16px",
+                    borderRadius: m.role === "user" ? "18px 18px 4px 18px" : "18px 18px 18px 4px",
+                    background: m.role === "user" ? "#fae8ff" : "#f8fafc",
+                    border: m.role === "user" ? "1px solid #f5d0fe" : "1px solid #e2e8f0",
+                    color: "#0f172a",
+                    fontSize: "14px",
+                    lineHeight: "1.55",
+                    whiteSpace: "pre-wrap",
+                    wordBreak: "break-word",
+                  }}
+                >
+                  {m.content}
+
+                  {/* Replay voice button for assistant messages */}
+                  {m.role === "assistant" && (
+                    <div style={{ marginTop: "8px", display: "flex", gap: "8px" }}>
+                      <button
+                        type="button"
+                        onClick={() => playVoiceResponse(m.audio_url, m.content)}
+                        style={{
+                          background: "#ffffff",
+                          border: "1px solid #cbd5e1",
+                          borderRadius: "12px",
+                          padding: "4px 10px",
+                          fontSize: "11px",
+                          fontWeight: "600",
+                          color: "#475569",
+                          cursor: "pointer",
+                          display: "inline-flex",
+                          alignItems: "center",
+                          gap: "4px",
+                        }}
+                      >
+                        <span>🔊</span> Replay Voice
+                      </button>
+                    </div>
+                  )}
+                </div>
+
+                {/* Structured Cards: Menu / Catalog Items */}
+                {m.menu_items && m.menu_items.length > 0 && (
+                  <div
+                    style={{
+                      maxWidth: "100%",
+                      width: "100%",
+                      marginTop: "4px",
+                      display: "grid",
+                      gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))",
+                      gap: "10px",
+                    }}
+                  >
+                    {m.menu_items.map((item) => (
+                      <div
+                        key={item.id}
+                        style={{
+                          background: "#ffffff",
+                          border: "1px solid #e2e8f0",
+                          borderRadius: "14px",
+                          padding: "12px",
+                          boxShadow: "0 2px 8px rgba(0,0,0,0.03)",
+                        }}
+                      >
+                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
+                          <strong style={{ fontSize: "14px", color: "#0f172a" }}>{item.name}</strong>
+                          <span style={{ fontSize: "13px", fontWeight: "700", color: "#c026d3" }}>
+                            Rs. {item.price}
+                          </span>
+                        </div>
+                        {item.description && (
+                          <p style={{ margin: "4px 0 0 0", fontSize: "11px", color: "#64748b", lineHeight: 1.4 }}>
+                            {item.description}
+                          </p>
+                        )}
+                        <div style={{ marginTop: "6px" }}>
+                          <span
+                            style={{
+                              fontSize: "10px",
+                              fontWeight: "600",
+                              color: item.in_stock ? "#16a34a" : "#dc2626",
+                              background: item.in_stock ? "#dcfce7" : "#fee2e2",
+                              padding: "2px 6px",
+                              borderRadius: "8px",
+                            }}
+                          >
+                            {item.in_stock ? "Available" : "Out of stock"}
+                          </span>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {/* Structured Cards: Order / Invoice Summary */}
+                {m.order_summary && (
+                  <div
+                    style={{
+                      marginTop: "6px",
+                      background: "#f0fdf4",
+                      border: "1px solid #bbf7d0",
+                      borderRadius: "14px",
+                      padding: "12px 16px",
+                      maxWidth: "88%",
+                    }}
+                  >
+                    <div style={{ display: "flex", alignItems: "center", gap: "6px", color: "#166534", fontWeight: "700" }}>
+                      <span>✅</span> Order Confirmed
+                    </div>
+                    <div style={{ fontSize: "13px", color: "#1e293b", marginTop: "4px" }}>
+                      Order Ref: <strong>#{m.order_summary.order_number}</strong>
+                    </div>
+                    <div style={{ fontSize: "13px", color: "#1e293b" }}>
+                      Total Amount: <strong>{String(m.order_summary.total || "").startsWith("Rs.") ? m.order_summary.total : `Rs. ${m.order_summary.total}`}</strong>
+                    </div>
+                  </div>
+                )}
+              </div>
+            ))
+          )}
+
+          {/* Live speech interim feedback */}
+          {voiceState === "listening" && interimTranscript && (
+            <div style={{ alignSelf: "flex-end", maxWidth: "85%" }}>
+              <span style={{ fontSize: "11px", fontWeight: "700", color: "#c026d3" }}>Speaking now...</span>
+              <div
+                style={{
+                  background: "#fae8ff",
+                  border: "1px dashed #d946ef",
+                  borderRadius: "18px 18px 4px 18px",
+                  padding: "10px 14px",
+                  fontSize: "13px",
+                  color: "#701a75",
+                  fontStyle: "italic",
+                }}
+              >
+                "{interimTranscript}"
+              </div>
+            </div>
+          )}
+
+          <div ref={messagesEndRef} />
+        </section>
+
+        {/* Error notification if any */}
+        {error && (
+          <div
+            role="alert"
+            style={{
+              background: "#fef2f2",
+              border: "1px solid #fecaca",
+              borderRadius: "12px",
+              padding: "10px 14px",
+              color: "#991b1b",
+              fontSize: "13px",
+              display: "flex",
+              justifyContent: "space-between",
+              alignItems: "center",
+            }}
+          >
+            <span>{error}</span>
+            <button
+              type="button"
+              onClick={() => setError("")}
+              style={{ background: "none", border: "none", color: "#991b1b", cursor: "pointer", fontWeight: "bold" }}
+            >
+              ✕
+            </button>
+          </div>
+        )}
+
+        {/* 100% Voice Interaction Control Panel (No typing input allowed) */}
+        <section
+          style={{
+            background: "#ffffff",
+            border: "1px solid #f0abfc",
+            borderRadius: "24px",
+            padding: "24px",
+            boxShadow: "0 12px 30px -5px rgba(255, 119, 255, 0.15)",
+            display: "flex",
+            flexDirection: "column",
+            alignItems: "center",
+            justifyContent: "center",
+            gap: "12px",
+          }}
+        >
+          {/* Main Glowing 🎤 Voice Button */}
+          <div style={{ position: "relative" }}>
+            <button
+              type="button"
+              onClick={handleMicClick}
+              disabled={voiceState === "processing"}
+              aria-label={
+                voiceState === "listening"
+                  ? "Stop recording and send"
+                  : voiceState === "speaking"
+                  ? "Mute audio playback"
+                  : "Tap to speak"
+              }
+              className={voiceState === "listening" ? "voice-mic-active" : ""}
+              style={{
+                width: "82px",
+                height: "82px",
+                borderRadius: "50%",
+                background:
+                  voiceState === "listening"
+                    ? "linear-gradient(135deg, #d946ef 0%, #ff77ff 100%)"
+                    : voiceState === "speaking"
+                    ? "linear-gradient(135deg, #0284c7 0%, #38bdf8 100%)"
+                    : voiceState === "processing"
+                    ? "#e2e8f0"
+                    : "linear-gradient(135deg, #ff77ff 0%, #ec4899 100%)",
+                border: "4px solid #ffffff",
+                boxShadow:
+                  voiceState === "listening"
+                    ? "0 0 25px rgba(217, 70, 239, 0.8)"
+                    : "0 10px 20px rgba(255, 119, 255, 0.35)",
+                color: "#ffffff",
+                fontSize: "32px",
+                cursor: voiceState === "processing" ? "wait" : "pointer",
+                display: "grid",
+                placeItems: "center",
+                transition: "all 0.25s ease",
+                outline: "none",
+              }}
+            >
+              {voiceState === "listening" ? (
+                "⏹"
+              ) : voiceState === "speaking" ? (
+                "🔊"
+              ) : voiceState === "processing" ? (
+                "⏳"
+              ) : (
+                "🎤"
+              )}
+            </button>
+          </div>
+
+          {/* Voice Status Label & Equalizer Animation */}
+          <div style={{ textAlign: "center" }}>
+            {voiceState === "idle" && (
+              <div>
+                <strong style={{ fontSize: "16px", color: "#0f172a", display: "block" }}>
+                  Tap to Speak
+                </strong>
+                <span style={{ fontSize: "12px", color: "#64748b" }}>
+                  100% voice experience · Speak naturally
+                </span>
+              </div>
+            )}
+
+            {voiceState === "listening" && (
+              <div>
+                <div
+                  style={{
+                    display: "inline-flex",
+                    alignItems: "center",
+                    gap: "6px",
+                    background: "#fdf2f8",
+                    border: "1px solid #fbcfe8",
+                    padding: "3px 12px",
+                    borderRadius: "20px",
+                    marginBottom: "6px",
+                  }}
+                >
+                  <span
+                    style={{
+                      width: "8px",
+                      height: "8px",
+                      borderRadius: "50%",
+                      background: "#ef4444",
+                      display: "inline-block",
+                    }}
+                  />
+                  <span style={{ fontSize: "13px", fontWeight: "700", color: "#db2777" }}>
+                    {formatTimer(recordingSeconds)}
+                  </span>
+                </div>
+                <strong style={{ fontSize: "16px", color: "#c026d3", display: "block" }}>
+                  Listening... Tap to Send
+                </strong>
+                <span style={{ fontSize: "12px", color: "#a855f7" }}>
+                  Take your time: speak your items, name, phone number or address
+                </span>
+              </div>
+            )}
+
+            {voiceState === "processing" && (
+              <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: "4px" }}>
+                <strong style={{ fontSize: "15px", color: "#64748b" }}>Thinking...</strong>
+                <span style={{ fontSize: "12px", color: "#94a3b8" }}>Consulting business knowledge & catalog</span>
+              </div>
+            )}
+
+            {voiceState === "speaking" && (
+              <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: "6px" }}>
+                <div style={{ display: "flex", gap: "3px", alignItems: "center", height: "26px" }}>
+                  <span className="wave-bar" />
+                  <span className="wave-bar" />
+                  <span className="wave-bar" />
+                  <span className="wave-bar" />
+                  <span className="wave-bar" />
+                </div>
+                <strong style={{ fontSize: "15px", color: "#0284c7" }}>Speaking response...</strong>
+                <span style={{ fontSize: "11px", color: "#64748b" }}>Tap button above to pause or mute</span>
+              </div>
+            )}
+          </div>
+        </section>
+
+        {/* Mandatory Rides Technologies Footer Branding */}
+        <footer
+          style={{
+            textAlign: "center",
+            padding: "8px 0 16px 0",
+            fontSize: "12px",
+            color: "#64748b",
+          }}
+        >
+          <p style={{ margin: 0 }}>
+            Powered by <strong>Rides AI</strong> · <span style={{ color: "#a855f7", fontWeight: "700" }}>Owned by Rides Technologies</span>
+          </p>
+        </footer>
       </div>
-      <div aria-live="polite" style={{ minHeight: 300, maxHeight: "55vh", overflowY: "auto", background: "#f8fafc", borderRadius: 12, padding: 12, marginBottom: 12 }}>
-        {messages.length === 0 ? <p style={{ color: "#94a3b8" }}>Hello! How can we help you today?</p> : messages.map((m, i) => <div key={i} style={{ textAlign: m.role === "user" ? "right" : "left", margin: "8px 0" }}><span style={{ display: "inline-block", padding: 10, borderRadius: 12, maxWidth: "85%", background: m.role === "user" ? "#fce7f3" : "white", border: "1px solid #e5e7eb", whiteSpace: "pre-wrap" }}>{m.content}</span></div>)}
-      </div>
-      {error && <p role="alert" style={{ color: "#b91c1c" }}>{error}</p>}
-      <form onSubmit={send} style={{ display: "flex", gap: 8 }}><input style={{ flex: 1, minWidth: 0 }} placeholder="Type your question..." value={message} onChange={(e) => setMessage(e.target.value)} /><button className="ad-btn ad-btn-primary" disabled={sending || !message.trim()}>{sending ? "Sending..." : "Send"}</button></form>
-      <VoiceControls onTranscript={(transcript) => setMessage(transcript)} speechText={lastAssistantReply} disabled={sending} />
-      <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 12 }}>
-        {canOrder && <button type="button" className="ad-btn ad-btn-ghost" onClick={() => setShowOrder((v) => !v)}>Place an order</button>}
-        {canHandover && <button type="button" className="ad-btn ad-btn-ghost" disabled={sending} onClick={handover}>Talk to a person</button>}
-        {conversationId && <button type="button" className="ad-btn ad-btn-ghost" onClick={refreshConversation}>Refresh replies</button>}
-      </div>
-      {showOrder && <form onSubmit={placeOrder} style={{ display: "grid", gap: 8, marginTop: 12, padding: 12, border: "1px solid #e5e7eb", borderRadius: 12 }}>
-        <strong>Place an order</strong>
-        <select required value={orderForm.item_id} onChange={(e) => setOrderForm({ ...orderForm, item_id: e.target.value })}><option value="">Select an item</option>{catalog.map((item) => <option key={item.id} value={item.id} disabled={!item.in_stock}>{item.name} · {item.price}{item.unit ? ` / ${item.unit}` : ""}{item.in_stock ? "" : " · Out of stock"}</option>)}</select>
-        <input required type="number" min="0.001" step="0.001" placeholder="Quantity" value={orderForm.quantity} onChange={(e) => setOrderForm({ ...orderForm, quantity: e.target.value })} />
-        <select value={orderForm.fulfillment_type} onChange={(e) => setOrderForm({ ...orderForm, fulfillment_type: e.target.value })}><option value="delivery">Delivery</option><option value="collection">Collection / pickup</option></select>
-        {orderForm.fulfillment_type === "delivery" && <>
-          <input required placeholder="Full delivery address" value={orderForm.address} onChange={(e) => setOrderForm({ ...orderForm, address: e.target.value })} />
-          <input required placeholder="City" value={orderForm.city} onChange={(e) => setOrderForm({ ...orderForm, city: e.target.value })} />
-          <input required placeholder="Country" value={orderForm.country} onChange={(e) => setOrderForm({ ...orderForm, country: e.target.value })} />
-          <input type="number" step="any" placeholder="Latitude (required for radius zones)" value={orderForm.latitude} onChange={(e) => setOrderForm({ ...orderForm, latitude: e.target.value })} />
-          <input type="number" step="any" placeholder="Longitude (required for radius zones)" value={orderForm.longitude} onChange={(e) => setOrderForm({ ...orderForm, longitude: e.target.value })} />
-        </>}
-        <p style={{fontSize:13,margin:0}}>Order summary: {item?.name} × {orderForm.quantity} = {item ? (Number(item.price) * Number(orderForm.quantity)).toFixed(2) : "—"}. Delivery fee is calculated by the business system.</p>
-        <label style={{display:"flex",gap:8,alignItems:"center",fontSize:13}}><input type="checkbox" checked={confirmOrder} onChange={e=>setConfirmOrder(e.target.checked)}/> I confirm these items and fulfilment details.</label>
-        <button className="ad-btn ad-btn-primary" disabled={sending || !confirmOrder}>Confirm and submit order</button>
-      </form>}
-    </section>
-  </main>;
+
+      {/* Customer Contact Details Modal */}
+      {showContactModal && (
+        <div
+          style={{
+            position: "fixed",
+            inset: 0,
+            background: "rgba(15, 23, 42, 0.45)",
+            backdropFilter: "blur(4px)",
+            display: "grid",
+            placeItems: "center",
+            padding: "16px",
+            zIndex: 1000,
+          }}
+        >
+          <div
+            style={{
+              width: "100%",
+              maxWidth: "420px",
+              background: "#ffffff",
+              borderRadius: "20px",
+              padding: "24px",
+              boxShadow: "0 20px 40px rgba(0, 0, 0, 0.15)",
+              border: "1px solid #f5d0fe",
+            }}
+          >
+            <h3 style={{ margin: "0 0 6px 0", fontSize: "18px", color: "#0f172a" }}>
+              Customer Details
+            </h3>
+            <p style={{ margin: "0 0 16px 0", fontSize: "13px", color: "#64748b" }}>
+              These optional details help the voice agent associate your orders and contact you for deliveries.
+            </p>
+
+            <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
+              <div>
+                <label style={{ fontSize: "12px", fontWeight: "600", color: "#475569" }}>Full Name</label>
+                <input
+                  style={{
+                    width: "100%",
+                    boxSizing: "border-box",
+                    padding: "10px 12px",
+                    borderRadius: "10px",
+                    border: "1px solid #cbd5e1",
+                    marginTop: "4px",
+                    fontSize: "14px",
+                  }}
+                  placeholder="e.g. Kamran Ali"
+                  value={customer.name}
+                  onChange={(e) => setCustomer({ ...customer, name: e.target.value })}
+                />
+              </div>
+
+              <div>
+                <label style={{ fontSize: "12px", fontWeight: "600", color: "#475569" }}>Phone Number</label>
+                <input
+                  style={{
+                    width: "100%",
+                    boxSizing: "border-box",
+                    padding: "10px 12px",
+                    borderRadius: "10px",
+                    border: "1px solid #cbd5e1",
+                    marginTop: "4px",
+                    fontSize: "14px",
+                  }}
+                  placeholder="e.g. 03001234567"
+                  value={customer.phone}
+                  onChange={(e) => setCustomer({ ...customer, phone: e.target.value })}
+                />
+              </div>
+
+              <div>
+                <label style={{ fontSize: "12px", fontWeight: "600", color: "#475569" }}>Email (Optional)</label>
+                <input
+                  type="email"
+                  style={{
+                    width: "100%",
+                    boxSizing: "border-box",
+                    padding: "10px 12px",
+                    borderRadius: "10px",
+                    border: "1px solid #cbd5e1",
+                    marginTop: "4px",
+                    fontSize: "14px",
+                  }}
+                  placeholder="e.g. customer@example.com"
+                  value={customer.email}
+                  onChange={(e) => setCustomer({ ...customer, email: e.target.value })}
+                />
+              </div>
+            </div>
+
+            <div style={{ marginTop: "20px", display: "flex", justifyContent: "flex-end", gap: "8px" }}>
+              <button
+                type="button"
+                onClick={() => setShowContactModal(false)}
+                style={{
+                  background: "linear-gradient(135deg, #ff77ff 0%, #ec4899 100%)",
+                  border: "none",
+                  borderRadius: "10px",
+                  padding: "10px 20px",
+                  color: "#ffffff",
+                  fontSize: "13px",
+                  fontWeight: "700",
+                  cursor: "pointer",
+                }}
+              >
+                Done
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </main>
+  );
 }

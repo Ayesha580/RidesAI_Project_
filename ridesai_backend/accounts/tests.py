@@ -154,3 +154,118 @@ class EmailVerificationTests(TestCase):
         )
         self.assertEqual(retried.status_code, 200)
         self.assertTrue(retried.data["verification_email_sent"])
+
+    def test_login_case_insensitive_username_email_and_field_support(self):
+        self.user.email_verified = True
+        self.user.save(update_fields=["email_verified"])
+
+        # 1. Login with uppercase email
+        res1 = self.client.post(
+            "/api/accounts/login/",
+            {"username": "NEWCLIENT@EXAMPLE.COM", "password": "StrongPass123!"},
+            format="json",
+        )
+        self.assertEqual(res1.status_code, 200)
+        self.assertIn("access", res1.data)
+
+        # 2. Login with uppercase username
+        res2 = self.client.post(
+            "/api/accounts/login/",
+            {"username": "NEWCLIENT", "password": "StrongPass123!"},
+            format="json",
+        )
+        self.assertEqual(res2.status_code, 200)
+        self.assertIn("access", res2.data)
+
+        # 3. Login using 'email' field in payload
+        res3 = self.client.post(
+            "/api/accounts/login/",
+            {"email": "newclient@example.com", "password": "StrongPass123!"},
+            format="json",
+        )
+        self.assertEqual(res3.status_code, 200)
+        self.assertIn("access", res3.data)
+
+        # 4. Clear error for wrong password
+        res_wrong_pw = self.client.post(
+            "/api/accounts/login/",
+            {"username": "newclient", "password": "WrongPassword999!"},
+            format="json",
+        )
+        self.assertEqual(res_wrong_pw.status_code, 400)
+        self.assertIn("Invalid password", res_wrong_pw.data["error"])
+
+        # 5. Clear error for non-existent account
+        res_unknown = self.client.post(
+            "/api/accounts/login/",
+            {"username": "nonexistent_user_999@example.com", "password": "AnyPassword123!"},
+            format="json",
+        )
+        self.assertEqual(res_unknown.status_code, 400)
+        self.assertIn("No account found", res_unknown.data["error"])
+
+    def test_forgot_password_and_reset_password_flow(self):
+        from django.contrib.auth.tokens import default_token_generator
+        from django.utils.http import urlsafe_base64_encode
+        from django.utils.encoding import force_bytes
+
+        self.user.email_verified = True
+        self.user.save(update_fields=["email_verified"])
+
+        # 1. Request forgot password with valid email
+        mail.outbox = []
+        res_forgot = self.client.post(
+            "/api/accounts/forgot-password/",
+            {"email": "NEWCLIENT@EXAMPLE.COM"},  # Case-insensitive
+            format="json",
+        )
+        self.assertEqual(res_forgot.status_code, 200)
+        self.assertTrue(res_forgot.data["success"])
+        self.assertEqual(len(mail.outbox), 1)
+        self.assertIn("reset-password", mail.outbox[0].body)
+
+        uid = urlsafe_base64_encode(force_bytes(self.user.pk))
+        token = default_token_generator.make_token(self.user)
+
+        # 2. Reset password with short password fails
+        res_short = self.client.post(
+            "/api/accounts/reset-password/",
+            {"uid": uid, "token": token, "new_password": "short"},
+            format="json",
+        )
+        self.assertEqual(res_short.status_code, 400)
+        self.assertIn("at least 8 characters", res_short.data["error"])
+
+        # 3. Reset password with invalid token fails
+        res_invalid_token = self.client.post(
+            "/api/accounts/reset-password/",
+            {"uid": uid, "token": "invalid-token-123", "new_password": "NewBrandPass123!"},
+            format="json",
+        )
+        self.assertEqual(res_invalid_token.status_code, 400)
+
+        # 4. Reset password successfully
+        res_reset = self.client.post(
+            "/api/accounts/reset-password/",
+            {"uid": uid, "token": token, "new_password": "NewBrandPass123!"},
+            format="json",
+        )
+        self.assertEqual(res_reset.status_code, 200)
+        self.assertTrue(res_reset.data["success"])
+
+        # 5. Old password no longer works
+        res_old_login = self.client.post(
+            "/api/accounts/login/",
+            {"username": "newclient", "password": "StrongPass123!"},
+            format="json",
+        )
+        self.assertEqual(res_old_login.status_code, 400)
+
+        # 6. New password works immediately
+        res_new_login = self.client.post(
+            "/api/accounts/login/",
+            {"username": "newclient", "password": "NewBrandPass123!"},
+            format="json",
+        )
+        self.assertEqual(res_new_login.status_code, 200)
+        self.assertIn("access", res_new_login.data)

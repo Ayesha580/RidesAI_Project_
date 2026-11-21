@@ -5,9 +5,12 @@ from datetime import timedelta
 
 from django.conf import settings
 from django.contrib.auth import authenticate
+from django.contrib.auth.tokens import default_token_generator
 from django.core.mail import send_mail
 from django.db import IntegrityError, transaction
 from django.utils import timezone
+from django.utils.encoding import force_bytes, force_str
+from django.utils.http import urlsafe_base64_decode, urlsafe_base64_encode
 from rest_framework import status
 from rest_framework.parsers import FormParser, MultiPartParser
 from rest_framework.permissions import AllowAny, IsAuthenticated
@@ -359,30 +362,59 @@ class LoginAPIView(APIView):
     authentication_classes = []
 
     def post(self, request):
-        login_identifier = str(request.data.get("username") or "").strip()
-        # Accept either the registered username or the account email address.
-        if "@" in login_identifier:
-            matched_user = User.objects.filter(email__iexact=login_identifier).only("username").first()
-            if matched_user:
-                login_identifier = matched_user.username
+        login_identifier = str(request.data.get("username") or request.data.get("email") or "").strip()
+        password = str(request.data.get("password") or "")
 
-        user = authenticate(
-            request,
-            username=login_identifier,
-            password=request.data.get("password"),
-        )
-
-        if not user:
+        if not login_identifier or not password:
             return Response(
-                {"error": "Invalid username or password."},
+                {"error": "Please provide both username/email and password."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        if not user.is_active:
+        # Support login cleanly by either email, username, or full name (case-insensitive)
+        matched_user = (
+            User.objects.filter(email__iexact=login_identifier).first()
+            or User.objects.filter(username__iexact=login_identifier).first()
+            or User.objects.filter(email__istartswith=login_identifier + "@").first()
+        )
+        if not matched_user:
+            # Check if login_identifier matches first_name (e.g. "mashail munir") or split first + last
+            matched_user = User.objects.filter(first_name__iexact=login_identifier).first()
+            if not matched_user:
+                parts = login_identifier.split()
+                if len(parts) == 2:
+                    matched_user = User.objects.filter(first_name__iexact=parts[0], last_name__iexact=parts[1]).first()
+                elif len(parts) == 1:
+                    matched_user = User.objects.filter(first_name__iexact=parts[0]).first()
+
+        if not matched_user:
             return Response(
-                {"error": "This account has been deactivated."},
+                {"error": "No account found with this username or email."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if not matched_user.is_active:
+            return Response(
+                {"error": "This account has been deactivated. Please contact support."},
                 status=status.HTTP_403_FORBIDDEN,
             )
+
+        # Check password cleanly with specific error
+        if not matched_user.check_password(password):
+            return Response(
+                {"error": "Invalid password. Please check your credentials or reset your password."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        user = authenticate(
+            request,
+            username=matched_user.username,
+            password=password,
+        )
+
+        if not user:
+            user = matched_user
+
         if user.is_superuser or user.role == User.ROLE_SUPERADMIN:
             return Response({"error": "Platform-admin access is not part of the RidesAI business application."}, status=403)
 
@@ -395,6 +427,18 @@ class LoginAPIView(APIView):
                 },
                 status=status.HTTP_403_FORBIDDEN,
             )
+
+        # Ensure company is active/approved if user has a company
+        if user.company:
+            if not user.company.is_approved:
+                if user.company.is_manual_override or user.company.subscription_status == "active":
+                    user.company.is_approved = True
+                    user.company.save(update_fields=["is_approved"])
+                else:
+                    return Response(
+                        {"error": "Your company registration is pending approval by Rides Technologies admin."},
+                        status=status.HTTP_403_FORBIDDEN,
+                    )
 
         access_state, redirect = _resolve_redirect(user)
         refresh = RefreshToken.for_user(user)
@@ -419,6 +463,122 @@ class LoginAPIView(APIView):
                 **_business_info(user),
             },
         })
+
+
+class ForgotPasswordAPIView(APIView):
+    permission_classes = [AllowAny]
+    authentication_classes = []
+
+    def post(self, request):
+        email = str(request.data.get("email") or "").strip().lower()
+        if not email:
+            return Response(
+                {"error": "Please provide your email address."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # Case-insensitive lookup by email or username
+        user = (
+            User.objects.filter(email__iexact=email, is_active=True).first()
+            or User.objects.filter(username__iexact=email, is_active=True).first()
+        )
+
+        generic_response = {
+            "message": "If an account exists with this email, a password reset link has been sent.",
+            "success": True,
+        }
+
+        if not user:
+            return Response(generic_response, status=status.HTTP_200_OK)
+
+        # Generate secure uid and time-limited reset token
+        uid = urlsafe_base64_encode(force_bytes(user.pk))
+        token = default_token_generator.make_token(user)
+
+        frontend_base = getattr(settings, "SITE_URL", "http://localhost:5173").rstrip("/")
+        reset_url = f"{frontend_base}/reset-password/{uid}/{token}"
+
+        subject = "Reset Your RidesAI Password"
+        recipient_name = user.first_name or user.username
+        message = (
+            f"Hello {recipient_name},\n\n"
+            f"We received a request to reset the password for your RidesAI business account.\n"
+            f"Please click the link below to set a new password:\n\n"
+            f"{reset_url}\n\n"
+            f"This link is valid for 1 hour. If you did not request a password reset, you can safely ignore this email.\n\n"
+            f"— The Rides Technologies Team"
+        )
+
+        try:
+            send_mail(
+                subject,
+                message,
+                settings.DEFAULT_FROM_EMAIL,
+                [user.email],
+                fail_silently=False,
+            )
+            logger.info("Password reset email sent to %s", user.email)
+        except Exception as exc:
+            logger.warning("Failed to send password reset email to %s: %s", user.email, exc)
+            if getattr(settings, "DEBUG", False):
+                logger.info("[DEBUG] Password reset link for %s: %s", user.email, reset_url)
+
+        resp_data = dict(generic_response)
+        if getattr(settings, "DEBUG", False):
+            resp_data["debug_reset_url"] = reset_url
+            resp_data["debug_uid"] = uid
+            resp_data["debug_token"] = token
+
+        return Response(resp_data, status=status.HTTP_200_OK)
+
+
+class ResetPasswordAPIView(APIView):
+    permission_classes = [AllowAny]
+    authentication_classes = []
+
+    def post(self, request):
+        uid = str(request.data.get("uid") or "").strip()
+        token = str(request.data.get("token") or "").strip()
+        new_password = str(request.data.get("new_password") or "").strip()
+
+        if not uid or not token or not new_password:
+            return Response(
+                {"error": "uid, token, and new_password are required."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if len(new_password) < 8:
+            return Response(
+                {"error": "Password must be at least 8 characters long."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            user_pk = force_str(urlsafe_base64_decode(uid))
+            user = User.objects.filter(pk=user_pk, is_active=True).first()
+        except Exception:
+            user = None
+
+        if not user or not default_token_generator.check_token(user, token):
+            return Response(
+                {"error": "Invalid or expired password reset link. Please request a new one."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        user.set_password(new_password)
+        if hasattr(user, "must_change_password"):
+            user.must_change_password = False
+        user.save()
+
+        logger.info("Password successfully reset for user %s (%s)", user.id, user.email)
+
+        return Response(
+            {
+                "message": "Your password has been successfully reset. You can now sign in with your new password.",
+                "success": True,
+            },
+            status=status.HTTP_200_OK,
+        )
 
 
 class MeAPIView(APIView):
