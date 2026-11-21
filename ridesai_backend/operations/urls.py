@@ -2,7 +2,7 @@ from django.urls import path
 from .views import (OrderCatalogAPIView, OrderListCreateAPIView, OrderStatusAPIView, RiderDeliveryAPIView,
                     DeliveryAssignAPIView, DeliveryListAPIView, DeliveryRiderListAPIView, AgentSettingsAPIView,
                     AgentTogglePauseAPIView, AgentChatAPIView, AgentConversationListAPIView, OrderAssignAPIView,
-                    OrderAutoAssignRiderAPIView,
+                    OrderAutoAssignRiderAPIView, OwnerBusinessAssistantAPIView,
                     PublicAgentChatAPIView, PublicAgentCatalogAPIView, PublicAgentConversationAPIView,
                     PublicAgentWidgetScriptAPIView, WhatsAppWebhookAPIView, WhatsAppSettingsAPIView)
 from .calling_views import IncomingAICallWebhookView
@@ -35,4 +35,5 @@ urlpatterns = [
     path("widget/<str:public_id>.js", PublicAgentWidgetScriptAPIView.as_view(), name="public-agent-widget-js-str"),
     path("public/agent/<uuid:public_id>/widget.js", PublicAgentWidgetScriptAPIView.as_view(), name="public-agent-widget-js-alt"),
     path("agent/conversations/", AgentConversationListAPIView.as_view(), name="agent-conversations"),
+    path("owner/assistant/", OwnerBusinessAssistantAPIView.as_view(), name="owner-business-assistant"),
 ]

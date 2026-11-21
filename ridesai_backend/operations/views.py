@@ -1390,4 +1390,36 @@ class OrderAutoAssignRiderAPIView(BusinessAPIView):
         }, status=200)
 
 
+class OwnerBusinessAssistantAPIView(APIView):
+    """
+    POST /api/operations/owner/assistant/
+    Authenticated Owner AI Business Manager (Voice + Text Assistant).
+    Strict multi-tenant isolation enforced against request.user.company.
+    """
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        company = getattr(request.user, "company", None)
+        if not company:
+            return Response({"detail": "User has no associated business company."}, status=403)
+
+        from operations.owner_assistant import process_owner_assistant_query
+
+        message = request.data.get("message")
+        audio_base64 = request.data.get("audio_base64")
+        history = request.data.get("history") or []
+        want_voice_reply = bool(request.data.get("want_voice_reply", False))
+
+        result = process_owner_assistant_query(
+            company=company,
+            owner_user=request.user,
+            message=message,
+            audio_base64=audio_base64,
+            history=history,
+            want_voice_reply=want_voice_reply,
+        )
+        return Response(result, status=200)
+
+
+
 

@@ -5,6 +5,7 @@ import { useAuth } from "../../context/AuthContext";
 import { moduleIcon } from "../../constants/modules";
 import OwnerSidebar from "./OwnerSidebar";
 import OwnerTopbar from "./OwnerTopbar";
+import OwnerBusinessAssistant from "../../operations/components/OwnerBusinessAssistant";
 import "../../styles/landing.css";
 import "../../styles/admin.css";
 import "../styles/owner.css";
@@ -105,6 +106,7 @@ export default function OwnerLayout({ title, subtitle, action, locked = false, c
   const navigate = useNavigate();
   const [menu, setMenu] = useState(false);
   const [collapsed, setCollapsed] = useState(false);
+  const [aiDrawerOpen, setAiDrawerOpen] = useState(false);
 
   const groups = useMemo(() => {
     const business = (user?.owner_nav || []).map((m) => ({
@@ -191,6 +193,65 @@ export default function OwnerLayout({ title, subtitle, action, locked = false, c
           </div>
         </main>
       </div>
+
+      {/* Floating Owner AI Business Manager Button */}
+      {!aiDrawerOpen && (
+        <button
+          onClick={() => setAiDrawerOpen(true)}
+          title="Ask Business AI Manager (Voice & Text Copilot)"
+          style={{
+            position: "fixed",
+            bottom: 24,
+            right: 24,
+            zIndex: 998,
+            background: "#ff77ff",
+            color: "#ffffff",
+            border: "none",
+            borderRadius: 30,
+            padding: "12px 20px",
+            fontWeight: 750,
+            fontSize: 13.5,
+            display: "flex",
+            alignItems: "center",
+            gap: 8,
+            cursor: "pointer",
+            boxShadow: "0 6px 22px rgba(255, 119, 255, 0.45)",
+            transition: "all 0.2s ease",
+          }}
+        >
+          <span style={{ fontSize: 18 }}>💼</span>
+          <span>Ask Business AI</span>
+        </button>
+      )}
+
+      {/* Slide-over AI Business Assistant Drawer */}
+      {aiDrawerOpen && (
+        <div
+          style={{
+            position: "fixed",
+            inset: 0,
+            background: "rgba(35, 20, 40, 0.45)",
+            backdropFilter: "blur(3px)",
+            zIndex: 9999,
+            display: "flex",
+            justifyContent: "flex-end",
+          }}
+          onClick={() => setAiDrawerOpen(false)}
+        >
+          <div
+            style={{
+              width: "100%",
+              maxWidth: 520,
+              height: "100vh",
+              background: "#ffffff",
+              boxShadow: "-8px 0 35px rgba(0, 0, 0, 0.25)",
+            }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <OwnerBusinessAssistant isDrawer={true} onClose={() => setAiDrawerOpen(false)} />
+          </div>
+        </div>
+      )}
     </>
   );
 }

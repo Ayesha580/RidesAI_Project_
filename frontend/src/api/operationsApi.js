@@ -19,6 +19,7 @@ export const operationsApi = {
   whatsappConnectStatus: () => api.get("/operations/whatsapp/connect/"),
   whatsappConnectGenerate: () => api.post("/operations/whatsapp/connect/"),
   autoAssignRider: (orderId) => api.post(`/operations/orders/${orderId}/auto-assign-rider/`),
+  ownerAssistant: (data) => api.post("/operations/owner/assistant/", data),
 };
 
 export const dashboardApi = {

@@ -4106,6 +4106,229 @@ class RestaurantOperationsPolishTests(TestCase):
         self.assertIn("nut allergy", payload["order"]["notes"])
 
 
+class OwnerBusinessAssistantTests(TestCase):
+    def setUp(self):
+        self.client = APIClient()
+        self.company_a = Company.objects.create(
+            name="Alpha Burgers",
+            business_type="restaurant",
+            is_approved=True,
+            subscription_status="active",
+            is_manual_override=True,
+            agent_enabled=True,
+            message_limit=100,
+            messages_used=25,
+            is_ai_paused=False,
+            address="Faisalabad, Pakistan",
+        )
+        self.company_b = Company.objects.create(
+            name="Beta Pharmacy",
+            business_type="pharmacy",
+            is_approved=True,
+            subscription_status="active",
+            is_manual_override=True,
+            agent_enabled=True,
+            message_limit=50,
+            messages_used=5,
+            is_ai_paused=True,
+            address="Lahore, Pakistan",
+        )
+
+        self.owner_a = User.objects.create_user(
+            username="owner_alpha",
+            email="owner_alpha@example.com",
+            password="password123",
+            role=User.ROLE_OWNER,
+            company=self.company_a,
+        )
+        self.owner_b = User.objects.create_user(
+            username="owner_beta",
+            email="owner_beta@example.com",
+            password="password123",
+            role=User.ROLE_OWNER,
+            company=self.company_b,
+        )
+
+        # Employees for Company A
+        self.staff_a1 = User.objects.create_user(
+            username="staff_a1",
+            first_name="Ahmed",
+            password="password123",
+            role=User.ROLE_STAFF,
+            company=self.company_a,
+            is_active=True,
+        )
+        self.rider_a1 = User.objects.create_user(
+            username="rider_a1",
+            first_name="Bilal",
+            password="password123",
+            role=User.ROLE_RIDER,
+            company=self.company_a,
+            is_active=True,
+        )
+        self.inactive_a = User.objects.create_user(
+            username="inactive_a",
+            first_name="Inactive Staff",
+            password="password123",
+            role=User.ROLE_STAFF,
+            company=self.company_a,
+            is_active=False,
+        )
+
+        # Employees for Company B
+        self.staff_b1 = User.objects.create_user(
+            username="staff_b1",
+            first_name="Hamza",
+            password="password123",
+            role=User.ROLE_STAFF,
+            company=self.company_b,
+            is_active=True,
+        )
+
+        # Orders for Company A
+        self.order_a1 = Order.objects.create(
+            company=self.company_a,
+            order_number="ORD-A1",
+            customer_name="Customer 1",
+            customer_phone="03001112233",
+            delivery_address="Peoples Colony",
+            status=Order.STATUS_CONFIRMED,
+            subtotal=Decimal("1000.00"),
+            total=Decimal("1000.00"),
+        )
+        self.order_a2 = Order.objects.create(
+            company=self.company_a,
+            order_number="ORD-A2",
+            customer_name="Customer 2",
+            customer_phone="03004445566",
+            delivery_address="Peoples Colony",
+            status=Order.STATUS_DELIVERED,
+            subtotal=Decimal("1500.00"),
+            total=Decimal("1500.00"),
+            assigned_rider=self.rider_a1,
+        )
+
+        # Orders for Company B
+        self.order_b1 = Order.objects.create(
+            company=self.company_b,
+            order_number="ORD-B1",
+            customer_name="Customer B",
+            customer_phone="03007778899",
+            delivery_address="Gulberg",
+            status=Order.STATUS_CONFIRMED,
+            subtotal=Decimal("5000.00"),
+            total=Decimal("5000.00"),
+        )
+
+    def test_unauthenticated_request_returns_401(self):
+        res = self.client.post("/api/operations/owner/assistant/", {"message": "hello"})
+        self.assertEqual(res.status_code, 401)
+
+    def test_get_employees_summary_multi_tenant_isolation(self):
+        from operations.owner_assistant import execute_get_employees_summary
+
+        data_a = execute_get_employees_summary(self.company_a)
+        self.assertEqual(data_a["total_employees"], 3)
+        self.assertEqual(data_a["active_employees"], 2)
+        self.assertEqual(data_a["inactive_employees"], 1)
+        names_a = [e["name"] for e in data_a["employees"]]
+        self.assertIn("Ahmed", names_a)
+        self.assertIn("Bilal", names_a)
+        self.assertNotIn("Hamza", names_a)  # Belongs to Company B
+
+        data_b = execute_get_employees_summary(self.company_b)
+        self.assertEqual(data_b["total_employees"], 1)
+        self.assertEqual(data_b["active_employees"], 1)
+        names_b = [e["name"] for e in data_b["employees"]]
+        self.assertIn("Hamza", names_b)
+        self.assertNotIn("Ahmed", names_b)
+
+    def test_get_sales_and_orders_summary_multi_tenant_isolation(self):
+        from operations.owner_assistant import execute_get_sales_and_orders_summary
+
+        sales_a = execute_get_sales_and_orders_summary(self.company_a, period="all")
+        self.assertEqual(sales_a["total_orders"], 2)
+        self.assertEqual(sales_a["total_sales_pkr"], 2500.0)
+        self.assertEqual(sales_a["delivered_orders"], 1)
+        self.assertEqual(sales_a["pending_orders"], 1)
+
+        sales_b = execute_get_sales_and_orders_summary(self.company_b, period="all")
+        self.assertEqual(sales_b["total_orders"], 1)
+        self.assertEqual(sales_b["total_sales_pkr"], 5000.0)
+
+    def test_get_inventory_and_catalog_summary(self):
+        from operations.owner_assistant import execute_get_inventory_and_catalog_summary
+
+        item = CatalogItem.objects.create(
+            company=self.company_a,
+            name="Chicken Burger",
+            price=Decimal("450.00"),
+            is_available=True,
+        )
+        Inventory.objects.create(
+            company=self.company_a,
+            item=item,
+            quantity=2,
+            is_unlimited=False,
+            low_stock_threshold=5,
+        )
+
+        data = execute_get_inventory_and_catalog_summary(self.company_a)
+        self.assertEqual(data["total_catalog_items"], 1)
+        self.assertEqual(data["low_stock_count"], 1)
+        self.assertEqual(data["low_stock_items"][0]["item_name"], "Chicken Burger")
+
+    def test_get_deliveries_and_riders_status(self):
+        from operations.owner_assistant import execute_get_deliveries_and_riders_status
+
+        data = execute_get_deliveries_and_riders_status(self.company_a)
+        self.assertEqual(data["total_active_riders"], 1)
+        self.assertEqual(data["unassigned_orders_count"], 1)
+        self.assertEqual(data["riders"][0]["name"], "Bilal")
+        self.assertEqual(data["riders"][0]["delivered_orders"], 1)
+
+    def test_get_billing_and_ai_usage(self):
+        from operations.owner_assistant import execute_get_billing_and_ai_usage
+
+        billing_data = execute_get_billing_and_ai_usage(self.company_a)
+        self.assertEqual(billing_data["messages_used"], 25)
+        self.assertEqual(billing_data["message_limit"], 100)
+        self.assertFalse(billing_data["monthly_limit_reached"])
+        self.assertFalse(billing_data["is_ai_paused"])
+
+    def test_toggle_customer_ai_agent(self):
+        from operations.owner_assistant import execute_toggle_customer_ai_agent
+
+        # Pause
+        res_pause = execute_toggle_customer_ai_agent(self.company_a, pause=True)
+        self.assertTrue(res_pause["success"])
+        self.assertTrue(res_pause["is_ai_paused"])
+        self.company_a.refresh_from_db()
+        self.assertTrue(self.company_a.is_ai_paused)
+
+        # Resume
+        res_resume = execute_toggle_customer_ai_agent(self.company_a, pause=False)
+        self.assertTrue(res_resume["success"])
+        self.assertFalse(res_resume["is_ai_paused"])
+        self.company_a.refresh_from_db()
+        self.assertFalse(self.company_a.is_ai_paused)
+
+    def test_owner_assistant_api_endpoint(self):
+        self.client.force_authenticate(user=self.owner_a)
+        res = self.client.post(
+            "/api/operations/owner/assistant/",
+            {"message": "Kitne employees hain hamare paas?"},
+            format="json",
+        )
+        self.assertEqual(res.status_code, 200)
+        self.assertIn("transcript", res.data)
+        self.assertIn("reply", res.data)
+        self.assertTrue("3" in res.data["reply"])
+        self.assertTrue("Ahmed" in res.data["reply"] or "Bilal" in res.data["reply"] or "Total Staff" in res.data["reply"])
+
+
+
+
 
 
 
