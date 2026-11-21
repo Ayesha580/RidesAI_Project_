@@ -415,6 +415,23 @@ def execute_create_order(
     if not delivery_address or not delivery_address.strip():
         return {"success": False, "error": "Delivery address is required to place an order."}
 
+    # Auto Location Fallback Validation: check against effective service areas
+    effective_areas = get_effective_service_areas(company)
+    if effective_areas:
+        PAKISTAN_CITIES = [
+            "Karachi", "Lahore", "Faisalabad", "Rawalpindi", "Gujranwala", "Peshawar",
+            "Multan", "Islamabad", "Quetta", "Sialkot", "Hyderabad", "Bahawalpur", "Sargodha"
+        ]
+        addr_lower = delivery_address.lower()
+        effective_lower = [a.lower() for a in effective_areas]
+        for city in PAKISTAN_CITIES:
+            c_low = city.lower()
+            if c_low in addr_lower and not any(c_low in eff or eff in c_low for eff in effective_lower):
+                return {
+                    "success": False,
+                    "error": f"We currently only deliver within {', '.join(effective_areas)}. Unfortunately, delivery to {city} is not available.",
+                }
+
     clean_name = (customer_name or "").strip()
     clean_phone = (customer_phone or "").strip()
     clean_notes = (notes or "").strip()
@@ -877,6 +894,37 @@ def execute_submit_return_request(
 # Business Context & Prompt Building (Multi-Tenant Hardened)
 # ============================================================================
 
+def get_effective_service_areas(company: Optional[Company]) -> List[str]:
+    """
+    Returns active ServiceArea cities. If no ServiceArea is configured, automatically
+    falls back to the company's registered locations or address so orders are accepted within that city.
+    """
+    if not company:
+        return []
+    try:
+        zones = list(company.service_areas.filter(is_active=True).exclude(city="").values_list("city", flat=True))
+        if zones:
+            return list(dict.fromkeys([z.strip() for z in zones if z and z.strip()]))
+
+        # Fallback 1: BusinessLocation city
+        loc_cities = list(company.locations.filter(is_active=True).exclude(city="").values_list("city", flat=True))
+        if loc_cities:
+            return list(dict.fromkeys([c.strip() for c in loc_cities if c and c.strip()]))
+
+        # Fallback 2: Company address
+        if company.address and company.address.strip():
+            addr = company.address.strip()
+            segments = [s.strip() for s in addr.split(",") if s.strip()]
+            countries = {"pakistan", "pk", "usa", "us", "uk", "uae", "canada"}
+            cities = [s for s in segments if s.lower() not in countries]
+            if cities:
+                return [cities[0]]
+            return [addr]
+    except Exception:
+        pass
+    return []
+
+
 def get_business_context_for_company(company: Optional[Company]) -> Dict[str, Any]:
     """
     Constructs the grounded tenant business context (company, catalog, FAQs, hours)
@@ -922,13 +970,8 @@ def get_business_context_for_company(company: Optional[Company]) -> Dict[str, An
         )
         context["hours"] = hours
 
-        # Fetch active delivery service areas / zones
-        zones = []
-        try:
-            zones = list(company.service_areas.filter(is_active=True).values_list("city", flat=True))
-        except Exception:
-            pass
-        context["delivery_zones"] = [z for z in zones if z]
+        # Fetch active delivery service areas / zones with automatic fallback
+        context["delivery_zones"] = get_effective_service_areas(company)
     except Exception as e:
         logger.warning(f"[WhatsApp Agent] Could not load DB business context for company {company.id}: {e}", exc_info=True)
 
@@ -1103,6 +1146,10 @@ STRICT TOOL CALLING RULES:
    - Under NO circumstances loop or ask "What would you like to order?" if the customer has already stated the items in prior turns. Maintain full multi-turn context and combine the remembered items with the provided address and contact details to call `create_order`.
    - When the customer provides their contact info and confirms (e.g., 'hanjee', 'hanjee krden', 'ji kar dein', 'haan', 'done', 'ok', 'confirm', 'yes', 'bhej do'): IMMEDIATELY call `create_order` using the items, name, phone, and address from the conversation history, and return the confirmation.
    - After `create_order` succeeds, provide a cheerful confirmation containing the *order number*, items, total in Pakistani Rupees (e.g., *Total:* Rs. 850.00), and estimated delivery time (30-45 mins).
+   - DELIVERY AREA VALIDATION:
+     * Our active delivery service areas are: {delivery_zones_str}.
+     * Accept delivery addresses in or near {delivery_zones_str} naturally.
+     * If a customer specifies a different city (outside {delivery_zones_str}), politely inform them that we currently only deliver within {delivery_zones_str}.
 3. Tool `check_order_status`:
    - Use when the customer asks about order status, tracking, or previous orders.
 
@@ -1665,6 +1712,39 @@ def process_incoming_whatsapp_message(
             }
 
         company_obj = context.get("company")
+
+        # Owner AI Pause Check (Manual Takeover):
+        if getattr(company_obj, "is_ai_paused", False):
+            logger.info(
+                f"[WhatsApp Agent] Company '{company_obj.name}' AI Agent is paused by owner. "
+                f"Saving customer message from {sender_phone} to AgentConversation for manual response."
+            )
+            try:
+                clean_name = customer_name if customer_name and customer_name != "Valued Customer" else "Customer"
+                conv, _ = AgentConversation.objects.get_or_create(
+                    company=company_obj,
+                    customer_phone=sender_phone,
+                    defaults={"customer_name": clean_name, "status": "human"},
+                )
+                conv.status = "human"
+                conv.save(update_fields=["status", "updated_at"])
+                is_voice_msg = (msg_type == "audio" or bool(media_id) or bool(audio_bytes))
+                AgentMessage.objects.create(
+                    conversation=conv,
+                    role="user",
+                    content=message_text or ("[Voice Message]" if is_voice_msg else "[Customer Message]"),
+                    metadata={"is_voice": is_voice_msg, "ai_paused": True},
+                )
+            except Exception as e:
+                logger.warning(f"[WhatsApp Agent] Failed to save paused incoming message: {e}")
+
+            return {
+                "success": True,
+                "ai_paused": True,
+                "reply_text": None,
+                "message": "AI Agent is paused by owner; customer message logged for manual response.",
+            }
+
         from billing.services import get_access_state, consume_company_message
         access_state = get_access_state(company_obj)
         if access_state != "ok":

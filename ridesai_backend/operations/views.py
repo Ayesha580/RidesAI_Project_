@@ -11,6 +11,7 @@ from django.db import transaction
 from django.http import HttpResponse, HttpResponseForbidden, JsonResponse
 from django.shortcuts import get_object_or_404
 from django.utils.decorators import method_decorator
+from django.views.decorators.clickjacking import xframe_options_exempt
 from django.views.decorators.csrf import csrf_exempt
 from rest_framework.permissions import IsAuthenticated, AllowAny
 from rest_framework.throttling import AnonRateThrottle
@@ -329,11 +330,16 @@ class AgentSettingsAPIView(BusinessAPIView):
     def get(self, request):
         if request.user.role != User.ROLE_OWNER:
             return Response({"detail": "Only the business owner can configure the AI Agent."}, status=403)
-        return Response({"enabled": self.company.agent_enabled,
-                         "allowed_actions": self.company.agent_allowed_actions,
-                         "greeting": self.company.agent_greeting, "tone": self.company.agent_tone,
-                         "support_phone": self.company.agent_support_phone, "support_email": self.company.agent_support_email,
-                         "public_id": str(self.company.agent_public_id)})
+        return Response({
+            "enabled": self.company.agent_enabled,
+            "is_ai_paused": self.company.is_ai_paused,
+            "allowed_actions": self.company.agent_allowed_actions,
+            "greeting": self.company.agent_greeting,
+            "tone": self.company.agent_tone,
+            "support_phone": self.company.agent_support_phone,
+            "support_email": self.company.agent_support_email,
+            "public_id": str(self.company.agent_public_id),
+        })
 
     def patch(self, request):
         if request.user.role != User.ROLE_OWNER:
@@ -343,6 +349,8 @@ class AgentSettingsAPIView(BusinessAPIView):
         if set(actions) - allowed:
             return Response({"allowed_actions": "Contains unsupported actions."}, status=400)
         self.company.agent_enabled = bool(request.data.get("enabled", self.company.agent_enabled))
+        if "is_ai_paused" in request.data:
+            self.company.is_ai_paused = bool(request.data["is_ai_paused"])
         self.company.agent_allowed_actions = actions
         self.company.agent_greeting = str(request.data.get("greeting", self.company.agent_greeting))[:2000]
         tone = request.data.get("tone", self.company.agent_tone)
@@ -351,11 +359,36 @@ class AgentSettingsAPIView(BusinessAPIView):
         self.company.agent_tone = tone
         self.company.agent_support_phone = str(request.data.get("support_phone", self.company.agent_support_phone))[:30]
         self.company.agent_support_email = str(request.data.get("support_email", self.company.agent_support_email))[:254]
-        self.company.save(update_fields=["agent_enabled", "agent_allowed_actions", "agent_greeting", "agent_tone", "agent_support_phone", "agent_support_email"])
-        return Response({"enabled": self.company.agent_enabled, "allowed_actions": actions,
-                         "greeting": self.company.agent_greeting, "tone": self.company.agent_tone,
-                         "support_phone": self.company.agent_support_phone, "support_email": self.company.agent_support_email,
-                         "public_id": str(self.company.agent_public_id)})
+        self.company.save(update_fields=[
+            "agent_enabled", "is_ai_paused", "agent_allowed_actions", "agent_greeting",
+            "agent_tone", "agent_support_phone", "agent_support_email"
+        ])
+        return Response({
+            "enabled": self.company.agent_enabled,
+            "is_ai_paused": self.company.is_ai_paused,
+            "allowed_actions": actions,
+            "greeting": self.company.agent_greeting,
+            "tone": self.company.agent_tone,
+            "support_phone": self.company.agent_support_phone,
+            "support_email": self.company.agent_support_email,
+            "public_id": str(self.company.agent_public_id),
+        })
+
+
+class AgentTogglePauseAPIView(BusinessAPIView):
+    def post(self, request):
+        if request.user.role != User.ROLE_OWNER:
+            return Response({"detail": "Only the business owner can pause or resume the AI Agent."}, status=403)
+        if "is_ai_paused" in request.data:
+            self.company.is_ai_paused = bool(request.data["is_ai_paused"])
+        else:
+            self.company.is_ai_paused = not self.company.is_ai_paused
+        self.company.save(update_fields=["is_ai_paused"])
+        return Response({
+            "success": True,
+            "is_ai_paused": self.company.is_ai_paused,
+            "message": "AI Voice Agent paused." if self.company.is_ai_paused else "AI Voice Agent resumed."
+        })
 
 
 class AgentChatAPIView(BusinessAPIView):
@@ -541,14 +574,16 @@ class PublicAgentThrottle(AnonRateThrottle):
             return "120/minute"
 
 
+@method_decorator(xframe_options_exempt, name="dispatch")
 class PublicAgentCatalogAPIView(APIView):
     permission_classes = [AllowAny]
     authentication_classes = []
     throttle_classes = [PublicAgentThrottle]
 
     def get(self, request, public_id):
-        from companies.models import Company
+        from companies.models import Company, ServiceArea
         from billing.services import get_access_state, check_company_monthly_limit
+        from operations.whatsapp_agent import get_effective_service_areas
         company = get_object_or_404(Company, agent_public_id=public_id)
         if not company.agent_enabled or get_access_state(company) != "ok":
             return Response({"detail": "This business catalogue is not currently available."}, status=404)
@@ -562,8 +597,17 @@ class PublicAgentCatalogAPIView(APIView):
                 "price": str(item.price), "unit": item.unit,
                 "in_stock": (inventory.is_unlimited or inventory.quantity > 0) if inventory else True,
             })
-        from companies.models import ServiceArea
         areas = list(ServiceArea.objects.filter(company=company, is_active=True).values("name", "area_type", "city", "country", "radius_km", "delivery_fee"))
+        if not areas:
+            for zone_city in get_effective_service_areas(company):
+                areas.append({
+                    "name": zone_city,
+                    "area_type": "city",
+                    "city": zone_city,
+                    "country": "Pakistan",
+                    "radius_km": None,
+                    "delivery_fee": "0.00",
+                })
         return Response({
             "business": company.name,
             "items": result,
@@ -573,9 +617,11 @@ class PublicAgentCatalogAPIView(APIView):
             "monthly_limit_reached": not has_quota,
             "messages_used": company.messages_used,
             "message_limit": company.message_limit,
+            "ai_paused": getattr(company, "is_ai_paused", False),
         })
 
 
+@method_decorator(xframe_options_exempt, name="dispatch")
 class PublicAgentChatAPIView(APIView):
     permission_classes = [AllowAny]
     authentication_classes = []
@@ -597,6 +643,17 @@ class PublicAgentChatAPIView(APIView):
                     "message": "This business assistant is not currently available.",
                 },
                 status=404,
+            )
+
+        # Owner AI Pause Check
+        if getattr(company, "is_ai_paused", False):
+            return Response(
+                {
+                    "error": "ai_paused",
+                    "detail": "This business's AI Voice Agent is currently paused by the owner. Please contact the business directly.",
+                    "message": "This business's AI Voice Agent is currently paused by the owner. Please contact the business directly.",
+                },
+                status=403,
             )
 
         # 1. Billing access state check BEFORE calling STT/LLM/TTS
@@ -1147,4 +1204,118 @@ class WhatsAppSettingsAPIView(BusinessAPIView):
             "message": "WhatsApp settings updated successfully.",
             "data": updated,
         }, status=200)
+
+
+@method_decorator(xframe_options_exempt, name="dispatch")
+class PublicAgentWidgetScriptAPIView(APIView):
+    permission_classes = [AllowAny]
+    authentication_classes = []
+
+    def get(self, request, public_id):
+        from companies.models import Company
+        company = get_object_or_404(Company, agent_public_id=public_id)
+
+        frontend_url = os.environ.get("FRONTEND_URL") or getattr(settings, "FRONTEND_URL", None) or getattr(settings, "SITE_URL", "http://localhost:5173")
+        frontend_url = frontend_url.rstrip("/")
+        iframe_url = f"{frontend_url}/agent/{company.agent_public_id}?embed=1"
+        safe_biz_name = (company.name or "Store").replace("\\", "\\\\").replace('"', '\\"').replace("'", "\\'")
+
+        js_content = f"""(function() {{
+    if (window.__RIDES_AI_WIDGET_LOADED__) return;
+    window.__RIDES_AI_WIDGET_LOADED__ = true;
+
+    var iframeUrl = "{iframe_url}";
+    var bizName = "{safe_biz_name}";
+
+    var container = document.createElement("div");
+    container.id = "rides-ai-widget-root";
+    container.style.cssText = "position:fixed;bottom:20px;right:20px;z-index:999999;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;";
+
+    var tooltip = document.createElement("div");
+    tooltip.id = "rides-ai-widget-tooltip";
+    tooltip.innerHTML = '<span>Talk to ' + bizName + ' AI 🎤</span>';
+    tooltip.style.cssText = "position:absolute;bottom:70px;right:0;background:#ffffff;color:#1e293b;padding:8px 14px;border-radius:20px;box-shadow:0 4px 16px rgba(0,0,0,0.12);border:1px solid #ff77ff;font-size:13px;font-weight:600;white-space:nowrap;pointer-events:none;transition:all 0.3s ease;opacity:1;transform:translateY(0);display:flex;align-items:center;gap:6px;";
+
+    var btn = document.createElement("button");
+    btn.id = "rides-ai-widget-btn";
+    btn.setAttribute("aria-label", "Open " + bizName + " Voice Assistant");
+    btn.innerHTML = '<span id="rides-ai-icon-mic" style="font-size:26px;line-height:1;">🎤</span><span id="rides-ai-icon-close" style="font-size:24px;line-height:1;display:none;color:#ffffff;">✕</span>';
+    btn.style.cssText = "width:60px;height:60px;border-radius:50%;background:#ff77ff;border:none;box-shadow:0 6px 20px rgba(255,119,255,0.45);cursor:pointer;display:flex;align-items:center;justify-content:center;transition:transform 0.2s cubic-bezier(0.34,1.56,0.64,1),box-shadow 0.2s;outline:none;";
+    btn.onmouseenter = function() {{ btn.style.transform = "scale(1.08)"; }};
+    btn.onmouseleave = function() {{ btn.style.transform = "scale(1)"; }};
+
+    var popup = document.createElement("div");
+    popup.id = "rides-ai-widget-popup";
+    popup.style.cssText = "display:none;position:absolute;bottom:75px;right:0;width:380px;height:600px;max-width:calc(100vw - 32px);max-height:calc(100vh - 100px);background:#ffffff;border-radius:20px;box-shadow:0 12px 40px rgba(0,0,0,0.18);border:1px solid rgba(255,119,255,0.3);overflow:hidden;flex-direction:column;transition:opacity 0.25s ease,transform 0.25s ease;transform:translateY(10px);opacity:0;";
+
+    var styleTag = document.createElement("style");
+    styleTag.textContent = "@media (max-width: 480px) {{ #rides-ai-widget-popup {{ width: 100vw !important; height: 92vh !important; max-width: 100vw !important; max-height: 92vh !important; bottom: 0 !important; right: 0 !important; border-radius: 20px 20px 0 0 !important; position: fixed !important; }} #rides-ai-widget-root {{ bottom: 16px !important; right: 16px !important; }} }}";
+    document.head.appendChild(styleTag);
+
+    var header = document.createElement("div");
+    header.style.cssText = "height:48px;background:linear-gradient(135deg,#ff77ff 0%,#ff55bb 100%);color:#ffffff;display:flex;align-items:center;justify-content:space-between;padding:0 16px;box-shadow:0 2px 8px rgba(0,0,0,0.06);";
+    header.innerHTML = '<div style="display:flex;align-items:center;gap:8px;font-weight:600;font-size:14px;"><span>🎤</span><span>' + bizName + '</span></div>';
+
+    var closeHeaderBtn = document.createElement("button");
+    closeHeaderBtn.innerHTML = "✕";
+    closeHeaderBtn.setAttribute("aria-label", "Close Voice Assistant");
+    closeHeaderBtn.style.cssText = "background:none;border:none;color:#ffffff;font-size:18px;cursor:pointer;padding:4px 8px;border-radius:4px;";
+    header.appendChild(closeHeaderBtn);
+
+    var iframe = document.createElement("iframe");
+    iframe.src = iframeUrl;
+    iframe.allow = "microphone; autoplay";
+    iframe.style.cssText = "width:100%;height:calc(100% - 48px);border:none;background:#fafafa;";
+
+    popup.appendChild(header);
+    popup.appendChild(iframe);
+
+    container.appendChild(tooltip);
+    container.appendChild(popup);
+    container.appendChild(btn);
+    document.body.appendChild(container);
+
+    var isOpen = false;
+    function setWidgetOpen(open) {{
+        isOpen = open;
+        var micIcon = document.getElementById("rides-ai-icon-mic");
+        var closeIcon = document.getElementById("rides-ai-icon-close");
+        if (isOpen) {{
+            popup.style.display = "flex";
+            setTimeout(function() {{
+                popup.style.transform = "translateY(0)";
+                popup.style.opacity = "1";
+            }}, 10);
+            if (tooltip) tooltip.style.display = "none";
+            if (micIcon) micIcon.style.display = "none";
+            if (closeIcon) closeIcon.style.display = "block";
+            btn.style.background = "#475569";
+        }} else {{
+            popup.style.transform = "translateY(10px)";
+            popup.style.opacity = "0";
+            setTimeout(function() {{
+                popup.style.display = "none";
+            }}, 250);
+            if (micIcon) micIcon.style.display = "block";
+            if (closeIcon) closeIcon.style.display = "none";
+            btn.style.background = "#ff77ff";
+        }}
+    }}
+
+    btn.addEventListener("click", function() {{ setWidgetOpen(!isOpen); }});
+    closeHeaderBtn.addEventListener("click", function() {{ setWidgetOpen(false); }});
+
+    window.RidesAIWidget = {{
+        open: function() {{ setWidgetOpen(true); }},
+        close: function() {{ setWidgetOpen(false); }},
+        toggle: function() {{ setWidgetOpen(!isOpen); }}
+    }};
+}})();
+"""
+        response = HttpResponse(js_content, content_type="application/javascript; charset=utf-8")
+        response["Access-Control-Allow-Origin"] = "*"
+        response["Access-Control-Allow-Methods"] = "GET, OPTIONS"
+        response["Access-Control-Allow-Headers"] = "*"
+        return response
+
 

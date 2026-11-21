@@ -12,6 +12,7 @@ export const operationsApi = {
   riders: () => api.get("/operations/deliveries/riders/"),
   agentSettings: () => api.get("/operations/agent/settings/"),
   updateAgentSettings: (data) => api.patch("/operations/agent/settings/", data),
+  toggleAgentPause: (is_ai_paused) => api.post("/operations/agent/toggle-pause/", is_ai_paused !== undefined ? { is_ai_paused } : {}),
   chat: (data) => api.post("/operations/agent/chat/", data),
   conversations: () => api.get("/operations/agent/conversations/"),
   updateConversation: (data) => api.patch("/operations/agent/conversations/", data),

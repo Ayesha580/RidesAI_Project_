@@ -16,11 +16,13 @@ export default function PublicAgentPage() {
   const [showContactModal, setShowContactModal] = useState(false);
 
   // Conversation & Read-only Display State
+  const isEmbed = typeof window !== "undefined" && new URLSearchParams(window.location.search).get("embed") === "1";
   const [conversationId, setConversationId] = useState(null);
   const conversationIdRef = useRef(null);
   const [messages, setMessages] = useState([]);
   const [error, setError] = useState("");
   const [monthlyLimitReached, setMonthlyLimitReached] = useState(false);
+  const [aiPaused, setAiPaused] = useState(false);
 
   // Voice Interaction State: "idle" | "listening" | "processing" | "speaking"
   const [voiceState, setVoiceState] = useState("idle");
@@ -67,6 +69,9 @@ export default function PublicAgentPage() {
         setCatalog(data.items || []);
         setServiceAreas(data.service_areas || []);
         if (data.business) setBusinessName(data.business);
+        if (data.ai_paused) {
+          setAiPaused(true);
+        }
         if (data.monthly_limit_reached) {
           setMonthlyLimitReached(true);
           setError("This business's AI Voice Agent has reached its monthly usage limit. Please contact the business directly.");
@@ -198,6 +203,12 @@ export default function PublicAgentPage() {
             errData?.detail ||
             "This business's AI Voice Agent has reached its monthly usage limit. Please contact the business directly."
         );
+      } else if (
+        err.response?.status === 403 &&
+        (errData?.error === "ai_paused" || (typeof errData?.detail === "string" && errData.detail.includes("paused")))
+      ) {
+        setAiPaused(true);
+        setError(errData?.message || errData?.detail || "AI Voice Agent has been paused by the business owner.");
       } else {
         setError(errData?.detail || errData?.message || "Voice processing failed. Please try speaking again.");
       }
@@ -446,13 +457,13 @@ export default function PublicAgentPage() {
   return (
     <main
       style={{
-        minHeight: "100vh",
-        background: "linear-gradient(180deg, #fdf4ff 0%, #f8fafc 100%)",
+        minHeight: isEmbed ? "100%" : "100vh",
+        background: isEmbed ? "#ffffff" : "linear-gradient(180deg, #fdf4ff 0%, #f8fafc 100%)",
         display: "flex",
         flexDirection: "column",
         alignItems: "center",
         justifyContent: "space-between",
-        padding: "16px",
+        padding: isEmbed ? "8px" : "16px",
         fontFamily: "system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif",
       }}
     >
@@ -495,7 +506,7 @@ export default function PublicAgentPage() {
           maxWidth: "680px",
           display: "flex",
           flexDirection: "column",
-          gap: "14px",
+          gap: isEmbed ? "8px" : "14px",
           margin: "0 auto",
         }}
       >
@@ -504,14 +515,14 @@ export default function PublicAgentPage() {
           style={{
             background: "#ffffff",
             border: "1px solid #f0abfc",
-            borderRadius: "20px",
-            padding: "18px 22px",
+            borderRadius: isEmbed ? "14px" : "20px",
+            padding: isEmbed ? "10px 14px" : "18px 22px",
             boxShadow: "0 10px 25px -5px rgba(255, 119, 255, 0.12)",
             display: "flex",
             alignItems: "center",
             justifyContent: "space-between",
             flexWrap: "wrap",
-            gap: "12px",
+            gap: "8px",
           }}
         >
           <div>
@@ -535,7 +546,7 @@ export default function PublicAgentPage() {
             {/* Prominent Business Name */}
             <h1
               style={{
-                fontSize: "24px",
+                fontSize: isEmbed ? "18px" : "24px",
                 fontWeight: "800",
                 color: "#0f172a",
                 margin: "4px 0 2px 0",
@@ -546,7 +557,7 @@ export default function PublicAgentPage() {
             {/* Mandatory Subtitle Branding */}
             <p
               style={{
-                fontSize: "12px",
+                fontSize: isEmbed ? "11px" : "12px",
                 fontWeight: "600",
                 color: "#a855f7",
                 margin: 0,
@@ -565,8 +576,8 @@ export default function PublicAgentPage() {
               background: "#faf5ff",
               border: "1px solid #e9d5ff",
               borderRadius: "14px",
-              padding: "8px 14px",
-              fontSize: "12px",
+              padding: isEmbed ? "6px 10px" : "8px 14px",
+              fontSize: isEmbed ? "11px" : "12px",
               fontWeight: "600",
               color: "#7e22ce",
               cursor: "pointer",
@@ -576,7 +587,7 @@ export default function PublicAgentPage() {
             }}
           >
             <span>👤</span>
-            <span>{customer.name || customer.phone ? `${customer.name || customer.phone}` : "Add Details (Optional)"}</span>
+            <span>{customer.name || customer.phone ? `${customer.name || customer.phone}` : "Add Details"}</span>
           </button>
         </header>
 
@@ -586,14 +597,14 @@ export default function PublicAgentPage() {
           style={{
             background: "#ffffff",
             border: "1px solid #e2e8f0",
-            borderRadius: "20px",
-            height: "50vh",
-            minHeight: "360px",
+            borderRadius: isEmbed ? "14px" : "20px",
+            height: isEmbed ? "calc(100vh - 230px)" : "50vh",
+            minHeight: isEmbed ? "240px" : "360px",
             overflowY: "auto",
-            padding: "18px",
+            padding: isEmbed ? "12px" : "18px",
             display: "flex",
             flexDirection: "column",
-            gap: "16px",
+            gap: isEmbed ? "10px" : "16px",
             boxShadow: "0 4px 18px rgba(15, 23, 42, 0.04)",
           }}
         >
@@ -859,8 +870,8 @@ export default function PublicAgentPage() {
           style={{
             background: "#ffffff",
             border: "1px solid #f0abfc",
-            borderRadius: "24px",
-            padding: "24px",
+            borderRadius: isEmbed ? "18px" : "24px",
+            padding: isEmbed ? "14px" : "24px",
             boxShadow: "0 12px 30px -5px rgba(255, 119, 255, 0.15)",
             display: "flex",
             flexDirection: "column",
@@ -869,6 +880,30 @@ export default function PublicAgentPage() {
             gap: "12px",
           }}
         >
+          {/* AI Paused by Owner Banner */}
+          {aiPaused && (
+            <div
+              style={{
+                width: "100%",
+                maxWidth: "480px",
+                background: "#fffbeb",
+                border: "1px solid #fde68a",
+                borderRadius: "12px",
+                padding: "12px 16px",
+                textAlign: "center",
+                color: "#92400e",
+                fontSize: "13px",
+                fontWeight: "600",
+                boxSizing: "border-box",
+              }}
+            >
+              ⏸️ AI Voice Agent Paused by Owner
+              <p style={{ margin: "4px 0 0 0", fontSize: "12px", fontWeight: "400", color: "#b45309" }}>
+                The business owner has temporarily paused AI voice assistance. Please contact the business directly.
+              </p>
+            </div>
+          )}
+
           {/* Monthly Limit Reached Warning Banner */}
           {monthlyLimitReached && (
             <div
@@ -898,9 +933,11 @@ export default function PublicAgentPage() {
             <button
               type="button"
               onClick={handleMicClick}
-              disabled={voiceState === "processing" || monthlyLimitReached}
+              disabled={voiceState === "processing" || monthlyLimitReached || aiPaused}
               aria-label={
-                monthlyLimitReached
+                aiPaused
+                  ? "AI Voice Agent paused by owner"
+                  : monthlyLimitReached
                   ? "Monthly usage limit reached"
                   : voiceState === "listening"
                   ? "Stop recording and send"
@@ -910,11 +947,11 @@ export default function PublicAgentPage() {
               }
               className={voiceState === "listening" ? "voice-mic-active" : ""}
               style={{
-                width: "82px",
-                height: "82px",
+                width: isEmbed ? "72px" : "82px",
+                height: isEmbed ? "72px" : "82px",
                 borderRadius: "50%",
                 background:
-                  monthlyLimitReached
+                  aiPaused || monthlyLimitReached
                     ? "#cbd5e1"
                     : voiceState === "listening"
                     ? "linear-gradient(135deg, #d946ef 0%, #ff77ff 100%)"
@@ -925,15 +962,15 @@ export default function PublicAgentPage() {
                     : "linear-gradient(135deg, #ff77ff 0%, #ec4899 100%)",
                 border: "4px solid #ffffff",
                 boxShadow:
-                  monthlyLimitReached
+                  aiPaused || monthlyLimitReached
                     ? "none"
                     : voiceState === "listening"
                     ? "0 0 25px rgba(217, 70, 239, 0.8)"
                     : "0 10px 20px rgba(255, 119, 255, 0.35)",
                 color: "#ffffff",
-                fontSize: "32px",
+                fontSize: isEmbed ? "28px" : "32px",
                 cursor:
-                  monthlyLimitReached
+                  aiPaused || monthlyLimitReached
                     ? "not-allowed"
                     : voiceState === "processing"
                     ? "wait"
@@ -944,7 +981,9 @@ export default function PublicAgentPage() {
                 outline: "none",
               }}
             >
-              {monthlyLimitReached ? (
+              {aiPaused ? (
+                "⏸️"
+              ) : monthlyLimitReached ? (
                 "🔒"
               ) : voiceState === "listening" ? (
                 "⏹"
@@ -960,7 +999,16 @@ export default function PublicAgentPage() {
 
           {/* Voice Status Label & Equalizer Animation */}
           <div style={{ textAlign: "center" }}>
-            {monthlyLimitReached ? (
+            {aiPaused ? (
+              <div>
+                <strong style={{ fontSize: "16px", color: "#92400e", display: "block" }}>
+                  AI Voice Agent Paused
+                </strong>
+                <span style={{ fontSize: "12px", color: "#78350f" }}>
+                  The owner has temporarily paused AI voice assistance
+                </span>
+              </div>
+            ) : monthlyLimitReached ? (
               <div>
                 <strong style={{ fontSize: "16px", color: "#991b1b", display: "block" }}>
                   Monthly Limit Reached

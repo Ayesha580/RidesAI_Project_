@@ -296,7 +296,16 @@ const css = `
 export default function WhatsAppSettings() {
   const { user } = useAuth();
 
-  // Form states
+  // Channel & Agent info states
+  const [publicId, setPublicId] = useState("");
+  const [isAiPaused, setIsAiPaused] = useState(false);
+  const [togglingPause, setTogglingPause] = useState(false);
+  const [isLinkCopied, setIsLinkCopied] = useState(false);
+  const [isEmbedCopied, setIsEmbedCopied] = useState(false);
+  const [showPreviewModal, setShowPreviewModal] = useState(false);
+  const [previewWidgetOpen, setPreviewWidgetOpen] = useState(false);
+
+  // WhatsApp Form states
   const [phoneNumberId, setPhoneNumberId] = useState("");
   const [accessToken, setAccessToken] = useState("");
   const [verifyToken, setVerifyToken] = useState("");
@@ -314,17 +323,41 @@ export default function WhatsAppSettings() {
       ? `${window.location.origin}/api/operations/whatsapp/webhook/`
       : "https://your-domain.com/api/operations/whatsapp/webhook/";
 
-  // Load existing credentials if available
+  // Derived links
+  const frontendBase = typeof window !== "undefined" ? window.location.origin : "http://localhost:5173";
+  const publicLink = publicId ? `${frontendBase}/agent/${publicId}` : "";
+  const backendBase =
+    import.meta.env.VITE_API_URL
+      ? import.meta.env.VITE_API_URL.replace(/\/api\/?$/, "")
+      : typeof window !== "undefined"
+      ? window.location.origin.replace(":5173", ":8000")
+      : "http://127.0.0.1:8000";
+  const widgetScriptUrl = publicId ? `${backendBase}/api/operations/widget/${publicId}.js` : "";
+  const embedSnippet = `<script src="${widgetScriptUrl}" async></script>`;
+
+  // Load existing credentials & agent settings
   useEffect(() => {
     let isMounted = true;
     const fetchSettings = async () => {
       try {
-        const { data } = await api.get("/operations/agent/whatsapp-settings/");
-        if (isMounted && data) {
-          setPhoneNumberId(data.phone_number_id || "");
-          setAccessToken(data.access_token || "");
-          setVerifyToken(data.verify_token || "ridesai_webhook_verify_token");
-          setIsActive(Boolean(data.is_active));
+        const [waRes, agentRes] = await Promise.allSettled([
+          api.get("/operations/agent/whatsapp-settings/"),
+          api.get("/operations/agent/settings/"),
+        ]);
+
+        if (isMounted) {
+          if (waRes.status === "fulfilled" && waRes.value?.data) {
+            const data = waRes.value.data;
+            setPhoneNumberId(data.phone_number_id || "");
+            setAccessToken(data.access_token || "");
+            setVerifyToken(data.verify_token || "ridesai_webhook_verify_token");
+            setIsActive(Boolean(data.is_active));
+          }
+          if (agentRes.status === "fulfilled" && agentRes.value?.data) {
+            const aData = agentRes.value.data;
+            setPublicId(aData.public_id || "");
+            setIsAiPaused(Boolean(aData.is_ai_paused));
+          }
         }
       } catch (err) {
         if (isMounted) {
@@ -337,6 +370,51 @@ export default function WhatsAppSettings() {
       isMounted = false;
     };
   }, [user]);
+
+  // Toggle AI Pause / Resume
+  const handleTogglePause = async () => {
+    setTogglingPause(true);
+    setStatusMessage({ type: "", text: "" });
+    try {
+      const nextPaused = !isAiPaused;
+      const { data } = await api.post("/operations/agent/toggle-pause/", { is_ai_paused: nextPaused });
+      setIsAiPaused(Boolean(data.is_ai_paused));
+      setStatusMessage({
+        type: "success",
+        text: data.is_ai_paused
+          ? "AI Voice Agent paused across all channels (Public Link, Website Widget, and WhatsApp)."
+          : "AI Voice Agent resumed and actively responding across all channels.",
+      });
+    } catch (err) {
+      setStatusMessage({ type: "error", text: "Failed to update AI Agent pause state. Please try again." });
+    } finally {
+      setTogglingPause(false);
+    }
+  };
+
+  // Copy Public Link
+  const handleCopyLink = async () => {
+    if (!publicLink) return;
+    try {
+      await navigator.clipboard.writeText(publicLink);
+      setIsLinkCopied(true);
+      setTimeout(() => setIsLinkCopied(false), 2200);
+    } catch (err) {
+      console.error("Failed to copy public link:", err);
+    }
+  };
+
+  // Copy Widget Embed Code
+  const handleCopyEmbed = async () => {
+    if (!embedSnippet) return;
+    try {
+      await navigator.clipboard.writeText(embedSnippet);
+      setIsEmbedCopied(true);
+      setTimeout(() => setIsEmbedCopied(false), 2200);
+    } catch (err) {
+      console.error("Failed to copy embed snippet:", err);
+    }
+  };
 
   // Copy Webhook URL to clipboard with timed visual confirmation
   const handleCopyWebhook = async () => {
@@ -381,7 +459,7 @@ export default function WhatsAppSettings() {
   return (
     <OwnerLayout
       title="Channels & Integrations"
-      subtitle="Connect your AI Agent to WhatsApp Cloud API to handle customer orders and support directly via chat."
+      subtitle="Connect and control your AI Agent across all customer channels: Shareable Link, Website Embed Widget, and WhatsApp."
     >
       <style>{css}</style>
       <div className="wa-container max-w-4xl mx-auto space-y-6 text-gray-800">
@@ -405,7 +483,255 @@ export default function WhatsAppSettings() {
           </div>
         )}
 
-        {/* WhatsApp Channel Card */}
+        {/* AI Voice Agent Active / Paused Global Control Card */}
+        <div
+          style={{
+            background: isAiPaused ? "#fffbeb" : "#fdf4ff",
+            border: isAiPaused ? "1px solid #fde68a" : "1px solid #f0abfc",
+            borderRadius: "16px",
+            padding: "20px 24px",
+            boxShadow: "0 4px 20px rgba(0, 0, 0, 0.04)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+            flexWrap: "wrap",
+            gap: "16px",
+          }}
+        >
+          <div style={{ display: "flex", alignItems: "center", gap: "16px" }}>
+            <div
+              style={{
+                width: "48px",
+                height: "48px",
+                borderRadius: "14px",
+                background: isAiPaused ? "#fef3c7" : "#fae8ff",
+                display: "grid",
+                placeItems: "center",
+                fontSize: "24px",
+              }}
+            >
+              {isAiPaused ? "⏸️" : "🎙️"}
+            </div>
+            <div>
+              <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+                <h3 style={{ margin: 0, fontSize: "17px", fontWeight: "750", color: isAiPaused ? "#92400e" : "#86198f" }}>
+                  AI Voice Agent: {isAiPaused ? "Paused" : "Active & Responding"}
+                </h3>
+                <span
+                  style={{
+                    fontSize: "11px",
+                    fontWeight: "700",
+                    textTransform: "uppercase",
+                    letterSpacing: "0.05em",
+                    padding: "3px 10px",
+                    borderRadius: "12px",
+                    background: isAiPaused ? "#fef3c7" : "#f0fdf4",
+                    color: isAiPaused ? "#b45309" : "#166534",
+                    border: isAiPaused ? "1px solid #fde68a" : "1px solid #bbf7d0",
+                  }}
+                >
+                  {isAiPaused ? "Manual Mode" : "Auto Voice AI"}
+                </span>
+              </div>
+              <p style={{ margin: "4px 0 0", fontSize: "13px", color: isAiPaused ? "#78350f" : "#64748b" }}>
+                {isAiPaused
+                  ? "Automated voice replies are temporarily paused. Customer inquiries on Public Link, Website Widget, and WhatsApp are saved for your team to handle manually."
+                  : "AI Voice Agent is actively responding to customer voice notes, checking catalogs, and placing orders across all 3 channels."}
+              </p>
+            </div>
+          </div>
+
+          <button
+            type="button"
+            disabled={togglingPause}
+            onClick={handleTogglePause}
+            style={{
+              padding: "10px 20px",
+              borderRadius: "12px",
+              border: "none",
+              fontWeight: "650",
+              fontSize: "13.5px",
+              cursor: "pointer",
+              background: isAiPaused ? "#ff77ff" : "#475569",
+              color: "#ffffff",
+              boxShadow: isAiPaused ? "0 4px 14px rgba(255,119,255,0.4)" : "0 4px 12px rgba(71,85,105,0.2)",
+              display: "inline-flex",
+              alignItems: "center",
+              gap: "8px",
+              transition: "all 0.2s ease",
+            }}
+          >
+            {togglingPause ? (
+              <span>Updating...</span>
+            ) : isAiPaused ? (
+              <>
+                <span>▶</span>
+                <span>Resume AI Voice Agent</span>
+              </>
+            ) : (
+              <>
+                <span>⏸</span>
+                <span>Pause AI Voice Agent</span>
+              </>
+            )}
+          </button>
+        </div>
+
+        {/* Channel 1: Shareable 100% Voice Link */}
+        <div className="wa-card bg-white rounded-2xl border border-gray-100 shadow-sm overflow-hidden">
+          <div className="wa-card-header p-6 border-b border-gray-100 flex items-center justify-between">
+            <div className="wa-brand flex items-center space-x-3.5">
+              <div
+                style={{
+                  width: "44px",
+                  height: "44px",
+                  borderRadius: "12px",
+                  background: "rgba(255, 119, 255, 0.15)",
+                  color: "#c026d3",
+                  display: "grid",
+                  placeItems: "center",
+                  fontSize: "22px",
+                }}
+              >
+                🔗
+              </div>
+              <div className="wa-brand-info">
+                <h2 className="text-lg font-bold text-gray-900">
+                  Channel 1: Shareable Customer Link
+                </h2>
+                <p className="text-xs text-gray-500 mt-0.5">
+                  Direct 100% Voice AI link for Instagram bio, Google Maps, flyers, or SMS
+                </p>
+              </div>
+            </div>
+            <span
+              style={{
+                fontSize: "11px",
+                fontWeight: "700",
+                textTransform: "uppercase",
+                background: "#fae8ff",
+                color: "#c026d3",
+                padding: "4px 10px",
+                borderRadius: "12px",
+              }}
+            >
+              100% Voice
+            </span>
+          </div>
+
+          <div className="p-6 space-y-4">
+            <div className="wa-field">
+              <label className="wa-label block text-xs font-bold uppercase tracking-wider text-gray-600 mb-1.5">
+                Customer Voice Line URL
+              </label>
+              <div className="wa-input-row flex items-center space-x-2">
+                <input
+                  type="text"
+                  readOnly
+                  value={publicLink || "Loading customer link..."}
+                  className="wa-input wa-input-readonly w-full px-3.5 py-2.5 bg-gray-50 border border-gray-200 rounded-xl text-sm font-mono text-gray-600 select-all"
+                />
+                <button
+                  type="button"
+                  onClick={handleCopyLink}
+                  disabled={!publicLink}
+                  className="px-4 py-2.5 bg-fuchsia-600 hover:bg-fuchsia-700 text-white text-xs font-semibold rounded-xl shadow-sm transition-colors whitespace-nowrap"
+                >
+                  {isLinkCopied ? "✓ Copied" : "📋 Copy Link"}
+                </button>
+                {publicLink && (
+                  <a
+                    href={publicLink}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="px-4 py-2.5 bg-gray-100 hover:bg-gray-200 text-gray-700 text-xs font-semibold rounded-xl transition-colors whitespace-nowrap"
+                  >
+                    ↗ Open Link
+                  </a>
+                )}
+              </div>
+              <span className="text-[11px] text-gray-400 mt-1 block">
+                Customers can open this on any mobile or desktop browser to speak with your AI agent without creating an account.
+              </span>
+            </div>
+          </div>
+        </div>
+
+        {/* Channel 2: Embeddable Website Voice Widget (<script>) */}
+        <div className="wa-card bg-white rounded-2xl border border-gray-100 shadow-sm overflow-hidden">
+          <div className="wa-card-header p-6 border-b border-gray-100 flex items-center justify-between">
+            <div className="wa-brand flex items-center space-x-3.5">
+              <div
+                style={{
+                  width: "44px",
+                  height: "44px",
+                  borderRadius: "12px",
+                  background: "rgba(168, 85, 247, 0.15)",
+                  color: "#9333ea",
+                  display: "grid",
+                  placeItems: "center",
+                  fontSize: "22px",
+                }}
+              >
+                🌐
+              </div>
+              <div className="wa-brand-info">
+                <h2 className="text-lg font-bold text-gray-900">
+                  Channel 2: Embeddable Website Voice Widget
+                </h2>
+                <p className="text-xs text-gray-500 mt-0.5">
+                  Floating #ff77ff microphone launcher that embeds on Shopify, WordPress, Webflow, or custom websites
+                </p>
+              </div>
+            </div>
+            <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
+              <button
+                type="button"
+                onClick={() => {
+                  setShowPreviewModal(true);
+                  setPreviewWidgetOpen(true);
+                }}
+                className="px-3 py-1.5 bg-purple-50 hover:bg-purple-100 text-purple-700 border border-purple-200 text-xs font-semibold rounded-lg transition-colors"
+              >
+                👁 Preview Widget
+              </button>
+            </div>
+          </div>
+
+          <div className="p-6 space-y-4">
+            <div className="wa-field">
+              <label className="wa-label block text-xs font-bold uppercase tracking-wider text-gray-600 mb-1.5">
+                Embed Script Tag
+              </label>
+              <p className="wa-help text-xs text-gray-500 mb-2">
+                Paste this single script line immediately before the closing <code className="wa-code-pill">&lt;/body&gt;</code> tag of your website:
+              </p>
+              <div className="relative">
+                <textarea
+                  readOnly
+                  rows={2}
+                  value={embedSnippet || "Loading embed snippet..."}
+                  className="w-full px-3.5 py-2.5 bg-gray-900 text-fuchsia-300 font-mono text-xs rounded-xl select-all border border-gray-800"
+                />
+              </div>
+              <div className="flex justify-between items-center mt-2">
+                <span className="text-[11px] text-gray-400">
+                  Auto-injects a bottom-right circular microphone button with interactive iframe popup.
+                </span>
+                <button
+                  type="button"
+                  onClick={handleCopyEmbed}
+                  disabled={!embedSnippet}
+                  className="px-4 py-2 bg-fuchsia-600 hover:bg-fuchsia-700 text-white text-xs font-semibold rounded-xl shadow-sm transition-colors whitespace-nowrap"
+                >
+                  {isEmbedCopied ? "✓ Copied Embed Code" : "📋 Copy Embed Code"}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {/* Channel 3: WhatsApp Cloud API Card */}
         <div className="wa-card bg-white rounded-2xl border border-gray-100 shadow-sm overflow-hidden">
           {/* Card Header */}
           <div className="wa-card-header p-6 border-b border-gray-100 flex items-center justify-between">
@@ -578,6 +904,222 @@ export default function WhatsAppSettings() {
             </li>
           </ol>
         </div>
+
+        {/* Interactive Widget Preview Modal */}
+        {showPreviewModal && (
+          <div
+            style={{
+              position: "fixed",
+              top: 0,
+              left: 0,
+              right: 0,
+              bottom: 0,
+              backgroundColor: "rgba(15, 23, 42, 0.75)",
+              backdropFilter: "blur(4px)",
+              zIndex: 999999,
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              padding: "20px",
+            }}
+          >
+            <div
+              style={{
+                width: "100%",
+                maxWidth: "920px",
+                height: "85vh",
+                background: "#ffffff",
+                borderRadius: "20px",
+                boxShadow: "0 25px 50px -12px rgba(0, 0, 0, 0.25)",
+                display: "flex",
+                flexDirection: "column",
+                overflow: "hidden",
+                border: "1px solid #e2e8f0",
+              }}
+            >
+              {/* Browser Mockup Top Bar */}
+              <div
+                style={{
+                  background: "#f8fafc",
+                  borderBottom: "1px solid #e2e8f0",
+                  padding: "12px 18px",
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "space-between",
+                }}
+              >
+                <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                  <span style={{ width: "12px", height: "12px", borderRadius: "50%", background: "#ef4444", display: "inline-block" }} />
+                  <span style={{ width: "12px", height: "12px", borderRadius: "50%", background: "#f59e0b", display: "inline-block" }} />
+                  <span style={{ width: "12px", height: "12px", borderRadius: "50%", background: "#10b981", display: "inline-block" }} />
+                  <span
+                    style={{
+                      marginLeft: "12px",
+                      background: "#ffffff",
+                      border: "1px solid #cbd5e1",
+                      borderRadius: "8px",
+                      padding: "4px 14px",
+                      fontSize: "12px",
+                      color: "#64748b",
+                      fontFamily: "monospace",
+                    }}
+                  >
+                    https://your-store-website.com
+                  </span>
+                </div>
+                <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+                  <span style={{ fontSize: "12px", color: "#64748b" }}>Live Widget Preview</span>
+                  <button
+                    type="button"
+                    onClick={() => setShowPreviewModal(false)}
+                    style={{
+                      background: "#f1f5f9",
+                      border: "none",
+                      borderRadius: "8px",
+                      padding: "6px 12px",
+                      fontSize: "13px",
+                      fontWeight: "700",
+                      color: "#475569",
+                      cursor: "pointer",
+                    }}
+                  >
+                    ✕ Close
+                  </button>
+                </div>
+              </div>
+
+              {/* Simulated Customer Website Canvas */}
+              <div
+                style={{
+                  flex: 1,
+                  position: "relative",
+                  background: "#fdf4ff",
+                  backgroundImage: "radial-gradient(#e9d5ff 1px, transparent 1px)",
+                  backgroundSize: "20px 20px",
+                  overflow: "hidden",
+                  padding: "30px",
+                }}
+              >
+                {/* Mock Page Content */}
+                <div style={{ maxWidth: "560px", margin: "40px auto 0", textAlign: "center" }}>
+                  <span
+                    style={{
+                      background: "#fae8ff",
+                      color: "#c026d3",
+                      fontSize: "12px",
+                      fontWeight: "700",
+                      padding: "4px 12px",
+                      borderRadius: "20px",
+                      textTransform: "uppercase",
+                    }}
+                  >
+                    Your E-Commerce Store
+                  </span>
+                  <h1 style={{ fontSize: "28px", fontWeight: "800", color: "#1e293b", margin: "14px 0 8px 0" }}>
+                    Welcome to Our Store
+                  </h1>
+                  <p style={{ fontSize: "14px", color: "#64748b", lineHeight: 1.6 }}>
+                    This simulates an external customer website where your embed script is installed.
+                    See the floating <strong>#ff77ff</strong> launcher in the bottom right corner!
+                  </p>
+                </div>
+
+                {/* Floating Launcher Button */}
+                <div
+                  style={{
+                    position: "absolute",
+                    bottom: "24px",
+                    right: "24px",
+                    zIndex: 100,
+                    display: "flex",
+                    flexDirection: "column",
+                    alignItems: "flex-end",
+                  }}
+                >
+                  {/* Floating Popup Window */}
+                  {previewWidgetOpen && (
+                    <div
+                      style={{
+                        width: "360px",
+                        height: "520px",
+                        maxWidth: "calc(100vw - 48px)",
+                        maxHeight: "calc(70vh)",
+                        background: "#ffffff",
+                        borderRadius: "20px",
+                        boxShadow: "0 20px 40px rgba(0,0,0,0.22)",
+                        border: "1px solid rgba(255,119,255,0.4)",
+                        overflow: "hidden",
+                        display: "flex",
+                        flexDirection: "column",
+                        marginBottom: "14px",
+                      }}
+                    >
+                      <div
+                        style={{
+                          height: "44px",
+                          background: "linear-gradient(135deg, #ff77ff 0%, #ff55bb 100%)",
+                          color: "#ffffff",
+                          display: "flex",
+                          alignItems: "center",
+                          justifyContent: "space-between",
+                          padding: "0 14px",
+                        }}
+                      >
+                        <span style={{ fontSize: "13px", fontWeight: "700" }}>🎤 Voice Assistant</span>
+                        <button
+                          type="button"
+                          onClick={() => setPreviewWidgetOpen(false)}
+                          style={{
+                            background: "none",
+                            border: "none",
+                            color: "#ffffff",
+                            fontSize: "16px",
+                            cursor: "pointer",
+                            padding: "4px",
+                          }}
+                        >
+                          ✕
+                        </button>
+                      </div>
+                      {publicLink ? (
+                        <iframe
+                          src={`${publicLink}?embed=1`}
+                          title="AI Voice Agent Preview"
+                          allow="microphone; autoplay"
+                          style={{ width: "100%", height: "calc(100% - 44px)", border: "none" }}
+                        />
+                      ) : (
+                        <div style={{ padding: "20px", textAlign: "center", color: "#64748b" }}>Loading agent...</div>
+                      )}
+                    </div>
+                  )}
+
+                  {/* Launcher Bubble */}
+                  <button
+                    type="button"
+                    onClick={() => setPreviewWidgetOpen(!previewWidgetOpen)}
+                    style={{
+                      width: "60px",
+                      height: "60px",
+                      borderRadius: "50%",
+                      background: previewWidgetOpen ? "#475569" : "#ff77ff",
+                      color: "#ffffff",
+                      border: "none",
+                      boxShadow: "0 8px 24px rgba(255, 119, 255, 0.45)",
+                      cursor: "pointer",
+                      fontSize: "26px",
+                      display: "grid",
+                      placeItems: "center",
+                      transition: "transform 0.2s ease",
+                    }}
+                  >
+                    {previewWidgetOpen ? "✕" : "🎤"}
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
       </div>
     </OwnerLayout>
   );

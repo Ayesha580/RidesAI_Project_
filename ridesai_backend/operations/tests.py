@@ -138,12 +138,16 @@ class WhatsAppAgentToolCallingTests(TestCase):
             name="Burger Hub",
             business_type="restaurant",
             is_approved=True,
+            subscription_status="active",
+            is_manual_override=True,
             status="active",
         )
         self.company_b = Company.objects.create(
             name="Pizza Palace",
             business_type="restaurant",
             is_approved=True,
+            subscription_status="active",
+            is_manual_override=True,
             status="active",
         )
 
@@ -1700,6 +1704,8 @@ class VoiceCostOptimizationTests(TestCase):
             name="Pizza King Cost Test",
             business_type="restaurant",
             is_approved=True,
+            subscription_status="active",
+            is_manual_override=True,
             max_daily_voice_notes=2,
         )
         self.phone_number_id = "phone_id_cost_test_123"
@@ -1954,6 +1960,8 @@ class EvolutionAPIIntegrationTests(TestCase):
             name="Evolution QR Pizza",
             business_type="restaurant",
             is_approved=True,
+            subscription_status="active",
+            is_manual_override=True,
             whatsapp_connection_status="disconnected",
         )
         self.owner = User.objects.create_user(
@@ -3754,6 +3762,167 @@ class MonthlyVoiceLimitEnforcementTests(TestCase):
         self.assertFalse(result["success"])
         self.assertEqual(result["error"], "subscription_inactive")
         mock_dispatch.assert_called_once()
+
+
+class WebsiteVoiceWidgetEmbedTests(TestCase):
+    def setUp(self):
+        self.client = APIClient()
+        self.company = Company.objects.create(
+            name="Burger Haven",
+            business_type="restaurant",
+            is_approved=True,
+            subscription_status="active",
+            is_manual_override=True,
+            agent_enabled=True,
+            address="Faisalabad, Pakistan",
+        )
+
+    def test_widget_script_endpoint_returns_javascript(self):
+        url = f"/api/operations/widget/{self.company.agent_public_id}.js"
+        response = self.client.get(url)
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("application/javascript", response["Content-Type"])
+        self.assertEqual(response.get("Access-Control-Allow-Origin"), "*")
+        
+        js_code = response.content.decode("utf-8")
+        self.assertIn(f"/agent/{self.company.agent_public_id}?embed=1", js_code)
+        self.assertIn('iframe.allow = "microphone; autoplay";', js_code)
+        self.assertIn("#ff77ff", js_code)
+        self.assertIn("Burger Haven", js_code)
+        self.assertIn("rides-ai-widget-btn", js_code)
+        self.assertIn("rides-ai-widget-popup", js_code)
+
+
+class OwnerAIPauseResumeToggleTests(TestCase):
+    def setUp(self):
+        self.client = APIClient()
+        self.company = Company.objects.create(
+            name="Pizza Studio",
+            business_type="restaurant",
+            is_approved=True,
+            subscription_status="active",
+            is_manual_override=True,
+            agent_enabled=True,
+            is_ai_paused=False,
+            message_limit=100,
+            messages_used=5,
+        )
+        self.owner = User.objects.create_user(
+            username="pizza_owner",
+            password="Pass12345!",
+            email="pizza@example.com",
+            company=self.company,
+            role=User.ROLE_OWNER,
+        )
+        self.staff = User.objects.create_user(
+            username="pizza_staff",
+            password="Pass12345!",
+            email="staff@example.com",
+            company=self.company,
+            role=User.ROLE_STAFF,
+        )
+
+    def test_owner_can_toggle_ai_pause(self):
+        self.client.force_authenticate(self.owner)
+        
+        # Pause AI
+        res = self.client.post("/api/operations/agent/toggle-pause/", {"is_ai_paused": True}, format="json")
+        self.assertEqual(res.status_code, 200)
+        self.assertTrue(res.data["is_ai_paused"])
+        self.company.refresh_from_db()
+        self.assertTrue(self.company.is_ai_paused)
+
+        # Resume AI
+        res2 = self.client.post("/api/operations/agent/toggle-pause/", {"is_ai_paused": False}, format="json")
+        self.assertEqual(res2.status_code, 200)
+        self.assertFalse(res2.data["is_ai_paused"])
+        self.company.refresh_from_db()
+        self.assertFalse(self.company.is_ai_paused)
+
+    def test_non_owner_cannot_toggle_ai_pause(self):
+        self.client.force_authenticate(self.staff)
+        res = self.client.post("/api/operations/agent/toggle-pause/", {"is_ai_paused": True}, format="json")
+        self.assertEqual(res.status_code, 403)
+
+    def test_public_catalog_reports_ai_paused(self):
+        self.company.is_ai_paused = True
+        self.company.save(update_fields=["is_ai_paused"])
+
+        url = f"/api/operations/public/agent/{self.company.agent_public_id}/catalog/"
+        res = self.client.get(url)
+        self.assertEqual(res.status_code, 200)
+        self.assertTrue(res.data.get("ai_paused"))
+
+    def test_public_chat_blocks_when_ai_paused_and_does_not_consume_quota(self):
+        self.company.is_ai_paused = True
+        self.company.save(update_fields=["is_ai_paused"])
+        initial_used = self.company.messages_used
+
+        url = f"/api/operations/public/agent/{self.company.agent_public_id}/chat/"
+        res = self.client.post(url, {"message": "Hello I want to order pizza"}, format="json")
+        self.assertEqual(res.status_code, 403)
+        self.assertEqual(res.data.get("error"), "ai_paused")
+
+        self.company.refresh_from_db()
+        self.assertEqual(self.company.messages_used, initial_used)
+
+    @patch("operations.whatsapp_agent._dispatch_whatsapp_text")
+    def test_whatsapp_message_is_saved_as_human_and_not_replied_when_ai_paused(self, mock_dispatch):
+        from operations.whatsapp_agent import process_incoming_whatsapp_message
+        self.company.is_ai_paused = True
+        self.company.save(update_fields=["is_ai_paused"])
+        initial_used = self.company.messages_used
+
+        result = process_incoming_whatsapp_message(
+            sender_phone="923091112233",
+            message_text="Hi is the shop open?",
+            phone_number_id="test_phone_id",
+            company=self.company,
+        )
+
+        self.assertTrue(result["success"])
+        self.assertTrue(result.get("ai_paused"))
+        self.assertIsNone(result.get("reply_text"))
+        mock_dispatch.assert_not_called()
+
+        # Quota not consumed
+        self.company.refresh_from_db()
+        self.assertEqual(self.company.messages_used, initial_used)
+
+        # Conversation status set to human for staff pickup
+        conv = AgentConversation.objects.filter(company=self.company, customer_phone="923091112233").first()
+        self.assertIsNotNone(conv)
+        self.assertEqual(conv.status, "human")
+        self.assertEqual(conv.messages.count(), 1)
+        self.assertEqual(conv.messages.first().role, "user")
+
+
+class AutoLocationFallbackTests(TestCase):
+    def setUp(self):
+        self.client = APIClient()
+        self.company = Company.objects.create(
+            name="Faisalabad Delights",
+            business_type="restaurant",
+            is_approved=True,
+            subscription_status="active",
+            is_manual_override=True,
+            agent_enabled=True,
+            address="Faisalabad, Punjab, Pakistan",
+        )
+
+    def test_fallback_service_areas_uses_company_address_when_no_service_areas(self):
+        from operations.whatsapp_agent import get_effective_service_areas
+        areas = get_effective_service_areas(self.company)
+        self.assertEqual(areas, ["Faisalabad"])
+
+    def test_public_catalog_includes_fallback_location(self):
+        url = f"/api/operations/public/agent/{self.company.agent_public_id}/catalog/"
+        res = self.client.get(url)
+        self.assertEqual(res.status_code, 200)
+        service_areas = res.data.get("service_areas", [])
+        self.assertTrue(len(service_areas) > 0)
+        self.assertEqual(service_areas[0]["city"], "Faisalabad")
+
 
 
 
