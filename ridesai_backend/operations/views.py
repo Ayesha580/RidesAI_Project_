@@ -1212,8 +1212,14 @@ class PublicAgentWidgetScriptAPIView(APIView):
     authentication_classes = []
 
     def get(self, request, public_id):
+        import uuid as _uuid
+        from django.http import Http404
         from companies.models import Company
-        company = get_object_or_404(Company, agent_public_id=public_id)
+        try:
+            parsed_uuid = _uuid.UUID(str(public_id))
+        except (ValueError, TypeError):
+            raise Http404("Invalid widget public_id")
+        company = get_object_or_404(Company, agent_public_id=parsed_uuid)
 
         frontend_url = os.environ.get("FRONTEND_URL") or getattr(settings, "FRONTEND_URL", None) or getattr(settings, "SITE_URL", "http://localhost:5173")
         frontend_url = frontend_url.rstrip("/")

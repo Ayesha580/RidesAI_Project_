@@ -18,6 +18,8 @@ logger = logging.getLogger("operations.signals")
 @receiver(pre_save, sender=Order)
 def order_pre_save_track_status(sender, instance, **kwargs):
     """Caches previous order status before saving to detect status transitions."""
+    if kwargs.get("raw"):
+        return
     if instance.pk:
         try:
             old = Order.objects.get(pk=instance.pk)
@@ -34,6 +36,8 @@ def order_auto_assign_rider_on_save(sender, instance, created, **kwargs):
     Auto-assigns the best available delivery rider when an order status
     transitions to 'prepared' (or 'ready') if not already assigned.
     """
+    if kwargs.get("raw"):
+        return
     prev_status = getattr(instance, "_previous_status", None)
     is_prepared_status = instance.status in (Order.STATUS_PREPARED, Order.STATUS_READY)
 
@@ -58,6 +62,8 @@ def order_auto_print_on_save(sender, instance, created, **kwargs):
     2. Order status is 'confirmed' and zero prior print logs exist for this order
        (prevents duplicate prints on subsequent status updates).
     """
+    if kwargs.get("raw"):
+        return
     company = getattr(instance, "company", None)
     if not company:
         return

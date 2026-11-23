@@ -1684,6 +1684,13 @@ def _dispatch_whatsapp_audio(
     return {"success": False, "error": "No WhatsApp provider configured"}
 
 
+def _safe_close_old_connections() -> None:
+    """Close stale DB connections in background threads without disrupting active transactions."""
+    from django.db import connection
+    if not connection.in_atomic_block:
+        close_old_connections()
+
+
 def process_incoming_whatsapp_message(
     sender_phone: str,
     message_text: str,
@@ -1703,7 +1710,7 @@ def process_incoming_whatsapp_message(
     5. Voice Output (TTS): If customer sent audio, synthesizes speech and uploads via Meta API or Evolution API.
     6. Dispatches reply via Evolution API (if instance configured) or Meta Cloud API using WhatsAppService.
     """
-    close_old_connections()
+    _safe_close_old_connections()
     try:
         clean_name = customer_name or "Valued Customer"
         service = WhatsAppService(phone_number_id=phone_number_id)
@@ -1969,4 +1976,4 @@ def process_incoming_whatsapp_message(
         return {"success": False, "error": str(e)}
 
     finally:
-        close_old_connections()
+        _safe_close_old_connections()
