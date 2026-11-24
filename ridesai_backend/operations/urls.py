@@ -7,6 +7,7 @@ from .views import (OrderCatalogAPIView, OrderListCreateAPIView, OrderStatusAPIV
                     PublicAgentWidgetScriptAPIView, WhatsAppWebhookAPIView, WhatsAppSettingsAPIView)
 from .calling_views import IncomingAICallWebhookView
 from .evolution_views import ConnectWhatsAppView, EvolutionWebhookView
+from .analytics_views import AnalyticsOverviewAPIView, AnalyticsExportCSVAPIView
 
 urlpatterns = [
     path("orders/catalog/", OrderCatalogAPIView.as_view(), name="order-catalog"),
@@ -36,5 +37,7 @@ urlpatterns = [
     path("public/agent/<uuid:public_id>/widget.js", PublicAgentWidgetScriptAPIView.as_view(), name="public-agent-widget-js-alt"),
     path("agent/conversations/", AgentConversationListAPIView.as_view(), name="agent-conversations"),
     path("owner/assistant/", OwnerBusinessAssistantAPIView.as_view(), name="owner-business-assistant"),
+    path("analytics/overview/", AnalyticsOverviewAPIView.as_view(), name="analytics-overview"),
+    path("analytics/export/csv/", AnalyticsExportCSVAPIView.as_view(), name="analytics-export-csv"),
     path("hospital/", include("operations.hospital_urls")),
 ]

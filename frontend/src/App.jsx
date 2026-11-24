@@ -53,6 +53,7 @@ import ClinicAppointments from "./operations/ClinicAppointments";
 import ClinicDoctors from "./operations/ClinicDoctors";
 import ClinicPatients from "./operations/ClinicPatients";
 import HospitalDashboard from "./operations/HospitalDashboard";
+import AnalyticsReports from "./operations/AnalyticsReports";
 import RetailFulfillment from "./operations/RetailFulfillment";
 import RetailReturns from "./operations/RetailReturns";
 
@@ -70,6 +71,7 @@ function OwnerModulePage() {
   if (moduleKey === "expiry_tracking") return <PharmacyBatches />;
   if (moduleKey === "departments") return <HospitalDashboard defaultTab="departments" />;
   if (moduleKey === "lab_tests") return <HospitalDashboard defaultTab="lab_tests" />;
+  if (moduleKey === "reports") return <AnalyticsReports />;
   if (moduleKey === "appointments") return <ClinicAppointments />;
   if (moduleKey === "doctors") return <ClinicDoctors />;
   if (moduleKey === "patients") return <ClinicPatients />;
@@ -103,6 +105,7 @@ function StaffModulePage() {
   if (moduleKey === "expiry_tracking") return <PharmacyBatches staff />;
   if (moduleKey === "departments") return <HospitalDashboard staff defaultTab="departments" />;
   if (moduleKey === "lab_tests") return <HospitalDashboard staff defaultTab="lab_tests" />;
+  if (moduleKey === "reports") return <AnalyticsReports staff />;
   if (moduleKey === "appointments") return <ClinicAppointments staff />;
   if (moduleKey === "doctors") return <ClinicDoctors staff />;
   if (moduleKey === "patients") return <ClinicPatients staff />;
@@ -192,6 +195,8 @@ export default function App() {
         }
       />
       <Route path="/owner/settings" element={<AuthOnly><OwnerSettings /></AuthOnly>} />
+      <Route path="/owner/analytics" element={<Guard roles={["owner"]}><AnalyticsReports /></Guard>} />
+      <Route path="/owner/reports" element={<Guard roles={["owner"]}><AnalyticsReports /></Guard>} />
       <Route path="/owner/billing" element={<Navigate to="/owner/settings?tab=billing" replace />} />
       <Route path="/owner/tables" element={<Navigate to="/owner/m/tables" replace />} />
       <Route path="/owner/reservations" element={<Navigate to="/owner/m/reservations" replace />} />

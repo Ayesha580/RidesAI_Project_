@@ -90,3 +90,8 @@ export const hospitalApi = {
   updateLabBookingStatus: (id, data) => api.patch(`/operations/hospital/lab-bookings/${id}/status/`, data),
 };
 
+export const analyticsApi = {
+  getOverview: (params = {}) => api.get("/operations/analytics/overview/", { params }),
+  exportCsv: (params = {}) => api.get("/operations/analytics/export/csv/", { params, responseType: "blob" }),
+};
+

@@ -12,8 +12,8 @@ Across **27 distinct functional and non-functional requirements** extracted from
 
 | Status | Count | Percentage |
 | :--- | :---: | :---: |
-| ✅ **Completed & Verified** | **19** | **70.4%** |
-| 🟡 **Partially Implemented** | **4** | **14.8%** |
+| ✅ **Completed & Verified** | **20** | **74.1%** |
+| 🟡 **Partially Implemented** | **3** | **11.1%** |
 | ❌ **Not Started / Pending** | **3** | **11.1%** |
 | ⚠️ **Out-of-Scope / External Dependency** | **1** | **3.7%** |
 | **Total PRD Requirements Audited** | **27** | **100%** |
@@ -58,7 +58,7 @@ Across **27 distinct functional and non-functional requirements** extracted from
 | **§8.1** | **Channel 1: WhatsApp Integration** (Meta Cloud API + Evolution API QR, voice notes, order updates) | ✅ | `operations/whatsapp_service.py`, `operations/whatsapp_storage.py` (100% PostgreSQL ORM-backed via `Company` fields in migrations `0019`/`0020`), `operations/evolution_client.py`, `operations/evolution_views.py` (`/api/operations/whatsapp/connect/`, `/evolution-webhook/`), `operations/views.py` (`/whatsapp/webhook/`, `/agent/whatsapp-settings/`), `WhatsAppSettings.jsx`, `WhatsAppConnectCard.jsx`. | Fully migrated off `whatsapp_config.json` into PostgreSQL (multi-tenant verified in `P0WhatsAppDBAndSecurityTests`). |
 | **§8.2** | **Channel 2: Embeddable Website Voice Widget (`<script>`)** | ✅ | `operations/views.py` (`PublicAgentWidgetScriptAPIView` at `/api/operations/widget/<public_id>.js` & `/public/agent/<public_id>/widget.js`), floating `#ff77ff` mic bubble opening `/agent/<public_id>?embed=1` in a popup iframe, copy-paste embed UI in `WhatsAppSettings.jsx`. | Verified with UUID validation hardening & tests. |
 | **§8.3** | **Channel 3: Shareable Rides AI Business Link** (zero-integration public link, mobile & desktop) | ✅ | `frontend/src/operations/PublicAgentPage.jsx` (`/agent/:publicId`), `/api/operations/public/agent/<uuid:public_id>/chat/`, `/catalog/`, `/conversation/<uuid:conversation_id>/`. | Fully verified end-to-end with 100% voice-only UX. |
-| **§9 (Analytics)** | **Business Dashboard Analytics & Operational Reports** (order volume, enquiry volume, common requests, response performance) | 🟡 | `OwnerDashboard.jsx` includes team/role SVG charts + live conversations/orders switcher; **Bonus:** 100% Voice-Only **Owner AI Business Manager** (`OwnerBusinessAssistant.jsx` + `/api/operations/owner/assistant/`) answers real-time sales, order, staff, rider, stock, and usage queries. | Dedicated time-series analytics charts (order/enquiry trends, response latency, top items, CSV/PDF report exports) are not yet built. |
+| **§9 (Analytics)** | **Business Dashboard Analytics & Exportable Operational Reports** (time-series revenue/orders, channel/status breakdown, top items, CSV & PDF exports) | ✅ | `ridesai_backend/operations/analytics_views.py` (`/api/operations/analytics/overview/`, `/api/operations/analytics/export/csv/`), `frontend/src/operations/AnalyticsReports.jsx` (7d/30d/90d/custom ranges, interactive SVG time-series & donut charts, 1-click CSV download & branded print-to-PDF export), plus 100% Voice-Only **Owner AI Business Manager** (`OwnerBusinessAssistant.jsx`). | Verified on PostgreSQL 16 (`AdvancedAnalyticsAndReportsTests`, strict multi-tenant isolation). |
 | **§11 (Core)** | **Automated Customer Order & Status Notifications** | ✅ | `ridesai_backend/operations/notifications.py` (`send_order_status_notification`, `send_appointment_status_notification`, `send_prescription_status_notification`, `send_return_status_notification`) dispatching via Evolution API / Meta Cloud API. | Verified across Restaurant, Clinic, Pharmacy, and Retail lifecycle tests. |
 | **§11 (Config)** | **Owner-Configurable Notification Wording & Channel Preferences** | 🟡 | Hardcoded English/Roman Urdu status templates exist in `operations/notifications.py` (`build_status_message`). | No owner settings UI/model to customize message wording or toggle individual status notification triggers/channels. |
 | **§12 (Isolation)** | **Multi-Tenant Data Isolation & Prompt-Injection Safeguards** | ✅ | Server-enforced `company` scoping across all ORM queries, views, AI customer tools, and Owner AI Business Manager tools; fail-closed unmapped `phone_number_id` guard; rate limits & monthly voice quotas. | Verified across all 137 tests (`accounts`, `billing`, `operations`). |
@@ -100,8 +100,8 @@ Across **27 distinct functional and non-functional requirements** extracted from
    - Confirm whether Django `/admin/` suffices for launch or if a custom React/DRF Platform Owner Dashboard (cross-tenant metrics, business suspension, platform audit logs) is required for Phase 1 go-live.
 
 ### P1 — Important Polish / Post-Launch Enhancements
-1. **Business Analytics & Operational Reports (PRD §9):**
-   - Add time-series charts (daily/weekly order & enquiry volume, top items, AI vs. human resolution rate) and CSV/PDF export endpoints.
+1. ✅ **Completed & Verified — Business Analytics & Exportable Operational Reports (PRD §9):**
+   - Built `/api/operations/analytics/overview/` (PostgreSQL `TruncDate`/`TruncWeek` aggregations), `/api/operations/analytics/export/csv/`, and `AnalyticsReports.jsx` with interactive charts and 1-click CSV & branded PDF exports.
 2. **Automated Knowledge Learning / FAQ Proposals (PRD §6):**
    - Add a background job or AI classifier that flags repeated unanswered customer questions and surfaces draft FAQ proposals in `KnowledgeBaseForm.jsx` for one-click owner approval.
 3. **Configurable Notification Templates & Channel Toggles (PRD §11):**

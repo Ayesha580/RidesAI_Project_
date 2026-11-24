@@ -4882,6 +4882,140 @@ class HospitalVerticalTests(TestCase):
         self.assertEqual(owner_summary["daily_hospital_revenue_rs"], 1800.0)
 
 
+class AdvancedAnalyticsAndReportsTests(TestCase):
+    """Tests for P1 Advanced Time-Series Analytics & Exportable CSV Reports (Multi-Tenant Isolated)."""
+
+    def setUp(self):
+        self.client = APIClient()
+        self.company_a = Company.objects.create(
+            name="Analytics Burger Hub",
+            business_type="restaurant",
+            status=Company.STATUS_ACTIVE,
+            payment_status=Company.PAYMENT_OK,
+            subscription_status=Company.SUBSCRIPTION_ACTIVE,
+            messages_used=42,
+            message_limit=1000,
+        )
+        self.company_b = Company.objects.create(
+            name="Competitor Pizza Palace",
+            business_type="restaurant",
+            status=Company.STATUS_ACTIVE,
+            payment_status=Company.PAYMENT_OK,
+            subscription_status=Company.SUBSCRIPTION_ACTIVE,
+        )
+        self.owner_a = User.objects.create_user(
+            username="analytics_owner_a",
+            email="analytics_owner_a@example.com",
+            password="Password123!",
+            role=User.ROLE_OWNER,
+            company=self.company_a,
+            is_active=True,
+        )
+        self.owner_b = User.objects.create_user(
+            username="analytics_owner_b",
+            email="analytics_owner_b@example.com",
+            password="Password123!",
+            role=User.ROLE_OWNER,
+            company=self.company_b,
+            is_active=True,
+        )
+
+        # Company A orders (2 active + 1 cancelled)
+        o1 = Order.objects.create(
+            company=self.company_a,
+            customer_name="Ali Raza",
+            customer_phone="03001234567",
+            status="delivered",
+            source="whatsapp",
+            total=Decimal("1500.00"),
+        )
+        OrderItem.objects.create(order=o1, item_name="Zinger Burger", quantity=2, unit_price=Decimal("750.00"), line_total=Decimal("1500.00"))
+
+        o2 = Order.objects.create(
+            company=self.company_a,
+            customer_name="Sara Khan",
+            customer_phone="03009876543",
+            status="confirmed",
+            source="agent",
+            total=Decimal("900.00"),
+        )
+        OrderItem.objects.create(order=o2, item_name="Crispy Fries", quantity=3, unit_price=Decimal("300.00"), line_total=Decimal("900.00"))
+
+        Order.objects.create(
+            company=self.company_a,
+            customer_name="Cancelled Order",
+            customer_phone="03005555555",
+            status="cancelled",
+            source="manual",
+            total=Decimal("5000.00"),
+        )
+
+        conv_a = AgentConversation.objects.create(company=self.company_a, customer_name="Ali Raza", customer_phone="03001234567")
+        AgentMessage.objects.create(conversation=conv_a, role="user", content="2 Zinger Burger")
+        AgentMessage.objects.create(conversation=conv_a, role="assistant", content="Order confirmed!")
+
+        # Company B order (MUST NEVER LEAK into Company A analytics or CSV)
+        o_b = Order.objects.create(
+            company=self.company_b,
+            customer_name="Secret Tenant B Customer",
+            customer_phone="03119999999",
+            status="delivered",
+            source="whatsapp",
+            total=Decimal("99999.00"),
+        )
+        OrderItem.objects.create(order=o_b, item_name="Secret Tenant B Pizza", quantity=10, unit_price=Decimal("9999.90"), line_total=Decimal("99999.00"))
+
+    def test_analytics_overview_accuracy_and_tenant_isolation(self):
+        self.client.force_authenticate(user=self.owner_a)
+        res = self.client.get("/api/operations/analytics/overview/?range=7d")
+        self.assertEqual(res.status_code, 200)
+
+        kpis = res.data["kpis"]
+        # Revenue excludes cancelled 5000 and excludes Tenant B's 99999 -> 1500 + 900 = 2400
+        self.assertEqual(kpis["total_revenue"], 2400.0)
+        self.assertEqual(kpis["total_orders"], 3)
+        self.assertEqual(kpis["completed_count"], 1)
+        self.assertEqual(kpis["cancelled_count"], 1)
+        self.assertEqual(kpis["average_order_value"], 1200.0)
+        self.assertEqual(kpis["active_ai_conversations"], 1)
+        self.assertEqual(kpis["ai_voice_turns"], 2)
+        self.assertEqual(kpis["messages_used"], 42)
+        self.assertEqual(kpis["message_limit"], 1000)
+
+        # Time-series has 7 daily buckets
+        self.assertEqual(len(res.data["time_series"]), 7)
+        self.assertEqual(res.data["granularity"], "daily")
+
+        # Top items strictly from Company A
+        top_names = [it["name"] for it in res.data["top_items"]]
+        self.assertIn("Zinger Burger", top_names)
+        self.assertIn("Crispy Fries", top_names)
+        self.assertNotIn("Secret Tenant B Pizza", top_names)
+
+        # 90d range uses weekly granularity
+        res_90 = self.client.get("/api/operations/analytics/overview/?range=90d")
+        self.assertEqual(res_90.status_code, 200)
+        self.assertEqual(res_90.data["granularity"], "weekly")
+
+    def test_analytics_export_csv_returns_valid_isolated_csv(self):
+        self.client.force_authenticate(user=self.owner_a)
+        res = self.client.get("/api/operations/analytics/export/csv/?range=30d")
+        self.assertEqual(res.status_code, 200)
+        self.assertIn("text/csv", res["Content-Type"])
+        self.assertIn("attachment; filename=", res["Content-Disposition"])
+
+        body = res.content.decode("utf-8-sig")
+        self.assertIn("Analytics Burger Hub", body)
+        self.assertIn("Ali Raza", body)
+        self.assertIn("Zinger Burger", body)
+        self.assertIn("2400.00", body)
+        # Strict multi-tenant isolation: Tenant B data MUST NOT appear
+        self.assertNotIn("Secret Tenant B Customer", body)
+        self.assertNotIn("Secret Tenant B Pizza", body)
+        self.assertNotIn("99999.00", body)
+
+
+
 
 
 
