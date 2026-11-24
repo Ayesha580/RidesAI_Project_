@@ -1129,7 +1129,7 @@ class WhatsAppWebhookAPIView(APIView):
 class WhatsAppSettingsAPIView(BusinessAPIView):
     """
     Authenticated settings endpoint for business owners to view and update
-    their WhatsApp Cloud API credentials using temporary file storage.
+    their Meta WhatsApp Cloud API credentials stored per-company in PostgreSQL.
     Handles missing settings gracefully for newly registered companies.
     URL: /api/operations/agent/whatsapp-settings/
     """

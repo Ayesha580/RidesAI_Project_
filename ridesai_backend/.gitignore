@@ -4,5 +4,6 @@ __pycache__/
 *.py[cod]
 db.sqlite3
 backups/
+operations/whatsapp_config.json
 media/
 staticfiles/

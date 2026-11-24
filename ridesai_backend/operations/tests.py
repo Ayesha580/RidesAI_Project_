@@ -4327,6 +4327,192 @@ class OwnerBusinessAssistantTests(TestCase):
         self.assertTrue("Ahmed" in res.data["reply"] or "Bilal" in res.data["reply"] or "Total Staff" in res.data["reply"])
 
 
+class P0WhatsAppDBAndSecurityTests(TestCase):
+    """P0 Verification: PostgreSQL-backed Meta WhatsApp credentials & production security settings."""
+
+    def setUp(self):
+        self.client = APIClient()
+        self.company_a = Company.objects.create(
+            name="P0 Tenant Alpha",
+            business_type="restaurant",
+            status=Company.STATUS_ACTIVE,
+            payment_status=Company.PAYMENT_OK,
+            subscription_status=Company.SUBSCRIPTION_ACTIVE,
+        )
+        self.company_b = Company.objects.create(
+            name="P0 Tenant Beta",
+            business_type="pharmacy",
+            status=Company.STATUS_ACTIVE,
+            payment_status=Company.PAYMENT_OK,
+            subscription_status=Company.SUBSCRIPTION_ACTIVE,
+        )
+        self.owner_a = User.objects.create_user(
+            username="p0_owner_a",
+            email="p0_owner_a@example.com",
+            password="Password123!",
+            role=User.ROLE_OWNER,
+            company=self.company_a,
+            is_active=True,
+        )
+        self.owner_b = User.objects.create_user(
+            username="p0_owner_b",
+            email="p0_owner_b@example.com",
+            password="Password123!",
+            role=User.ROLE_OWNER,
+            company=self.company_b,
+            is_active=True,
+        )
+
+    def test_whatsapp_credentials_persist_in_postgres_with_tenant_isolation(self):
+        from operations.whatsapp_storage import (
+            get_whatsapp_config,
+            get_config_by_phone_number_id,
+            is_valid_verify_token,
+        )
+
+        # Save Tenant A via API
+        self.client.force_authenticate(user=self.owner_a)
+        res_a = self.client.post(
+            "/api/operations/agent/whatsapp-settings/",
+            {
+                "phone_number_id": "111222333444",
+                "access_token": "EAAG_TENANT_A_SECRET",
+                "verify_token": "verify_alpha_999",
+                "is_active": True,
+            },
+            format="json",
+        )
+        self.assertEqual(res_a.status_code, 200)
+
+        # Save Tenant B via API
+        self.client.force_authenticate(user=self.owner_b)
+        res_b = self.client.post(
+            "/api/operations/agent/whatsapp-settings/",
+            {
+                "phone_number_id": "555666777888",
+                "access_token": "EAAG_TENANT_B_SECRET",
+                "verify_token": "verify_beta_888",
+                "is_active": True,
+            },
+            format="json",
+        )
+        self.assertEqual(res_b.status_code, 200)
+
+        # Verify persisted directly on PostgreSQL Company rows
+        self.company_a.refresh_from_db()
+        self.company_b.refresh_from_db()
+        self.assertEqual(self.company_a.whatsapp_phone_number_id, "111222333444")
+        self.assertEqual(self.company_a.whatsapp_access_token, "EAAG_TENANT_A_SECRET")
+        self.assertEqual(self.company_a.whatsapp_verify_token, "verify_alpha_999")
+        self.assertTrue(self.company_a.whatsapp_is_active)
+
+        self.assertEqual(self.company_b.whatsapp_phone_number_id, "555666777888")
+        self.assertEqual(self.company_b.whatsapp_access_token, "EAAG_TENANT_B_SECRET")
+
+        # Verify multi-tenant lookup and verify_token validation from DB
+        cfg_a = get_config_by_phone_number_id("111222333444")
+        self.assertIsNotNone(cfg_a)
+        self.assertEqual(cfg_a["company_id"], str(self.company_a.id))
+        self.assertEqual(cfg_a["access_token"], "EAAG_TENANT_A_SECRET")
+
+        cfg_b = get_config_by_phone_number_id("555666777888")
+        self.assertIsNotNone(cfg_b)
+        self.assertEqual(cfg_b["company_id"], str(self.company_b.id))
+        self.assertEqual(cfg_b["access_token"], "EAAG_TENANT_B_SECRET")
+
+        self.assertIsNone(get_config_by_phone_number_id("nonexistent_pid_000"))
+        self.assertTrue(is_valid_verify_token("verify_alpha_999"))
+        self.assertTrue(is_valid_verify_token("verify_beta_888"))
+        self.assertFalse(is_valid_verify_token("invalid_token_xyz"))
+
+        # Verify GET endpoint returns only Tenant A's credentials for Owner A
+        self.client.force_authenticate(user=self.owner_a)
+        get_a = self.client.get("/api/operations/agent/whatsapp-settings/")
+        self.assertEqual(get_a.status_code, 200)
+        self.assertEqual(get_a.data["phone_number_id"], "111222333444")
+        self.assertEqual(get_whatsapp_config(company_id=self.company_a.id)["verify_token"], "verify_alpha_999")
+
+    def test_legacy_json_import_does_not_overwrite_populated_db_records(self):
+        import json as _json
+        import tempfile
+        from pathlib import Path
+        from operations.whatsapp_storage import import_legacy_whatsapp_config_json
+
+        # Pre-populate Company A in DB; leave Company B blank
+        self.company_a.whatsapp_phone_number_id = "db_existing_pid_a"
+        self.company_a.whatsapp_access_token = "db_existing_token_a"
+        self.company_a.whatsapp_is_active = True
+        self.company_a.save()
+
+        legacy_payload = {
+            str(self.company_a.id): {
+                "phone_number_id": "stale_json_pid_a",
+                "access_token": "stale_json_token_a",
+                "verify_token": "stale_vt_a",
+                "is_active": False,
+            },
+            str(self.company_b.id): {
+                "phone_number_id": "legacy_json_pid_b",
+                "access_token": "legacy_json_token_b",
+                "verify_token": "legacy_vt_b",
+                "is_active": True,
+            },
+        }
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp_file = Path(tmpdir) / "whatsapp_config.json"
+            tmp_file.write_text(_json.dumps(legacy_payload), encoding="utf-8")
+            imported_count = import_legacy_whatsapp_config_json(json_path=tmp_file)
+
+        self.assertEqual(imported_count, 1)
+        self.company_a.refresh_from_db()
+        self.company_b.refresh_from_db()
+        # Company A preserved existing DB values
+        self.assertEqual(self.company_a.whatsapp_phone_number_id, "db_existing_pid_a")
+        self.assertEqual(self.company_a.whatsapp_access_token, "db_existing_token_a")
+        # Company B imported cleanly from legacy JSON
+        self.assertEqual(self.company_b.whatsapp_phone_number_id, "legacy_json_pid_b")
+        self.assertEqual(self.company_b.whatsapp_access_token, "legacy_json_token_b")
+        self.assertEqual(self.company_b.whatsapp_verify_token, "legacy_vt_b")
+        self.assertTrue(self.company_b.whatsapp_is_active)
+
+    def test_production_security_settings_when_debug_false(self):
+        import importlib
+        import os
+        from unittest.mock import patch
+        import config.settings as settings_mod
+
+        prod_env = {
+            "DJANGO_DEBUG": "False",
+            "CORS_ALLOWED_ORIGINS": "https://app.ridesai.com,https://admin.ridesai.com",
+        }
+        try:
+            with patch.dict(os.environ, prod_env, clear=False):
+                os.environ.pop("CORS_ALLOW_ALL_ORIGINS", None)
+                os.environ.pop("SECURE_SSL_REDIRECT", None)
+                importlib.reload(settings_mod)
+                self.assertFalse(settings_mod.DEBUG)
+                self.assertFalse(settings_mod.CORS_ALLOW_ALL_ORIGINS)
+                self.assertEqual(
+                    settings_mod.CORS_ALLOWED_ORIGINS,
+                    ["https://app.ridesai.com", "https://admin.ridesai.com"],
+                )
+                self.assertTrue(settings_mod.SECURE_SSL_REDIRECT)
+                self.assertTrue(settings_mod.SESSION_COOKIE_SECURE)
+                self.assertTrue(settings_mod.CSRF_COOKIE_SECURE)
+                self.assertEqual(settings_mod.SECURE_HSTS_SECONDS, 31536000)
+                self.assertTrue(settings_mod.SECURE_HSTS_INCLUDE_SUBDOMAINS)
+                self.assertTrue(settings_mod.SECURE_HSTS_PRELOAD)
+                self.assertEqual(
+                    settings_mod.SECURE_PROXY_SSL_HEADER,
+                    ("HTTP_X_FORWARDED_PROTO", "https"),
+                )
+                self.assertTrue(settings_mod.SECURE_CONTENT_TYPE_NOSNIFF)
+        finally:
+            # Restore original dev settings module state
+            importlib.reload(settings_mod)
+
+
+
 
 
 

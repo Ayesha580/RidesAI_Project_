@@ -133,6 +133,32 @@ class Company(models.Model):
     whatsapp_instance_name = models.CharField(max_length=100, blank=True, null=True)
     whatsapp_connection_status = models.CharField(max_length=20, default="disconnected")  # connected / disconnected
 
+    # Meta WhatsApp Cloud API Integration (PostgreSQL-backed, migrated from whatsapp_config.json)
+    whatsapp_phone_number_id = models.CharField(
+        max_length=100,
+        blank=True,
+        default="",
+        db_index=True,
+        help_text="Meta WhatsApp Business Account Phone Number ID",
+    )
+    whatsapp_access_token = models.TextField(
+        blank=True,
+        default="",
+        help_text="Permanent Meta System User Access Token",
+    )
+    whatsapp_verify_token = models.CharField(
+        max_length=255,
+        blank=True,
+        default="",
+        db_index=True,
+        help_text="Secret token for Meta hub.verify_token handshake",
+    )
+    whatsapp_is_active = models.BooleanField(
+        default=False,
+        help_text="Whether Meta WhatsApp Cloud API messaging is actively enabled for this business",
+    )
+    whatsapp_updated_at = models.DateTimeField(null=True, blank=True)
+
     # Legacy business-email setup metadata; account email remains the owner contact above.
     business_email_address = models.EmailField(blank=True)
     business_email_domain = models.CharField(max_length=253, blank=True)
