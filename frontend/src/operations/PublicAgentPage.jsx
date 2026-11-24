@@ -11,8 +11,9 @@ export default function PublicAgentPage() {
   const [catalog, setCatalog] = useState([]);
   const [serviceAreas, setServiceAreas] = useState([]);
 
-  // Customer contact info (optional / for orders)
-  const [customer, setCustomer] = useState({ name: "", email: "", phone: "" });
+  // Customer contact info (optional / for orders + OpenStreetMap delivery pin)
+  const [customer, setCustomer] = useState({ name: "", email: "", phone: "", address: "", delivery_lat: "", delivery_lng: "" });
+  const [locating, setLocating] = useState(false);
   const [showContactModal, setShowContactModal] = useState(false);
 
   // Conversation & Read-only Display State
@@ -230,6 +231,9 @@ export default function PublicAgentPage() {
         customer_name: customer.name,
         customer_email: customer.email,
         customer_phone: customer.phone,
+        delivery_address: customer.address || undefined,
+        delivery_lat: customer.delivery_lat !== "" ? Number(customer.delivery_lat) : undefined,
+        delivery_lng: customer.delivery_lng !== "" ? Number(customer.delivery_lng) : undefined,
       });
 
       if (data?.conversation_id) {
@@ -1288,6 +1292,104 @@ export default function PublicAgentPage() {
                   value={customer.email}
                   onChange={(e) => setCustomer({ ...customer, email: e.target.value })}
                 />
+              </div>
+
+              <div>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8 }}>
+                  <label style={{ fontSize: "12px", fontWeight: "600", color: "#475569" }}>Delivery Address &amp; Map Pin</label>
+                  <button
+                    type="button"
+                    disabled={locating}
+                    onClick={() => {
+                      if (!navigator.geolocation) return;
+                      setLocating(true);
+                      navigator.geolocation.getCurrentPosition(
+                        async (pos) => {
+                          const lat = Number(pos.coords.latitude.toFixed(6));
+                          const lng = Number(pos.coords.longitude.toFixed(6));
+                          let resolvedAddr = customer.address;
+                          try {
+                            const resp = await fetch(
+                              `https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat=${lat}&lon=${lng}`
+                            );
+                            if (resp.ok) {
+                              const geo = await resp.json();
+                              if (geo?.display_name) resolvedAddr = geo.display_name;
+                            }
+                          } catch {}
+                          setCustomer((prev) => ({
+                            ...prev,
+                            delivery_lat: String(lat),
+                            delivery_lng: String(lng),
+                            address: resolvedAddr || `${lat}, ${lng}`,
+                          }));
+                          setLocating(false);
+                        },
+                        () => setLocating(false),
+                        { enableHighAccuracy: true, timeout: 10000 }
+                      );
+                    }}
+                    style={{
+                      background: "#fdf4ff",
+                      border: "1px solid #f0abfc",
+                      borderRadius: "8px",
+                      padding: "4px 9px",
+                      fontSize: "11px",
+                      fontWeight: "700",
+                      color: "#a21caf",
+                      cursor: locating ? "wait" : "pointer",
+                    }}
+                  >
+                    {locating ? "Locating..." : "📍 Use My Current Location"}
+                  </button>
+                </div>
+                <input
+                  style={{
+                    width: "100%",
+                    boxSizing: "border-box",
+                    padding: "10px 12px",
+                    borderRadius: "10px",
+                    border: "1px solid #cbd5e1",
+                    marginTop: "4px",
+                    fontSize: "13.5px",
+                  }}
+                  placeholder="House / Street / Area"
+                  value={customer.address}
+                  onChange={(e) => setCustomer({ ...customer, address: e.target.value })}
+                />
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginTop: 6 }}>
+                  <input
+                    type="number"
+                    step="0.000001"
+                    placeholder="Latitude (e.g. 31.4504)"
+                    value={customer.delivery_lat}
+                    onChange={(e) => setCustomer({ ...customer, delivery_lat: e.target.value })}
+                    style={{ padding: "7px 10px", borderRadius: 8, border: "1px solid #cbd5e1", fontSize: 12 }}
+                  />
+                  <input
+                    type="number"
+                    step="0.000001"
+                    placeholder="Longitude (e.g. 73.1350)"
+                    value={customer.delivery_lng}
+                    onChange={(e) => setCustomer({ ...customer, delivery_lng: e.target.value })}
+                    style={{ padding: "7px 10px", borderRadius: 8, border: "1px solid #cbd5e1", fontSize: 12 }}
+                  />
+                </div>
+                {customer.delivery_lat && customer.delivery_lng && !Number.isNaN(Number(customer.delivery_lat)) && !Number.isNaN(Number(customer.delivery_lng)) && (() => {
+                  const lat = Number(customer.delivery_lat);
+                  const lng = Number(customer.delivery_lng);
+                  const d = 0.006;
+                  const embedSrc = `https://www.openstreetmap.org/export/embed.html?bbox=${lng - d}%2C${lat - d}%2C${lng + d}%2C${lat + d}&layer=mapnik&marker=${lat}%2C${lng}`;
+                  return (
+                    <div style={{ marginTop: 8 }}>
+                      <iframe
+                        title="Pinned Delivery Location"
+                        src={embedSrc}
+                        style={{ width: "100%", height: 145, border: "1px solid #f0abfc", borderRadius: 10 }}
+                      />
+                    </div>
+                  );
+                })()}
               </div>
             </div>
 

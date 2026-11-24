@@ -85,11 +85,26 @@ def _create_order(company, payload, actor=None, source="dashboard"):
     if not customer_name:
         raise ValueError("Customer name is required.")
     delivery_area = _delivery_area_for_order(company, payload)
+    raw_lat = payload.get("delivery_lat", payload.get("latitude"))
+    raw_lng = payload.get("delivery_lng", payload.get("longitude"))
+    parsed_lat = None
+    parsed_lng = None
+    try:
+        if raw_lat is not None and str(raw_lat).strip() != "":
+            parsed_lat = Decimal(str(raw_lat)).quantize(Decimal("0.000001"))
+        if raw_lng is not None and str(raw_lng).strip() != "":
+            parsed_lng = Decimal(str(raw_lng)).quantize(Decimal("0.000001"))
+    except Exception:
+        parsed_lat = None
+        parsed_lng = None
+
     with transaction.atomic():
         order = Order.objects.create(company=company, customer_name=customer_name,
             customer_email=payload.get("customer_email", ""),
             customer_phone=payload.get("customer_phone", ""),
             delivery_address=payload.get("delivery_address", ""),
+            delivery_lat=parsed_lat,
+            delivery_lng=parsed_lng,
             notes=payload.get("notes", ""), source=source, created_by=actor)
         subtotal = Decimal("0")
         for row in rows:
@@ -131,6 +146,8 @@ def _order_payload(order):
         "id": order.id, "order_number": order.order_number,
         "customer_name": order.customer_name, "customer_email": order.customer_email,
         "customer_phone": order.customer_phone, "delivery_address": order.delivery_address,
+        "delivery_lat": float(order.delivery_lat) if order.delivery_lat is not None else None,
+        "delivery_lng": float(order.delivery_lng) if order.delivery_lng is not None else None,
         "status": order.status, "subtotal": str(order.subtotal),
         "delivery_fee": str(order.delivery_fee), "total": str(order.total),
         "notes": order.notes, "source": order.source,

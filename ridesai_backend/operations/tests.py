@@ -5295,6 +5295,144 @@ class AIFAQLearningLoopTests(TestCase):
         self.assertEqual(SuggestedFAQ.objects.get(pk=logged2["suggestion_id"]).status, "dismissed")
 
 
+class MapPinAndFloorPlanTests(TestCase):
+    """Tests for Delivery Map-Pin Coordinates & Restaurant Visual Floor-Plan Tables (Multi-Tenant)."""
+
+    def setUp(self):
+        self.client = APIClient()
+        self.company_a = Company.objects.create(
+            name="Bistro Map Alpha",
+            business_type="restaurant",
+            status=Company.STATUS_ACTIVE,
+            payment_status=Company.PAYMENT_OK,
+            subscription_status=Company.SUBSCRIPTION_ACTIVE,
+        )
+        self.company_b = Company.objects.create(
+            name="Bistro Map Beta",
+            business_type="restaurant",
+            status=Company.STATUS_ACTIVE,
+            payment_status=Company.PAYMENT_OK,
+            subscription_status=Company.SUBSCRIPTION_ACTIVE,
+        )
+        self.owner_a = User.objects.create_user(
+            username="map_owner_a",
+            email="map_owner_a@example.com",
+            password="Password123!",
+            role=User.ROLE_OWNER,
+            company=self.company_a,
+            is_active=True,
+        )
+        self.owner_b = User.objects.create_user(
+            username="map_owner_b",
+            email="map_owner_b@example.com",
+            password="Password123!",
+            role=User.ROLE_OWNER,
+            company=self.company_b,
+            is_active=True,
+        )
+        self.burger_a = CatalogItem.objects.create(
+            company=self.company_a,
+            name="Classic Smash Burger",
+            price=Decimal("700.00"),
+            is_available=True,
+        )
+        from companies.models import ServiceArea
+        ServiceArea.objects.create(
+            company=self.company_a,
+            name="Faisalabad City",
+            area_type="city",
+            city="Faisalabad",
+            delivery_fee=Decimal("100.00"),
+            is_active=True,
+        )
+
+    def test_order_delivery_lat_lng_persists_with_tenant_isolation(self):
+        self.client.force_authenticate(user=self.owner_a)
+        res = self.client.post(
+            "/api/operations/orders/",
+            {
+                "customer_name": "Hamza Tariq",
+                "customer_phone": "03001234567",
+                "fulfillment_type": "delivery",
+                "delivery_address": "Peoples Colony, Faisalabad",
+                "city": "Faisalabad",
+                "delivery_lat": "31.418715",
+                "delivery_lng": "73.079109",
+                "items": [{"item_id": self.burger_a.id, "quantity": 1}],
+            },
+            format="json",
+        )
+        self.assertEqual(res.status_code, 201)
+        self.assertAlmostEqual(res.data["delivery_lat"], 31.418715, places=5)
+        self.assertAlmostEqual(res.data["delivery_lng"], 73.079109, places=5)
+
+        # Verify persisted in PostgreSQL and isolated from Company B
+        order_obj = Order.objects.get(pk=res.data["id"])
+        self.assertEqual(order_obj.company_id, self.company_a.id)
+        self.assertAlmostEqual(float(order_obj.delivery_lat), 31.418715, places=5)
+        self.assertAlmostEqual(float(order_obj.delivery_lng), 73.079109, places=5)
+
+        self.client.force_authenticate(user=self.owner_b)
+        list_b = self.client.get("/api/operations/orders/")
+        self.assertEqual(list_b.status_code, 200)
+        self.assertEqual(list_b.data, [])
+
+    def test_restaurant_table_floor_plan_coordinates_and_isolation(self):
+        from operations.models import RestaurantTable
+
+        self.client.force_authenticate(user=self.owner_a)
+        create_res = self.client.post(
+            "/api/operations/tables/",
+            {
+                "table_number": "VIP-1",
+                "capacity": 6,
+                "zone": "VIP / Family",
+                "shape": "rect",
+                "pos_x": 120,
+                "pos_y": 80,
+            },
+            format="json",
+        )
+        self.assertEqual(create_res.status_code, 201)
+        table_id = create_res.data["id"]
+        self.assertEqual(create_res.data["zone"], "VIP / Family")
+        self.assertEqual(create_res.data["shape"], "rect")
+        self.assertEqual(create_res.data["pos_x"], 120)
+        self.assertEqual(create_res.data["pos_y"], 80)
+
+        # Reposition via drag/edit & reserve table
+        patch_res = self.client.patch(
+            f"/api/operations/tables/{table_id}/",
+            {
+                "pos_x": 280,
+                "pos_y": 195,
+                "zone": "Outdoor",
+                "shape": "round",
+                "status": "reserved",
+                "guest_name": "Bilal Family",
+                "reservation_time": "8:30 PM",
+            },
+            format="json",
+        )
+        self.assertEqual(patch_res.status_code, 200)
+        self.assertEqual(patch_res.data["pos_x"], 280)
+        self.assertEqual(patch_res.data["pos_y"], 195)
+        self.assertEqual(patch_res.data["zone"], "Outdoor")
+        self.assertEqual(patch_res.data["shape"], "round")
+        self.assertEqual(patch_res.data["status"], "reserved")
+
+        # Tenant B cannot list, patch, or delete Tenant A's table
+        self.client.force_authenticate(user=self.owner_b)
+        list_b = self.client.get("/api/operations/tables/")
+        self.assertEqual(list_b.status_code, 200)
+        self.assertEqual(list_b.data, [])
+
+        cross_patch = self.client.patch(f"/api/operations/tables/{table_id}/", {"pos_x": 0}, format="json")
+        self.assertEqual(cross_patch.status_code, 404)
+        self.assertEqual(RestaurantTable.objects.get(pk=table_id).pos_x, 280)
+
+
+
 
 
 

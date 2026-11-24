@@ -30,6 +30,8 @@ class Order(models.Model):
     customer_email = models.EmailField(blank=True)
     customer_phone = models.CharField(max_length=40, blank=True)
     delivery_address = models.TextField(blank=True)
+    delivery_lat = models.DecimalField(max_digits=9, decimal_places=6, null=True, blank=True)
+    delivery_lng = models.DecimalField(max_digits=9, decimal_places=6, null=True, blank=True)
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default=STATUS_NEW, db_index=True)
     subtotal = models.DecimalField(max_digits=12, decimal_places=2, default=0)
     delivery_fee = models.DecimalField(max_digits=12, decimal_places=2, default=0)
@@ -860,6 +862,70 @@ class SuggestedFAQ(models.Model):
 
     def __str__(self):
         return f"[{self.company_id}] ({self.status} x{self.occurrence_count}) {self.question[:60]}"
+
+
+# ============================================================================
+# Restaurant Visual Floor-Plan Table Layout Model (Multi-Tenant)
+# ============================================================================
+
+class RestaurantTable(models.Model):
+    STATUS_AVAILABLE = "available"
+    STATUS_OCCUPIED = "occupied"
+    STATUS_RESERVED = "reserved"
+    STATUS_CHOICES = [
+        (STATUS_AVAILABLE, "Available"),
+        (STATUS_OCCUPIED, "Occupied"),
+        (STATUS_RESERVED, "Reserved"),
+    ]
+
+    SHAPE_ROUND = "round"
+    SHAPE_SQUARE = "square"
+    SHAPE_RECT = "rect"
+    SHAPE_CHOICES = [
+        (SHAPE_ROUND, "Round"),
+        (SHAPE_SQUARE, "Square"),
+        (SHAPE_RECT, "Rectangle"),
+    ]
+
+    company = models.ForeignKey(
+        "companies.Company",
+        on_delete=models.CASCADE,
+        related_name="restaurant_tables",
+        db_index=True,
+    )
+    table_number = models.CharField(max_length=40)
+    capacity = models.PositiveIntegerField(default=4)
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default=STATUS_AVAILABLE, db_index=True)
+    zone = models.CharField(max_length=60, default="Main Hall", db_index=True)
+    shape = models.CharField(max_length=16, choices=SHAPE_CHOICES, default=SHAPE_SQUARE)
+    pos_x = models.IntegerField(default=60)
+    pos_y = models.IntegerField(default=60)
+    guest_name = models.CharField(max_length=160, blank=True, default="")
+    guest_phone = models.CharField(max_length=40, blank=True, default="")
+    reservation_time = models.CharField(max_length=60, blank=True, default="")
+    active_order = models.ForeignKey(
+        Order,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="assigned_tables",
+    )
+    notes = models.TextField(blank=True, default="")
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ("zone", "table_number")
+        constraints = [
+            models.UniqueConstraint(
+                fields=["company", "table_number"],
+                name="unique_restaurant_table_per_company",
+            )
+        ]
+
+    def __str__(self):
+        return f"{self.table_number} ({self.zone}) - {self.status}"
+
 
 
 

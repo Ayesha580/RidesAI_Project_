@@ -20,6 +20,7 @@ from .faq_views import (
     ApprovedFAQListCreateAPIView,
     ApprovedFAQDetailAPIView,
 )
+from .table_views import RestaurantTableListCreateAPIView, RestaurantTableDetailAPIView
 
 urlpatterns = [
     path("orders/catalog/", OrderCatalogAPIView.as_view(), name="order-catalog"),
@@ -59,5 +60,7 @@ urlpatterns = [
     path("faqs/suggestions/<int:pk>/dismiss/", SuggestedFAQDismissAPIView.as_view(), name="faq-suggestions-dismiss"),
     path("faqs/", ApprovedFAQListCreateAPIView.as_view(), name="approved-faqs-list"),
     path("faqs/<int:pk>/", ApprovedFAQDetailAPIView.as_view(), name="approved-faqs-detail"),
+    path("tables/", RestaurantTableListCreateAPIView.as_view(), name="restaurant-tables-list"),
+    path("tables/<int:pk>/", RestaurantTableDetailAPIView.as_view(), name="restaurant-tables-detail"),
     path("hospital/", include("operations.hospital_urls")),
 ]

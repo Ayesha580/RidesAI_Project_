@@ -222,6 +222,8 @@ class RiderOrdersAPIView(APIView):
                 "customer_name": o.customer_name or "Customer",
                 "customer_phone": o.customer_phone or "",
                 "delivery_address": o.delivery_address or "Store Pickup",
+                "delivery_lat": float(o.delivery_lat) if o.delivery_lat is not None else None,
+                "delivery_lng": float(o.delivery_lng) if o.delivery_lng is not None else None,
                 "total": float(o.total or 0),
                 "notes": o.notes or "",
                 "is_exchange": bool("EXCHANGE SWAP" in (o.notes or "") or o.exchange_requests.exists()),

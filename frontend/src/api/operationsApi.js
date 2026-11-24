@@ -111,3 +111,10 @@ export const faqLearningApi = {
   deleteFaq: (id) => api.delete(`/operations/faqs/${id}/`),
 };
 
+export const tablesApi = {
+  list: (params = {}) => api.get("/operations/tables/", { params }),
+  create: (data) => api.post("/operations/tables/", data),
+  update: (id, data) => api.patch(`/operations/tables/${id}/`, data),
+  remove: (id) => api.delete(`/operations/tables/${id}/`),
+};
+

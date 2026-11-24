@@ -458,16 +458,36 @@ export default function RiderDashboard() {
                   <span className="rd-info-icon">📍</span>
                   <div style={{ flex: 1 }}>
                     <div style={{ fontWeight: 650, color: "#1e293b" }}>{o.delivery_address || "No address provided"}</div>
-                    {o.delivery_address && o.delivery_address !== "Store Pickup" && (
-                      <a
-                        href={`https://maps.google.com/?q=${encodeURIComponent(o.delivery_address)}`}
-                        target="_blank"
-                        rel="noreferrer"
-                        className="rd-phone-btn btn-map"
-                        style={{ marginTop: 8 }}
-                      >
-                        🗺️ Open Navigation
-                      </a>
+                    {o.delivery_lat != null && o.delivery_lng != null && (
+                      <div style={{ fontSize: 11.5, color: "#a21caf", fontWeight: 600, marginTop: 2 }}>
+                        📌 Pinned GPS: {Number(o.delivery_lat).toFixed(5)}, {Number(o.delivery_lng).toFixed(5)}
+                      </div>
+                    )}
+                    {((o.delivery_lat != null && o.delivery_lng != null) || (o.delivery_address && o.delivery_address !== "Store Pickup")) && (
+                      <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 8 }}>
+                        <a
+                          href={
+                            o.delivery_lat != null && o.delivery_lng != null
+                              ? `https://www.openstreetmap.org/?mlat=${o.delivery_lat}&mlon=${o.delivery_lng}#map=16/${o.delivery_lat}/${o.delivery_lng}`
+                              : `https://maps.google.com/?q=${encodeURIComponent(o.delivery_address)}`
+                          }
+                          target="_blank"
+                          rel="noreferrer"
+                          className="rd-phone-btn btn-map"
+                        >
+                          🗺️ View on Map
+                        </a>
+                        {o.delivery_lat != null && o.delivery_lng != null && (
+                          <a
+                            href={`https://maps.google.com/?q=${o.delivery_lat},${o.delivery_lng}`}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="rd-phone-btn btn-map"
+                          >
+                            🧭 Navigate GPS
+                          </a>
+                        )}
+                      </div>
                     )}
                   </div>
                 </div>

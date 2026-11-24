@@ -55,6 +55,7 @@ import ClinicPatients from "./operations/ClinicPatients";
 import HospitalDashboard from "./operations/HospitalDashboard";
 import AnalyticsReports from "./operations/AnalyticsReports";
 import NotificationSettings from "./operations/NotificationSettings";
+import TablesFloorPlan from "./operations/TablesFloorPlan";
 import RetailFulfillment from "./operations/RetailFulfillment";
 import RetailReturns from "./operations/RetailReturns";
 
@@ -73,6 +74,7 @@ function OwnerModulePage() {
   if (moduleKey === "departments") return <HospitalDashboard defaultTab="departments" />;
   if (moduleKey === "lab_tests") return <HospitalDashboard defaultTab="lab_tests" />;
   if (moduleKey === "reports") return <AnalyticsReports />;
+  if (moduleKey === "tables" || moduleKey === "reservations") return <TablesFloorPlan />;
   if (moduleKey === "appointments") return <ClinicAppointments />;
   if (moduleKey === "doctors") return <ClinicDoctors />;
   if (moduleKey === "patients") return <ClinicPatients />;
@@ -107,6 +109,7 @@ function StaffModulePage() {
   if (moduleKey === "departments") return <HospitalDashboard staff defaultTab="departments" />;
   if (moduleKey === "lab_tests") return <HospitalDashboard staff defaultTab="lab_tests" />;
   if (moduleKey === "reports") return <AnalyticsReports staff />;
+  if (moduleKey === "tables" || moduleKey === "reservations") return <TablesFloorPlan staff />;
   if (moduleKey === "appointments") return <ClinicAppointments staff />;
   if (moduleKey === "doctors") return <ClinicDoctors staff />;
   if (moduleKey === "patients") return <ClinicPatients staff />;
