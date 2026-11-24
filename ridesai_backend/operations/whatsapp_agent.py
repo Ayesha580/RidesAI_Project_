@@ -286,6 +286,50 @@ TOOL_GET_UPSELL_SUGGESTIONS = {
     },
 }
 
+TOOL_GET_HOSPITAL_DEPARTMENTS = {
+    "type": "function",
+    "function": {
+        "name": "get_hospital_departments",
+        "description": (
+            "Fetches the hospital's active departments, wards (OPD, Emergency, ICU, General Ward, Lab/Diagnostics), "
+            "24/7 availability, head doctors, and real-time available bed counts."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "ward_type": {
+                    "type": "string",
+                    "description": "Optional filter: 'opd', 'emergency', 'icu', 'general_ward', 'maternity', or 'diagnostics'.",
+                }
+            },
+            "required": [],
+        },
+    },
+}
+
+TOOL_BOOK_LAB_TEST = {
+    "type": "function",
+    "function": {
+        "name": "book_lab_test",
+        "description": (
+            "Books a diagnostic or laboratory test (e.g., CBC, Lipid Profile, X-Ray, Ultrasound, Full Body Checkup) "
+            "at the hospital once the patient confirms the test name, their name, phone, and preferred date/time."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "patient_name": {"type": "string", "description": "Full name of the patient."},
+                "patient_phone": {"type": "string", "description": "Patient's phone number."},
+                "test_name": {"type": "string", "description": "Name of the lab or diagnostic test."},
+                "scheduled_date": {"type": "string", "description": "Preferred date (YYYY-MM-DD or natural date)."},
+                "scheduled_time": {"type": "string", "description": "Preferred time slot (e.g. '10:00 AM')."},
+                "notes": {"type": "string", "description": "Optional fasting or clinical instructions."},
+            },
+            "required": ["patient_name", "test_name"],
+        },
+    },
+}
+
 AGENT_TOOLS = [
     TOOL_GET_CATALOG_ITEMS,
     TOOL_GET_UPSELL_SUGGESTIONS,
@@ -294,6 +338,8 @@ AGENT_TOOLS = [
     TOOL_SUBMIT_PRESCRIPTION_REQUEST,
     TOOL_GET_CLINIC_DOCTORS,
     TOOL_BOOK_APPOINTMENT,
+    TOOL_GET_HOSPITAL_DEPARTMENTS,
+    TOOL_BOOK_LAB_TEST,
     TOOL_SUBMIT_RETURN_REQUEST,
 ]
 
@@ -326,6 +372,32 @@ CATEGORY_AGENT_PROFILES = {
             "- Inform customers that prescription-only medicines require presenting a valid physical or digital doctor's prescription upon delivery."
         ),
         "tools": [TOOL_GET_CATALOG_ITEMS, TOOL_GET_UPSELL_SUGGESTIONS, TOOL_CREATE_ORDER, TOOL_CHECK_ORDER_STATUS, TOOL_SUBMIT_PRESCRIPTION_REQUEST],
+    },
+    "hospital": {
+        "key": "hospital",
+        "role_desc": "hospital reception, OPD appointment desk, lab/diagnostics booking, and ward information assistant",
+        "catalog_header": "HOSPITAL SERVICES, DIAGNOSTIC LAB TESTS & CHECKUP PACKAGES",
+        "instructions": (
+            "- Primary duty is helping patients with hospital departments, 24/7 emergency & ward/bed availability, "
+            "specialist doctors, OPD timings, consultation fees in Rs., OPD appointment bookings, and lab/diagnostic test bookings.\n"
+            "- DEPARTMENTS & BEDS: Call `get_hospital_departments` when a patient asks about departments, emergency, ICU, wards, or bed availability.\n"
+            "- DOCTORS & OPD: Call `get_clinic_doctors` to share active specialist doctors, qualifications, OPD hours, and fees in Rs.\n"
+            "- OPD APPOINTMENTS: Collect patient's full name, phone number, preferred doctor/department, date, time, and reason, then call `book_appointment`.\n"
+            "- LAB / DIAGNOSTIC TESTS: Collect patient's name, phone, test name, and preferred date/time, then call `book_lab_test`.\n"
+            "- PREVENTIVE CHECKUP / LAB CROSS-SELL (when upselling is enabled): Before confirming an OPD appointment or lab test, "
+            "politely suggest 1 relevant preventive health checkup package or complementary diagnostic test from THIS hospital's active catalog with its exact Rs. price (ask only once; respect declines immediately).\n"
+            "- MEDICAL GUARDRAIL: You are a hospital reception assistant, NOT a physician. STRICTLY NEVER diagnose conditions, prescribe medicines, "
+            "or give medical treatment advice. For medical emergencies, immediately direct the patient to the 24/7 Emergency Ward."
+        ),
+        "tools": [
+            TOOL_GET_HOSPITAL_DEPARTMENTS,
+            TOOL_GET_CLINIC_DOCTORS,
+            TOOL_BOOK_APPOINTMENT,
+            TOOL_BOOK_LAB_TEST,
+            TOOL_GET_CATALOG_ITEMS,
+            TOOL_GET_UPSELL_SUGGESTIONS,
+            TOOL_CHECK_ORDER_STATUS,
+        ],
     },
     "clinic": {
         "key": "clinic",
@@ -365,9 +437,11 @@ def get_category_agent_config(business_type: Optional[str]) -> Dict[str, Any]:
     Resolves keywords to restaurant, pharmacy, clinic, or retail.
     """
     raw = (business_type or "").strip().lower()
-    if any(k in raw for k in ("pharm", "med", "chemist", "drug")):
+    if any(k in raw for k in ("pharm", "med", "chemist", "drug")) and "medical center" not in raw and "medical centre" not in raw:
         return CATEGORY_AGENT_PROFILES["pharmacy"]
-    if any(k in raw for k in ("clinic", "hosp", "doctor", "health", "dental", "physio")):
+    if any(k in raw for k in ("hospital", "medical center", "medical centre", "trauma")):
+        return CATEGORY_AGENT_PROFILES["hospital"]
+    if any(k in raw for k in ("clinic", "doctor", "health", "dental", "physio")):
         return CATEGORY_AGENT_PROFILES["clinic"]
     if any(k in raw for k in ("retail", "store", "shop", "supermarket", "grocery", "mart", "general")):
         return CATEGORY_AGENT_PROFILES["retail"]
@@ -536,6 +610,103 @@ def get_upsell_suggestions(
 # ============================================================================
 # Tool Execution Functions (Atomic Database Transactions & Multi-Tenant Guarded)
 # ============================================================================
+
+def execute_get_hospital_departments(company: Company, ward_type: Optional[str] = None) -> Dict[str, Any]:
+    """Fetches active hospital departments, wards, and live bed availability strictly for `company`."""
+    try:
+        from operations.models import HospitalDepartment
+        qs = HospitalDepartment.objects.filter(company=company, is_active=True).select_related("head_doctor")
+        if ward_type and str(ward_type).strip():
+            qs = qs.filter(ward_type__iexact=str(ward_type).strip())
+        rows = []
+        for dept in qs[:30]:
+            rows.append({
+                "name": dept.name,
+                "ward_type": dept.get_ward_type_display(),
+                "floor_or_location": dept.floor_or_location,
+                "total_beds": dept.total_beds,
+                "available_beds": dept.available_beds,
+                "is_24_7": dept.is_24_7,
+                "head_doctor": dept.head_doctor.name if dept.head_doctor else None,
+            })
+        return {"success": True, "departments": rows, "count": len(rows)}
+    except Exception as e:
+        logger.error(f"[Hospital Agent] get_hospital_departments error: {e}", exc_info=True)
+        return {"success": False, "error": "Could not load hospital departments right now."}
+
+
+def execute_book_lab_test(
+    company: Company,
+    sender_phone: str,
+    patient_name: str,
+    test_name: str,
+    scheduled_date: Optional[str] = None,
+    scheduled_time: Optional[str] = None,
+    notes: str = "",
+) -> Dict[str, Any]:
+    """Books a lab/diagnostic test strictly isolated to `company`."""
+    try:
+        from datetime import datetime as _dt
+        from operations.models import HospitalDepartment, LabTestBooking, Patient
+
+        clean_name = (patient_name or "").strip() or "Patient"
+        clean_phone = (sender_phone or "").strip()
+        clean_test = (test_name or "").strip()
+        if not clean_test:
+            return {"success": False, "error": "Please specify the lab or diagnostic test name."}
+
+        # Look up catalog price if test exists in company catalog
+        matched_item = (
+            CatalogItem.objects.filter(company=company, is_available=True, name__icontains=clean_test).first()
+        )
+        price = matched_item.price if matched_item else Decimal("0.00")
+
+        patient = None
+        if clean_phone:
+            patient, _ = Patient.objects.get_or_create(
+                company=company,
+                phone=clean_phone,
+                defaults={"name": clean_name},
+            )
+
+        lab_dept = HospitalDepartment.objects.filter(
+            company=company, is_active=True, ward_type=HospitalDepartment.WARD_DIAGNOSTICS
+        ).first()
+
+        parsed_date = timezone.localdate()
+        if scheduled_date:
+            try:
+                parsed_date = _dt.strptime(str(scheduled_date).strip()[:10], "%Y-%m-%d").date()
+            except ValueError:
+                parsed_date = timezone.localdate()
+
+        booking = LabTestBooking.objects.create(
+            company=company,
+            patient=patient,
+            department=lab_dept,
+            patient_name=clean_name,
+            patient_phone=clean_phone,
+            test_name=matched_item.name if matched_item else clean_test,
+            price=price,
+            scheduled_date=parsed_date,
+            scheduled_time=str(scheduled_time or "").strip()[:50],
+            status=LabTestBooking.STATUS_SCHEDULED,
+            notes=str(notes or "").strip(),
+            source="agent",
+        )
+        return {
+            "success": True,
+            "booking_number": booking.booking_number,
+            "test_name": booking.test_name,
+            "price": float(booking.price),
+            "scheduled_date": booking.scheduled_date.isoformat() if booking.scheduled_date else "",
+            "scheduled_time": booking.scheduled_time,
+            "status": booking.status,
+        }
+    except Exception as e:
+        logger.error(f"[Hospital Agent] book_lab_test error: {e}", exc_info=True)
+        return {"success": False, "error": "Could not complete the lab test booking right now."}
+
 
 def execute_get_catalog_items(company: Company, search_query: Optional[str] = None) -> Dict[str, Any]:
     """
@@ -1176,6 +1347,14 @@ def get_business_context_for_company(company: Optional[Company]) -> Dict[str, An
 
         # Fetch active delivery service areas / zones with automatic fallback
         context["delivery_zones"] = get_effective_service_areas(company)
+
+        # Fetch hospital departments/wards if this is a hospital vertical
+        if get_category_agent_config(context["business_type"]).get("key") == "hospital":
+            from operations.models import HospitalDepartment
+            context["hospital_departments"] = list(
+                HospitalDepartment.objects.filter(company=company, is_active=True)
+                .values("name", "ward_type", "total_beds", "available_beds", "is_24_7", "floor_or_location")[:20]
+            )
     except Exception as e:
         logger.warning(f"[WhatsApp Agent] Could not load DB business context for company {company.id}: {e}", exc_info=True)
 
@@ -1332,6 +1511,15 @@ def _build_system_prompt(
             "(with exact Rs. prices) in this exact turn right before or alongside asking for their name, phone, and address."
         )
 
+    hospital_dept_section = ""
+    if context.get("hospital_departments"):
+        dept_lines = []
+        for d in context["hospital_departments"]:
+            tag = " [24/7]" if d.get("is_24_7") else ""
+            beds = f" ({d.get('available_beds', 0)}/{d.get('total_beds', 0)} beds available)" if d.get("total_beds", 0) > 0 else ""
+            dept_lines.append(f"• {d['name']} ({d.get('ward_type', 'opd').upper()}){tag}{beds}")
+        hospital_dept_section = "\nHOSPITAL DEPARTMENTS, WARDS & BED AVAILABILITY:\n" + "\n".join(dept_lines) + "\n"
+
     return f"""You are the official AI Assistant for {biz_name} on WhatsApp.
 Your primary role is {role_desc}.
 
@@ -1350,7 +1538,7 @@ OPERATING HOURS:
 
 AVAILABLE {catalog_header}:
 {catalog_str}
-
+{hospital_dept_section}
 FREQUENTLY ASKED QUESTIONS & POLICIES:
 {kb_str}
 
@@ -1702,6 +1890,21 @@ def _generate_agent_reply(
                             preferred_date=fn_args.get("preferred_date"),
                             preferred_time=fn_args.get("preferred_time"),
                             reason=fn_args.get("reason"),
+                        )
+                    elif fn_name == "get_hospital_departments":
+                        tool_result = execute_get_hospital_departments(
+                            company=company,
+                            ward_type=fn_args.get("ward_type"),
+                        )
+                    elif fn_name == "book_lab_test":
+                        tool_result = execute_book_lab_test(
+                            company=company,
+                            sender_phone=fn_args.get("patient_phone") or sender_phone,
+                            patient_name=fn_args.get("patient_name") or customer_name,
+                            test_name=fn_args.get("test_name", ""),
+                            scheduled_date=fn_args.get("scheduled_date"),
+                            scheduled_time=fn_args.get("scheduled_time"),
+                            notes=fn_args.get("notes", ""),
                         )
                     elif fn_name == "submit_return_request":
                         tool_result = execute_submit_return_request(

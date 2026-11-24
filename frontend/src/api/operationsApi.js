@@ -79,3 +79,14 @@ export const retailApi = {
   getInventoryAlerts: () => api.get("/retail/inventory-alerts/"),
 };
 
+export const hospitalApi = {
+  getSummary: () => api.get("/operations/hospital/summary/"),
+  getDepartments: (params = {}) => api.get("/operations/hospital/departments/", { params }),
+  createDepartment: (data) => api.post("/operations/hospital/departments/", data),
+  updateDepartment: (id, data) => api.patch(`/operations/hospital/departments/${id}/`, data),
+  deleteDepartment: (id) => api.delete(`/operations/hospital/departments/${id}/`),
+  getLabBookings: (params = {}) => api.get("/operations/hospital/lab-bookings/", { params }),
+  createLabBooking: (data) => api.post("/operations/hospital/lab-bookings/", data),
+  updateLabBookingStatus: (id, data) => api.patch(`/operations/hospital/lab-bookings/${id}/status/`, data),
+};
+

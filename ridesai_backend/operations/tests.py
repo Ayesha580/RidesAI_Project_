@@ -4646,6 +4646,243 @@ class AIUpsellingSuggestionsTests(TestCase):
         self.assertTrue(self.company_a.enable_upselling)
 
 
+class HospitalVerticalTests(TestCase):
+    """End-to-end tests for the Hospital multi-tenant vertical."""
+
+    def setUp(self):
+        self.client = APIClient()
+        self.hospital_a = Company.objects.create(
+            name="Shifa International Test Hospital",
+            business_type="hospital",
+            status=Company.STATUS_ACTIVE,
+            payment_status=Company.PAYMENT_OK,
+            subscription_status=Company.SUBSCRIPTION_ACTIVE,
+            enable_upselling=True,
+        )
+        self.hospital_b = Company.objects.create(
+            name="Other City Memorial Hospital",
+            business_type="hospital",
+            status=Company.STATUS_ACTIVE,
+            payment_status=Company.PAYMENT_OK,
+            subscription_status=Company.SUBSCRIPTION_ACTIVE,
+            enable_upselling=True,
+        )
+        self.owner_a = User.objects.create_user(
+            username="hosp_owner_a",
+            email="hosp_owner_a@example.com",
+            password="Password123!",
+            role=User.ROLE_OWNER,
+            company=self.hospital_a,
+            is_active=True,
+        )
+        self.owner_b = User.objects.create_user(
+            username="hosp_owner_b",
+            email="hosp_owner_b@example.com",
+            password="Password123!",
+            role=User.ROLE_OWNER,
+            company=self.hospital_b,
+            is_active=True,
+        )
+
+    def test_hospital_module_registration_and_multi_tenant_isolation(self):
+        from accounts.modules import business_key, owner_nav_for
+        from operations.models import HospitalDepartment
+
+        self.assertEqual(business_key("hospital"), "hospital")
+        self.assertEqual(business_key("Hospital"), "hospital")
+        nav_keys = [item["key"] for item in owner_nav_for("hospital")]
+        self.assertIn("departments", nav_keys)
+        self.assertIn("appointments", nav_keys)
+        self.assertIn("doctors", nav_keys)
+        self.assertIn("lab_tests", nav_keys)
+
+        # Create department in Hospital A
+        self.client.force_authenticate(user=self.owner_a)
+        res_a = self.client.post(
+            "/api/operations/hospital/departments/",
+            {
+                "name": "Emergency & Trauma",
+                "ward_type": "emergency",
+                "floor_or_location": "Ground Floor",
+                "total_beds": 20,
+                "available_beds": 7,
+                "is_24_7": True,
+            },
+            format="json",
+        )
+        self.assertEqual(res_a.status_code, 201)
+        dept_a_id = res_a.data["id"]
+
+        # Create department in Hospital B
+        self.client.force_authenticate(user=self.owner_b)
+        res_b = self.client.post(
+            "/api/operations/hospital/departments/",
+            {
+                "name": "Hospital B ICU",
+                "ward_type": "icu",
+                "total_beds": 10,
+                "available_beds": 2,
+                "is_24_7": True,
+            },
+            format="json",
+        )
+        self.assertEqual(res_b.status_code, 201)
+
+        # Tenant B cannot see or patch Tenant A's department
+        list_b = self.client.get("/api/operations/hospital/departments/")
+        self.assertEqual(list_b.status_code, 200)
+        self.assertEqual([d["name"] for d in list_b.data], ["Hospital B ICU"])
+
+        patch_cross = self.client.patch(
+            f"/api/operations/hospital/departments/{dept_a_id}/",
+            {"available_beds": 0},
+            format="json",
+        )
+        self.assertEqual(patch_cross.status_code, 404)
+        self.assertEqual(HospitalDepartment.objects.get(pk=dept_a_id).available_beds, 7)
+
+    def test_department_beds_and_lab_booking_workflow(self):
+        self.client.force_authenticate(user=self.owner_a)
+
+        # Create ICU ward and update bed count
+        dept_res = self.client.post(
+            "/api/operations/hospital/departments/",
+            {"name": "Cardiac ICU", "ward_type": "icu", "total_beds": 12, "available_beds": 5, "is_24_7": True},
+            format="json",
+        )
+        self.assertEqual(dept_res.status_code, 201)
+        dept_id = dept_res.data["id"]
+
+        bed_patch = self.client.patch(
+            f"/api/operations/hospital/departments/{dept_id}/",
+            {"available_beds": 4},
+            format="json",
+        )
+        self.assertEqual(bed_patch.status_code, 200)
+        self.assertEqual(bed_patch.data["available_beds"], 4)
+        self.assertEqual(bed_patch.data["occupied_beds"], 8)
+
+        # Create Lab Test Booking & advance statuses
+        lab_res = self.client.post(
+            "/api/operations/hospital/lab-bookings/",
+            {
+                "patient_name": "Bilal Tariq",
+                "patient_phone": "03001112233",
+                "test_name": "Complete Blood Count (CBC)",
+                "price": "1200.00",
+                "scheduled_time": "09:30 AM",
+            },
+            format="json",
+        )
+        self.assertEqual(lab_res.status_code, 201)
+        self.assertEqual(lab_res.data["status"], "scheduled")
+        booking_id = lab_res.data["id"]
+
+        st1 = self.client.patch(
+            f"/api/operations/hospital/lab-bookings/{booking_id}/status/",
+            {"status": "checked_in"},
+            format="json",
+        )
+        self.assertEqual(st1.status_code, 200)
+        self.assertEqual(st1.data["status"], "checked_in")
+
+        st2 = self.client.patch(
+            f"/api/operations/hospital/lab-bookings/{booking_id}/status/",
+            {"status": "completed"},
+            format="json",
+        )
+        self.assertEqual(st2.status_code, 200)
+        self.assertEqual(st2.data["status"], "completed")
+
+        # Verify summary endpoint
+        sum_res = self.client.get("/api/operations/hospital/summary/")
+        self.assertEqual(sum_res.status_code, 200)
+        self.assertEqual(sum_res.data["total_beds"], 12)
+        self.assertEqual(sum_res.data["available_beds"], 4)
+        self.assertEqual(sum_res.data["lab_revenue_today"], 1200.0)
+
+    def test_hospital_ai_voice_agent_prompt_tools_upselling_and_owner_assistant(self):
+        from operations.models import Doctor, HospitalDepartment
+        from operations.owner_assistant import execute_get_hospital_operations_summary
+        from operations.whatsapp_agent import (
+            _build_system_prompt,
+            execute_book_lab_test,
+            execute_get_hospital_departments,
+            get_business_context_for_company,
+            get_category_agent_config,
+            get_upsell_suggestions,
+        )
+
+        HospitalDepartment.objects.create(
+            company=self.hospital_a, name="Cardiology OPD", ward_type="opd", total_beds=0, available_beds=0
+        )
+        HospitalDepartment.objects.create(
+            company=self.hospital_a, name="Emergency Ward", ward_type="emergency", total_beds=15, available_beds=6, is_24_7=True
+        )
+        Doctor.objects.create(
+            company=self.hospital_a, name="Dr. Ayesha Malik", specialty="Cardiology", consultation_fee=Decimal("2500.00")
+        )
+        cat_opd = CatalogCategory.objects.create(company=self.hospital_a, name="OPD Consultations")
+        cat_lab = CatalogCategory.objects.create(company=self.hospital_a, name="Diagnostic Packages")
+        CatalogItem.objects.create(
+            company=self.hospital_a, category=cat_opd, name="Cardiology Consultation", price=Decimal("2500.00"), is_available=True
+        )
+        CatalogItem.objects.create(
+            company=self.hospital_a, category=cat_lab, name="Executive Full Body Checkup", price=Decimal("5500.00"), is_available=True
+        )
+        CatalogItem.objects.create(
+            company=self.hospital_a, category=cat_lab, name="Lipid Profile Test", price=Decimal("1800.00"), is_available=True
+        )
+
+        # Profile resolution
+        cfg = get_category_agent_config("hospital")
+        self.assertEqual(cfg["key"], "hospital")
+        tool_names = [t["function"]["name"] for t in cfg["tools"]]
+        self.assertIn("get_hospital_departments", tool_names)
+        self.assertIn("book_lab_test", tool_names)
+        self.assertIn("get_upsell_suggestions", tool_names)
+
+        # Prompt includes hospital departments, beds, and upselling when enabled
+        ctx = get_business_context_for_company(self.hospital_a)
+        prompt = _build_system_prompt("Zainab", ctx)
+        self.assertIn("HOSPITAL DEPARTMENTS, WARDS & BED AVAILABILITY", prompt)
+        self.assertIn("Emergency Ward", prompt)
+        self.assertIn("6/15 beds available", prompt)
+        self.assertIn("SMART UPSELLING & CROSS-SELLING RULES", prompt)
+
+        # Upsell suggests diagnostic packages when patient books OPD consultation
+        upsells = get_upsell_suggestions(self.hospital_a, ["Cardiology Consultation"])
+        upsell_names = [u["name"] for u in upsells]
+        self.assertIn("Executive Full Body Checkup", upsell_names)
+        self.assertNotIn("Cardiology Consultation", upsell_names)
+
+        # Tool executions strictly scoped to hospital_a
+        dept_out = execute_get_hospital_departments(self.hospital_a)
+        self.assertTrue(dept_out["success"])
+        self.assertEqual(dept_out["count"], 2)
+
+        lab_out = execute_book_lab_test(
+            company=self.hospital_a,
+            sender_phone="03019998877",
+            patient_name="Zainab Ali",
+            test_name="Lipid Profile Test",
+            scheduled_time="11:00 AM",
+        )
+        self.assertTrue(lab_out["success"])
+        self.assertEqual(lab_out["price"], 1800.0)
+        self.assertTrue(lab_out["booking_number"].startswith("LAB-"))
+
+        # Owner AI Business Manager live hospital metrics
+        owner_summary = execute_get_hospital_operations_summary(self.hospital_a)
+        self.assertEqual(owner_summary["departments_count"], 2)
+        self.assertEqual(owner_summary["available_beds"], 6)
+        self.assertEqual(owner_summary["total_beds"], 15)
+        self.assertEqual(owner_summary["doctors_on_duty_count"], 1)
+        self.assertEqual(owner_summary["scheduled_lab_bookings"], 1)
+        self.assertEqual(owner_summary["daily_hospital_revenue_rs"], 1800.0)
+
+
+
 
 
 

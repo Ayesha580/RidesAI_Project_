@@ -31,7 +31,8 @@ MODULES = {
     "stock_alerts": "Low Stock Alerts",
     "returns": "Returns & Refunds",
     "fulfillment": "Fulfillment",
-    # ---- clinic ----
+    # ---- clinic & hospital ----
+    "departments": "Departments & Wards",
     "appointments": "Appointments",
     "doctors": "Doctors Directory",
     "patients": "Patients",
@@ -86,9 +87,24 @@ BUSINESS_TYPES = {
             "Delivery Boy": ["my_deliveries"],
         },
     },
+    "hospital": {
+        "label": "Hospital",
+        "keywords": ["hospital", "medical center", "medical centre", "trauma", "healthcare center"],
+        "modules": ["departments", "orders", "appointments", "doctors", "patients", "prescriptions", "lab_tests",
+                    "inventory", "expenses"],
+        "owner_menu": ["departments", "appointments", "doctors", "patients", "lab_tests", "prescriptions",
+                       "reports"],
+        "templates": {
+            "Doctor": ["appointments", "patients", "prescriptions", "lab_tests"],
+            "Receptionist": ["departments", "orders", "appointments", "doctors", "patients", "lab_tests", "pos"],
+            "Ward Manager": ["departments", "patients", "appointments"],
+            "Lab Technician": ["lab_tests", "patients"],
+            "Manager": ["departments", "orders", "reports", "expenses", "attendance", "appointments", "doctors", "lab_tests"],
+        },
+    },
     "clinic": {
         "label": "Clinic",
-        "keywords": ["clinic", "hospital", "doctor", "dental", "lab"],
+        "keywords": ["clinic", "doctor", "dental", "lab"],
         "modules": ["orders", "appointments", "doctors", "patients", "prescriptions", "lab_tests",
                     "inventory", "expenses"],
         "owner_menu": ["orders", "appointments", "doctors", "patients", "prescriptions", "lab_tests",

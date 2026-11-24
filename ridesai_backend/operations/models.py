@@ -473,6 +473,7 @@ class Patient(models.Model):
 
 class Appointment(models.Model):
     STATUS_PENDING = "pending"
+    STATUS_SCHEDULED = "scheduled"
     STATUS_CONFIRMED = "confirmed"
     STATUS_CHECKED_IN = "checked_in"
     STATUS_COMPLETED = "completed"
@@ -481,6 +482,7 @@ class Appointment(models.Model):
 
     STATUS_CHOICES = [
         (STATUS_PENDING, "Pending"),
+        (STATUS_SCHEDULED, "Scheduled"),
         (STATUS_CONFIRMED, "Confirmed"),
         (STATUS_CHECKED_IN, "Checked In"),
         (STATUS_COMPLETED, "Completed"),
@@ -618,6 +620,132 @@ class ReturnRequest(models.Model):
 
     def __str__(self):
         return f"{self.return_number} - {self.customer_name} ({self.request_type}: {self.status})"
+
+
+# ============================================================================
+# Hospital Vertical Models: Departments, Wards/Beds & Lab/Diagnostic Bookings
+# ============================================================================
+
+class HospitalDepartment(models.Model):
+    WARD_OPD = "opd"
+    WARD_EMERGENCY = "emergency"
+    WARD_ICU = "icu"
+    WARD_GENERAL = "general_ward"
+    WARD_MATERNITY = "maternity"
+    WARD_DIAGNOSTICS = "diagnostics"
+
+    WARD_TYPE_CHOICES = [
+        (WARD_OPD, "OPD"),
+        (WARD_EMERGENCY, "Emergency"),
+        (WARD_ICU, "ICU"),
+        (WARD_GENERAL, "General Ward"),
+        (WARD_MATERNITY, "Maternity"),
+        (WARD_DIAGNOSTICS, "Lab / Diagnostics"),
+    ]
+
+    company = models.ForeignKey(
+        "companies.Company",
+        on_delete=models.CASCADE,
+        related_name="hospital_departments",
+        db_index=True,
+    )
+    name = models.CharField(max_length=150)
+    ward_type = models.CharField(max_length=24, choices=WARD_TYPE_CHOICES, default=WARD_OPD)
+    floor_or_location = models.CharField(max_length=120, blank=True, default="")
+    total_beds = models.PositiveIntegerField(default=0)
+    available_beds = models.PositiveIntegerField(default=0)
+    is_24_7 = models.BooleanField(default=False)
+    head_doctor = models.ForeignKey(
+        Doctor,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="headed_departments",
+    )
+    phone_extension = models.CharField(max_length=32, blank=True, default="")
+    is_active = models.BooleanField(default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ("name",)
+        indexes = [
+            models.Index(fields=["company", "is_active", "ward_type"]),
+        ]
+        constraints = [
+            models.UniqueConstraint(fields=["company", "name"], name="unique_hospital_department_per_company")
+        ]
+
+    def save(self, *args, **kwargs):
+        if self.available_beds > self.total_beds:
+            self.available_beds = self.total_beds
+        super().save(*args, **kwargs)
+
+    def __str__(self):
+        return f"{self.name} ({self.available_beds}/{self.total_beds} beds)"
+
+
+class LabTestBooking(models.Model):
+    STATUS_SCHEDULED = "scheduled"
+    STATUS_CHECKED_IN = "checked_in"
+    STATUS_COMPLETED = "completed"
+    STATUS_CANCELLED = "cancelled"
+
+    STATUS_CHOICES = [
+        (STATUS_SCHEDULED, "Scheduled"),
+        (STATUS_CHECKED_IN, "Checked In"),
+        (STATUS_COMPLETED, "Completed"),
+        (STATUS_CANCELLED, "Cancelled"),
+    ]
+
+    company = models.ForeignKey(
+        "companies.Company",
+        on_delete=models.CASCADE,
+        related_name="lab_test_bookings",
+        db_index=True,
+    )
+    booking_number = models.CharField(max_length=32, unique=True, editable=False)
+    patient = models.ForeignKey(
+        Patient,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="lab_bookings",
+    )
+    department = models.ForeignKey(
+        HospitalDepartment,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="lab_bookings",
+    )
+    patient_name = models.CharField(max_length=255)
+    patient_phone = models.CharField(max_length=32, db_index=True)
+    test_name = models.CharField(max_length=255)
+    price = models.DecimalField(max_digits=10, decimal_places=2, default=Decimal("0.00"))
+    scheduled_date = models.DateField(null=True, blank=True)
+    scheduled_time = models.CharField(max_length=50, blank=True, default="")
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default=STATUS_SCHEDULED, db_index=True)
+    notes = models.TextField(blank=True, default="")
+    source = models.CharField(max_length=20, default="dashboard")
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ("-created_at",)
+        indexes = [
+            models.Index(fields=["company", "status", "-created_at"]),
+            models.Index(fields=["company", "patient_phone"]),
+        ]
+
+    def save(self, *args, **kwargs):
+        if not self.booking_number:
+            self.booking_number = f"LAB-{timezone.now():%y%m%d}-{uuid.uuid4().hex[:6].upper()}"
+        super().save(*args, **kwargs)
+
+    def __str__(self):
+        return f"{self.booking_number} - {self.test_name} ({self.patient_name})"
+
 
 
 

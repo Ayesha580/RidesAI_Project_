@@ -54,6 +54,23 @@ class Company(models.Model):
         (SUBSCRIPTION_CANCELED, "canceled"),
     ]
 
+    BUSINESS_TYPE_RESTAURANT = "restaurant"
+    BUSINESS_TYPE_PHARMACY = "pharmacy"
+    BUSINESS_TYPE_CLINIC = "clinic"
+    BUSINESS_TYPE_HOSPITAL = "hospital"
+    BUSINESS_TYPE_RETAIL = "retail"
+    BUSINESS_TYPE_GROCERY = "grocery"
+    BUSINESS_TYPE_GENERAL = "general"
+    BUSINESS_TYPE_CHOICES = [
+        (BUSINESS_TYPE_RESTAURANT, "Restaurant"),
+        (BUSINESS_TYPE_PHARMACY, "Pharmacy"),
+        (BUSINESS_TYPE_CLINIC, "Clinic"),
+        (BUSINESS_TYPE_HOSPITAL, "Hospital"),
+        (BUSINESS_TYPE_RETAIL, "Retail"),
+        (BUSINESS_TYPE_GROCERY, "Grocery / General Store"),
+        (BUSINESS_TYPE_GENERAL, "General"),
+    ]
+
     # Business
     name = models.CharField(max_length=200, unique=True)
     business_type = models.CharField(max_length=100, blank=True)

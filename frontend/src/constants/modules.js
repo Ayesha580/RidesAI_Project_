@@ -28,6 +28,7 @@ const ICONS = {
   returns: "↩️",
   fulfillment: "📦",
 
+  departments: "🏥",
   appointments: "🩺",
   doctors: "👨‍⚕️",
   patients: "🧑‍⚕️",
@@ -66,7 +67,8 @@ const LABELS = {
   returns: "Returns & Refunds",
   fulfillment: "Fulfillment",
 
-  // clinic
+  // clinic & hospital
+  departments: "Departments & Wards",
   appointments: "Appointments",
   doctors: "Doctors Directory",
   patients: "Patients",

@@ -10,8 +10,9 @@ import "../styles/auth.css";
 const BUSINESS_TYPES = [
   "Restaurant",
   "Pharmacy",
-  "Grocery / General Store",
+  "Hospital",
   "Clinic",
+  "Grocery / General Store",
   "Retail Shop",
   "Other",
 ];

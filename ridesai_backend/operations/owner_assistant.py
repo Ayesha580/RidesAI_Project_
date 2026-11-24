@@ -138,12 +138,30 @@ TOOL_TOGGLE_CUSTOMER_AI_AGENT = {
     },
 }
 
+TOOL_GET_HOSPITAL_OPERATIONS_SUMMARY = {
+    "type": "function",
+    "function": {
+        "name": "get_hospital_operations_summary",
+        "description": (
+            "Retrieves live hospital/clinic operations metrics strictly for this business: "
+            "today's OPD appointments, active doctors on duty, departments & ward bed availability, "
+            "scheduled lab/diagnostic test bookings, and daily hospital revenue in Rs."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {},
+            "required": [],
+        },
+    },
+}
+
 OWNER_TOOLS = [
     TOOL_GET_EMPLOYEES_SUMMARY,
     TOOL_GET_SALES_AND_ORDERS_SUMMARY,
     TOOL_GET_INVENTORY_AND_CATALOG_SUMMARY,
     TOOL_GET_DELIVERIES_AND_RIDERS_STATUS,
     TOOL_GET_BILLING_AND_AI_USAGE,
+    TOOL_GET_HOSPITAL_OPERATIONS_SUMMARY,
     TOOL_TOGGLE_CUSTOMER_AI_AGENT,
 ]
 
@@ -375,6 +393,68 @@ def execute_get_billing_and_ai_usage(company: Company) -> Dict[str, Any]:
     }
 
 
+def execute_get_hospital_operations_summary(company: Company) -> Dict[str, Any]:
+    """Strictly scoped hospital/healthcare operations summary for the authenticated company."""
+    if not company:
+        return {"error": "Company not found."}
+
+    from operations.models import Appointment, Doctor, HospitalDepartment, LabTestBooking
+
+    today = timezone.localdate()
+    depts = list(HospitalDepartment.objects.filter(company=company, is_active=True))
+    total_beds = sum(d.total_beds for d in depts)
+    available_beds = sum(d.available_beds for d in depts)
+
+    doctors = list(Doctor.objects.filter(company=company, is_active=True).values("name", "specialty", "consultation_fee")[:20])
+    today_appts = Appointment.objects.filter(company=company, appointment_date=today).count()
+    pending_appts = Appointment.objects.filter(
+        company=company,
+        status__in=[Appointment.STATUS_PENDING, Appointment.STATUS_SCHEDULED, Appointment.STATUS_CONFIRMED],
+    ).count()
+    lab_bookings = LabTestBooking.objects.filter(company=company)
+    scheduled_labs = lab_bookings.filter(status__in=[LabTestBooking.STATUS_SCHEDULED, LabTestBooking.STATUS_CHECKED_IN]).count()
+    lab_rev_today = (
+        lab_bookings.filter(created_at__date=today)
+        .exclude(status=LabTestBooking.STATUS_CANCELLED)
+        .aggregate(total=Sum("price"))
+        .get("total")
+        or Decimal("0.00")
+    )
+    order_rev_today = (
+        Order.objects.filter(company=company, created_at__date=today)
+        .exclude(status="cancelled")
+        .aggregate(total=Sum("total"))
+        .get("total")
+        or Decimal("0.00")
+    )
+
+    return {
+        "departments_count": len(depts),
+        "total_beds": total_beds,
+        "available_beds": available_beds,
+        "occupied_beds": max(0, total_beds - available_beds),
+        "departments": [
+            {
+                "name": d.name,
+                "ward_type": d.get_ward_type_display(),
+                "available_beds": d.available_beds,
+                "total_beds": d.total_beds,
+                "is_24_7": d.is_24_7,
+            }
+            for d in depts[:15]
+        ],
+        "doctors_on_duty_count": len(doctors),
+        "doctors": [
+            {"name": d["name"], "specialty": d["specialty"], "fee": float(d["consultation_fee"] or 0)}
+            for d in doctors[:10]
+        ],
+        "today_opd_appointments": today_appts,
+        "pending_opd_appointments": pending_appts,
+        "scheduled_lab_bookings": scheduled_labs,
+        "daily_hospital_revenue_rs": float(lab_rev_today + order_rev_today),
+    }
+
+
 def execute_toggle_customer_ai_agent(company: Company, pause: bool) -> Dict[str, Any]:
     """Safely toggles customer-facing AI agent automated replies for this company."""
     if not company:
@@ -411,7 +491,8 @@ YOUR ROLE & CAPABILITIES:
   3. `get_inventory_and_catalog_summary`: Catalog items, out-of-stock, and low-stock alerts.
   4. `get_deliveries_and_riders_status`: Rider active workloads and unassigned delivery orders.
   5. `get_billing_and_ai_usage`: Monthly AI voice usage meter, message limit, subscription plan.
-  6. `toggle_customer_ai_agent`: Pause or resume the customer-facing AI assistant.
+  6. `get_hospital_operations_summary`: Hospital/clinic OPD appointments today, doctors on duty, department breakdown, available beds/wards, lab bookings, and daily revenue.
+  7. `toggle_customer_ai_agent`: Pause or resume the customer-facing AI assistant.
 
 STRICT OPERATIONAL RULES:
 1. ALWAYS CALL TOOLS FOR LIVE NUMBERS: Never guess or invent employee names, sales revenue, order counts, or inventory levels. Call the appropriate tool and use its output to answer.
@@ -427,6 +508,22 @@ STRICT OPERATIONAL RULES:
 def _format_fallback_response(query: str, company: Company) -> str:
     """Smart deterministic rule-based fallback when external LLM APIs are offline."""
     q_low = query.lower()
+
+    if any(k in q_low for k in ["bed", "ward", "department", "opd", "doctor", "appointment", "lab", "hospital"]):
+        data = execute_get_hospital_operations_summary(company)
+        dept_str = ", ".join(
+            f"{d['name']} ({d['available_beds']}/{d['total_beds']} beds)" if d["total_beds"] > 0 else d["name"]
+            for d in data["departments"][:6]
+        ) or "None"
+        return (
+            f"🏥 **Hospital Operations Summary ({company.name})**\n\n"
+            f"• **Departments:** {data['departments_count']} ({dept_str})\n"
+            f"• **Beds Available:** {data['available_beds']} / {data['total_beds']}\n"
+            f"• **Doctors on Duty:** {data['doctors_on_duty_count']}\n"
+            f"• **Today's OPD Appointments:** {data['today_opd_appointments']} (Pending: {data['pending_opd_appointments']})\n"
+            f"• **Scheduled Lab Bookings:** {data['scheduled_lab_bookings']}\n"
+            f"• **Daily Revenue:** Rs. {data['daily_hospital_revenue_rs']:,.2f}"
+        )
 
     if any(k in q_low for k in ["employee", "staff", "mulazim", "worker", "team"]):
         data = execute_get_employees_summary(company)
@@ -600,6 +697,8 @@ def process_owner_assistant_query(
                         tool_result = execute_get_deliveries_and_riders_status(company=company)
                     elif fn_name == "get_billing_and_ai_usage":
                         tool_result = execute_get_billing_and_ai_usage(company=company)
+                    elif fn_name == "get_hospital_operations_summary":
+                        tool_result = execute_get_hospital_operations_summary(company=company)
                     elif fn_name == "toggle_customer_ai_agent":
                         tool_result = execute_toggle_customer_ai_agent(
                             company=company, pause=bool(fn_args.get("pause", False))
