@@ -5015,6 +5015,154 @@ class AdvancedAnalyticsAndReportsTests(TestCase):
         self.assertNotIn("99999.00", body)
 
 
+class NotificationTemplatesTests(TestCase):
+    """Tests for P1 Owner-Editable Notification Templates & Per-Event Toggles (Multi-Tenant)."""
+
+    def setUp(self):
+        self.client = APIClient()
+        self.company_a = Company.objects.create(
+            name="Notify Cafe Alpha",
+            business_type="restaurant",
+            status=Company.STATUS_ACTIVE,
+            payment_status=Company.PAYMENT_OK,
+            subscription_status=Company.SUBSCRIPTION_ACTIVE,
+            whatsapp_instance_name="notify_alpha_evo",
+        )
+        self.company_b = Company.objects.create(
+            name="Notify Store Beta",
+            business_type="retail",
+            status=Company.STATUS_ACTIVE,
+            payment_status=Company.PAYMENT_OK,
+            subscription_status=Company.SUBSCRIPTION_ACTIVE,
+            whatsapp_instance_name="notify_beta_evo",
+        )
+        self.owner_a = User.objects.create_user(
+            username="notify_owner_a",
+            email="notify_owner_a@example.com",
+            password="Password123!",
+            role=User.ROLE_OWNER,
+            company=self.company_a,
+            is_active=True,
+        )
+        self.owner_b = User.objects.create_user(
+            username="notify_owner_b",
+            email="notify_owner_b@example.com",
+            password="Password123!",
+            role=User.ROLE_OWNER,
+            company=self.company_b,
+            is_active=True,
+        )
+
+    def test_get_patch_reset_templates_and_tenant_isolation(self):
+        from operations.models import NotificationTemplate
+
+        # GET returns all 8 default events for Company A
+        self.client.force_authenticate(user=self.owner_a)
+        res_list = self.client.get("/api/operations/notifications/templates/")
+        self.assertEqual(res_list.status_code, 200)
+        self.assertEqual(len(res_list.data["templates"]), 8)
+        self.assertTrue(len(res_list.data["placeholders"]) >= 5)
+
+        # PATCH customizes order_confirmed for Company A only
+        res_patch = self.client.patch(
+            "/api/operations/notifications/templates/order_confirmed/",
+            {
+                "is_enabled": True,
+                "whatsapp_enabled": True,
+                "email_enabled": False,
+                "subject_template": "Shukriya {{customer_name}} — {{company_name}}",
+                "body_template": "Salam {{customer_name}}! Order {{order_id}} total {{total_amount}} confirmed.",
+            },
+            format="json",
+        )
+        self.assertEqual(res_patch.status_code, 200)
+        self.assertTrue(res_patch.data["is_customized"])
+        self.assertFalse(res_patch.data["email_enabled"])
+        self.assertIn("Salam {{customer_name}}", res_patch.data["body_template"])
+
+        # Company B still sees uncustomized defaults (strict multi-tenant isolation)
+        self.client.force_authenticate(user=self.owner_b)
+        res_b = self.client.get("/api/operations/notifications/templates/")
+        self.assertEqual(res_b.status_code, 200)
+        b_conf = next(t for t in res_b.data["templates"] if t["event_type"] == "order_confirmed")
+        self.assertFalse(b_conf["is_customized"])
+        self.assertTrue(b_conf["email_enabled"])
+        self.assertNotIn("Salam", b_conf["body_template"])
+
+        # POST reset restores default for Company A
+        self.client.force_authenticate(user=self.owner_a)
+        res_reset = self.client.post("/api/operations/notifications/templates/order_confirmed/reset/")
+        self.assertEqual(res_reset.status_code, 200)
+        self.assertFalse(res_reset.data["is_customized"])
+        self.assertFalse(NotificationTemplate.objects.filter(company=self.company_a, event_type="order_confirmed").exists())
+
+    @patch("operations.notifications.evolution_client.send_text_message")
+    def test_render_notification_template_and_toggle_skip_behavior(self, mock_evo_send):
+        from operations.models import NotificationTemplate
+        from operations.notifications import render_notification_template, send_status_notification
+
+        # Safe substitution even with missing placeholders (no KeyError)
+        NotificationTemplate.objects.create(
+            company=self.company_a,
+            event_type="order_confirmed",
+            is_enabled=True,
+            whatsapp_enabled=True,
+            email_enabled=False,
+            subject_template="Hi {{customer_name}} ({{missing_var}})",
+            body_template="Hello {{customer_name}}, order {{order_id}} at {{company_name}} is {{total_amount}}.",
+        )
+        rendered = render_notification_template(
+            self.company_a,
+            "order_confirmed",
+            {"customer_name": "Usman", "order_id": "RA-1001", "total_amount": "Rs. 950.00"},
+        )
+        self.assertEqual(rendered["subject"], "Hi Usman ()")
+        self.assertEqual(rendered["body"], "Hello Usman, order RA-1001 at Notify Cafe Alpha is Rs. 950.00.")
+
+        # Dispatches custom body via WhatsApp when enabled
+        mock_evo_send.return_value = {"status": "SUCCESS"}
+        sent = send_status_notification(
+            company=self.company_a,
+            customer_phone="03001234567",
+            entity_type="order",
+            reference_id="RA-1001",
+            new_status="confirmed",
+            customer_name="Usman",
+            total_amount="Rs. 950.00",
+        )
+        self.assertTrue(sent)
+        mock_evo_send.assert_called_once()
+        self.assertIn("Hello Usman, order RA-1001 at Notify Cafe Alpha", mock_evo_send.call_args.kwargs["text"])
+
+        # Disable WhatsApp toggle -> must skip WhatsApp dispatch cleanly
+        mock_evo_send.reset_mock()
+        NotificationTemplate.objects.filter(company=self.company_a, event_type="order_confirmed").update(whatsapp_enabled=False)
+        skipped_wa = send_status_notification(
+            company=self.company_a,
+            customer_phone="03001234567",
+            entity_type="order",
+            reference_id="RA-1002",
+            new_status="confirmed",
+        )
+        self.assertFalse(skipped_wa)
+        mock_evo_send.assert_not_called()
+
+        # Disable entire event -> must skip dispatch cleanly
+        NotificationTemplate.objects.filter(company=self.company_a, event_type="order_confirmed").update(
+            whatsapp_enabled=True, is_enabled=False
+        )
+        skipped_all = send_status_notification(
+            company=self.company_a,
+            customer_phone="03001234567",
+            entity_type="order",
+            reference_id="RA-1003",
+            new_status="confirmed",
+        )
+        self.assertFalse(skipped_all)
+        mock_evo_send.assert_not_called()
+
+
+
 
 
 

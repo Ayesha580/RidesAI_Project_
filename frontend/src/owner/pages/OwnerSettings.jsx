@@ -4,10 +4,12 @@ import { useAuth } from "../../context/AuthContext";
 import ProfileTab from "./settings/ProfileTab";
 import BillingTab from "./settings/BillingTab";
 import WhatsAppConnectCard from "./settings/WhatsAppConnectCard";
+import NotificationSettings from "../../operations/NotificationSettings";
 
 const TABS = [
   { id: "profile", icon: "👤", label: "Profile" },
   { id: "whatsapp", icon: "💬", label: "WhatsApp AI" },
+  { id: "notifications", icon: "🔔", label: "Notifications" },
   { id: "billing", icon: "💳", label: "Billing" },
 ];
 
@@ -127,6 +129,7 @@ export default function OwnerSettings() {
           <WhatsAppConnectCard />
         </div>
       )}
+      {tab === "notifications" && <NotificationSettings embedded />}
       {tab === "billing" && <BillingTab suspended={locked} />}
     </OwnerLayout>
   );

@@ -95,3 +95,9 @@ export const analyticsApi = {
   exportCsv: (params = {}) => api.get("/operations/analytics/export/csv/", { params, responseType: "blob" }),
 };
 
+export const notificationTemplatesApi = {
+  list: () => api.get("/operations/notifications/templates/"),
+  update: (eventType, data) => api.patch(`/operations/notifications/templates/${eventType}/`, data),
+  reset: (eventType) => api.post(`/operations/notifications/templates/${eventType}/reset/`),
+};
+

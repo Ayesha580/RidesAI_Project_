@@ -14,6 +14,189 @@ from operations.whatsapp_service import WhatsAppService
 
 logger = logging.getLogger("operations.notifications")
 
+AVAILABLE_PLACEHOLDERS = [
+    {"tag": "{{customer_name}}", "description": "Customer or patient full name"},
+    {"tag": "{{order_id}}", "description": "Order, appointment, or booking reference number"},
+    {"tag": "{{company_name}}", "description": "Your business name"},
+    {"tag": "{{total_amount}}", "description": "Total amount formatted in Rs."},
+    {"tag": "{{status}}", "description": "Current order or booking status"},
+    {"tag": "{{appointment_time}}", "description": "Scheduled appointment or lab test time"},
+    {"tag": "{{rider_name}}", "description": "Assigned delivery rider name"},
+]
+
+DEFAULT_NOTIFICATION_TEMPLATES = {
+    "order_confirmed": {
+        "label": "Order Confirmed",
+        "description": "Sent immediately when a new order is confirmed.",
+        "subject_template": "Order #{{order_id}} Confirmed — {{company_name}}",
+        "body_template": (
+            "✅ *Order Confirmed!* (Order #{{order_id}})\n\n"
+            "Hi {{customer_name}}, thank you for ordering with *{{company_name}}*! "
+            "Your order (Total: {{total_amount}}) has been confirmed and forwarded to preparation."
+        ),
+    },
+    "order_preparing": {
+        "label": "Order Preparing",
+        "description": "Sent when kitchen or fulfillment starts preparing the order.",
+        "subject_template": "Your Order #{{order_id}} is Being Prepared — {{company_name}}",
+        "body_template": (
+            "👨‍🍳 *Order In Preparation!* (Order #{{order_id}})\n\n"
+            "Hi {{customer_name}}, *{{company_name}}* is currently preparing your order with fresh care."
+        ),
+    },
+    "out_for_delivery": {
+        "label": "Out for Delivery",
+        "description": "Sent when a rider picks up and dispatches the order.",
+        "subject_template": "Order #{{order_id}} is Out for Delivery — {{company_name}}",
+        "body_template": (
+            "🛵 *Order Out for Delivery!* (Order #{{order_id}})\n\n"
+            "Hi {{customer_name}}, our rider {{rider_name}} has picked up your order from *{{company_name}}* "
+            "and is on the way to your delivery address."
+        ),
+    },
+    "order_delivered": {
+        "label": "Order Delivered",
+        "description": "Sent when the order is successfully delivered.",
+        "subject_template": "Order #{{order_id}} Delivered — {{company_name}}",
+        "body_template": (
+            "🎉 *Order Delivered!* (Order #{{order_id}})\n\n"
+            "Hi {{customer_name}}, your order from *{{company_name}}* has been delivered. "
+            "Thank you for choosing us!"
+        ),
+    },
+    "order_cancelled": {
+        "label": "Order Cancelled",
+        "description": "Sent if an order is cancelled or rejected.",
+        "subject_template": "Order #{{order_id}} Cancelled — {{company_name}}",
+        "body_template": (
+            "❌ *Order Cancelled* (Order #{{order_id}})\n\n"
+            "Hi {{customer_name}}, your order from *{{company_name}}* has been cancelled. "
+            "Please reply here if you have any questions."
+        ),
+    },
+    "appointment_confirmed": {
+        "label": "Appointment Confirmed",
+        "description": "Sent when a clinic or hospital OPD appointment is confirmed.",
+        "subject_template": "Appointment #{{order_id}} Confirmed — {{company_name}}",
+        "body_template": (
+            "✅ *Appointment Confirmed!* (Ref #{{order_id}})\n\n"
+            "Hi {{customer_name}}, your appointment at *{{company_name}}* is confirmed for {{appointment_time}}."
+        ),
+    },
+    "appointment_reminder": {
+        "label": "Appointment Reminder",
+        "description": "Reminder sent ahead of a scheduled clinic/hospital appointment.",
+        "subject_template": "Reminder: Upcoming Appointment #{{order_id}} — {{company_name}}",
+        "body_template": (
+            "⏰ *Appointment Reminder* (Ref #{{order_id}})\n\n"
+            "Hi {{customer_name}}, this is a friendly reminder for your appointment at *{{company_name}}* at {{appointment_time}}."
+        ),
+    },
+    "lab_booking_confirmed": {
+        "label": "Lab Booking Confirmed",
+        "description": "Sent when a hospital diagnostic or lab test booking is scheduled.",
+        "subject_template": "Lab Booking #{{order_id}} Confirmed — {{company_name}}",
+        "body_template": (
+            "🧪 *Lab Test Booking Confirmed!* (Ref #{{order_id}})\n\n"
+            "Hi {{customer_name}}, your diagnostic booking at *{{company_name}}* is scheduled for {{appointment_time}} "
+            "(Fee: {{total_amount}})."
+        ),
+    },
+}
+
+_PLACEHOLDER_RE = re.compile(r"\{\{\s*([a-zA-Z0-9_]+)\s*\}\}")
+
+
+def _safe_substitute(template_str: str, context: dict) -> str:
+    """Safely substitutes {{key}} placeholders without ever raising KeyError."""
+    if not template_str:
+        return ""
+    safe_ctx = context or {}
+
+    def _replace(match):
+        key = match.group(1)
+        val = safe_ctx.get(key)
+        return "" if val is None else str(val)
+
+    return _PLACEHOLDER_RE.sub(_replace, template_str)
+
+
+def _resolve_event_type(entity_type: str, new_status: str) -> Optional[str]:
+    ent = (entity_type or "").strip().lower()
+    st = (new_status or "").strip().lower()
+    if ent == "order":
+        if st in ("confirmed", "received", "new"):
+            return "order_confirmed"
+        if st in ("preparing", "in_kitchen"):
+            return "order_preparing"
+        if st in ("dispatched", "out_for_delivery", "on_the_way", "picked_up"):
+            return "out_for_delivery"
+        if st == "delivered":
+            return "order_delivered"
+        if st in ("cancelled", "rejected"):
+            return "order_cancelled"
+    elif ent == "appointment":
+        if st in ("confirmed", "scheduled"):
+            return "appointment_confirmed"
+        if st == "reminder":
+            return "appointment_reminder"
+    elif ent == "lab_booking":
+        if st in ("scheduled", "confirmed"):
+            return "lab_booking_confirmed"
+    return None
+
+
+def render_notification_template(company: Optional[Company], event_type: str, context: Optional[dict] = None) -> dict:
+    """
+    Loads the company's NotificationTemplate for `event_type` (falling back to system defaults),
+    safely renders subject and body placeholders, and returns toggle flags + rendered text.
+    """
+    from operations.models import NotificationTemplate
+
+    defaults = DEFAULT_NOTIFICATION_TEMPLATES.get(
+        event_type,
+        {
+            "label": _format_status_label(event_type),
+            "description": "",
+            "subject_template": "Update #{{order_id}} — {{company_name}}",
+            "body_template": "Update from {{company_name}} (Ref #{{order_id}}): Status is {{status}}.",
+        },
+    )
+
+    tpl_obj = None
+    if company and getattr(company, "id", None):
+        tpl_obj = NotificationTemplate.objects.filter(company=company, event_type=event_type).first()
+
+    is_enabled = bool(tpl_obj.is_enabled) if tpl_obj else True
+    whatsapp_enabled = bool(tpl_obj.whatsapp_enabled) if tpl_obj else True
+    email_enabled = bool(tpl_obj.email_enabled) if tpl_obj else True
+    raw_subject = (tpl_obj.subject_template if (tpl_obj and tpl_obj.subject_template.strip()) else defaults["subject_template"])
+    raw_body = (tpl_obj.body_template if (tpl_obj and tpl_obj.body_template.strip()) else defaults["body_template"])
+
+    merged_ctx = {
+        "company_name": (company.name if company else "") or "Rides AI Store",
+        "customer_name": "Valued Customer",
+        "order_id": "",
+        "total_amount": "Rs. 0",
+        "status": _format_status_label(event_type),
+        "appointment_time": "",
+        "rider_name": "",
+    }
+    if context:
+        for k, v in context.items():
+            if v is not None and str(v).strip() != "":
+                merged_ctx[k] = v
+
+    return {
+        "event_type": event_type,
+        "is_enabled": is_enabled,
+        "whatsapp_enabled": whatsapp_enabled,
+        "email_enabled": email_enabled,
+        "subject": _safe_substitute(raw_subject, merged_ctx),
+        "body": _safe_substitute(raw_body, merged_ctx),
+        "is_customized": bool(tpl_obj),
+    }
+
 
 def normalize_pakistan_phone(raw_phone: Optional[str]) -> str:
     """
@@ -206,14 +389,56 @@ def send_status_notification(
 
     rep_order_num = replacement_order_number or kwargs.get("replacement_order_number")
     comp_name = company.name if company else "Rides AI Store"
-    message_text = build_status_message(
-        company_name=comp_name,
-        entity_type=entity_type,
-        reference_id=str(reference_id),
-        new_status=curr,
-        reason=reason,
-        replacement_order_number=rep_order_num,
-    )
+
+    # Check per-company NotificationTemplate & toggles
+    event_type = _resolve_event_type(entity_type, curr)
+    tpl_result = None
+    if event_type and company:
+        tpl_ctx = {
+            "company_name": comp_name,
+            "customer_name": kwargs.get("customer_name") or "Valued Customer",
+            "order_id": str(reference_id),
+            "total_amount": kwargs.get("total_amount") or "",
+            "status": _format_status_label(curr),
+            "appointment_time": kwargs.get("appointment_time") or "",
+            "rider_name": kwargs.get("rider_name") or "",
+        }
+        tpl_result = render_notification_template(company, event_type, tpl_ctx)
+        if not tpl_result["is_enabled"]:
+            logger.info("[Notification] Event '%s' disabled for company '%s'; skipping.", event_type, comp_name)
+            return False
+
+        # Optional email dispatch if enabled and customer_email provided
+        customer_email = (kwargs.get("customer_email") or "").strip()
+        if tpl_result["email_enabled"] and customer_email:
+            try:
+                from django.conf import settings as django_settings
+                from django.core.mail import send_mail
+                send_mail(
+                    subject=tpl_result["subject"],
+                    message=tpl_result["body"],
+                    from_email=getattr(django_settings, "DEFAULT_FROM_EMAIL", "noreply@example.com"),
+                    recipient_list=[customer_email],
+                    fail_silently=True,
+                )
+            except Exception:
+                pass
+
+        if not tpl_result["whatsapp_enabled"]:
+            logger.info("[Notification] WhatsApp channel disabled for event '%s' on company '%s'; skipping WA.", event_type, comp_name)
+            return False
+
+    if tpl_result and tpl_result["is_customized"]:
+        message_text = tpl_result["body"]
+    else:
+        message_text = build_status_message(
+            company_name=comp_name,
+            entity_type=entity_type,
+            reference_id=str(reference_id),
+            new_status=curr,
+            reason=reason,
+            replacement_order_number=rep_order_num,
+        )
 
     clean_phone = normalize_pakistan_phone(target_phone)
     if not clean_phone:
@@ -297,6 +522,13 @@ def send_order_status_notification(
     cust_phone = getattr(order, "customer_phone", None)
     company = getattr(order, "company", None)
 
+    rider_obj = getattr(order, "assigned_rider", None)
+    rider_name = ""
+    if rider_obj:
+        rider_name = (rider_obj.get_full_name() or rider_obj.username or "").strip()
+    total_val = getattr(order, "total", None)
+    total_str = f"Rs. {float(total_val):.2f}" if total_val is not None else ""
+
     return send_status_notification(
         company=company,
         customer_phone=cust_phone,
@@ -305,4 +537,8 @@ def send_order_status_notification(
         new_status=status_to_notify,
         reason=reason,
         previous_status=previous_status,
+        customer_name=getattr(order, "customer_name", None),
+        customer_email=getattr(order, "customer_email", None),
+        total_amount=total_str,
+        rider_name=rider_name,
     )

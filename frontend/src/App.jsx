@@ -54,6 +54,7 @@ import ClinicDoctors from "./operations/ClinicDoctors";
 import ClinicPatients from "./operations/ClinicPatients";
 import HospitalDashboard from "./operations/HospitalDashboard";
 import AnalyticsReports from "./operations/AnalyticsReports";
+import NotificationSettings from "./operations/NotificationSettings";
 import RetailFulfillment from "./operations/RetailFulfillment";
 import RetailReturns from "./operations/RetailReturns";
 
@@ -197,6 +198,7 @@ export default function App() {
       <Route path="/owner/settings" element={<AuthOnly><OwnerSettings /></AuthOnly>} />
       <Route path="/owner/analytics" element={<Guard roles={["owner"]}><AnalyticsReports /></Guard>} />
       <Route path="/owner/reports" element={<Guard roles={["owner"]}><AnalyticsReports /></Guard>} />
+      <Route path="/owner/notifications" element={<Guard roles={["owner"]}><NotificationSettings /></Guard>} />
       <Route path="/owner/billing" element={<Navigate to="/owner/settings?tab=billing" replace />} />
       <Route path="/owner/tables" element={<Navigate to="/owner/m/tables" replace />} />
       <Route path="/owner/reservations" element={<Navigate to="/owner/m/reservations" replace />} />

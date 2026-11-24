@@ -747,6 +747,59 @@ class LabTestBooking(models.Model):
         return f"{self.booking_number} - {self.test_name} ({self.patient_name})"
 
 
+# ============================================================================
+# Owner-Editable Notification Templates & Per-Event Toggles (Multi-Tenant)
+# ============================================================================
+
+class NotificationTemplate(models.Model):
+    EVENT_ORDER_CONFIRMED = "order_confirmed"
+    EVENT_ORDER_PREPARING = "order_preparing"
+    EVENT_OUT_FOR_DELIVERY = "out_for_delivery"
+    EVENT_ORDER_DELIVERED = "order_delivered"
+    EVENT_ORDER_CANCELLED = "order_cancelled"
+    EVENT_APPOINTMENT_CONFIRMED = "appointment_confirmed"
+    EVENT_APPOINTMENT_REMINDER = "appointment_reminder"
+    EVENT_LAB_BOOKING_CONFIRMED = "lab_booking_confirmed"
+
+    EVENT_TYPE_CHOICES = [
+        (EVENT_ORDER_CONFIRMED, "Order Confirmed"),
+        (EVENT_ORDER_PREPARING, "Order Preparing"),
+        (EVENT_OUT_FOR_DELIVERY, "Out for Delivery"),
+        (EVENT_ORDER_DELIVERED, "Order Delivered"),
+        (EVENT_ORDER_CANCELLED, "Order Cancelled"),
+        (EVENT_APPOINTMENT_CONFIRMED, "Appointment Confirmed"),
+        (EVENT_APPOINTMENT_REMINDER, "Appointment Reminder"),
+        (EVENT_LAB_BOOKING_CONFIRMED, "Lab Booking Confirmed"),
+    ]
+
+    company = models.ForeignKey(
+        "companies.Company",
+        on_delete=models.CASCADE,
+        related_name="notification_templates",
+        db_index=True,
+    )
+    event_type = models.CharField(max_length=40, choices=EVENT_TYPE_CHOICES, db_index=True)
+    is_enabled = models.BooleanField(default=True)
+    whatsapp_enabled = models.BooleanField(default=True)
+    email_enabled = models.BooleanField(default=True)
+    subject_template = models.CharField(max_length=255, blank=True, default="")
+    body_template = models.TextField(blank=True, default="")
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ("event_type",)
+        constraints = [
+            models.UniqueConstraint(
+                fields=["company", "event_type"],
+                name="unique_notification_template_per_company_event",
+            )
+        ]
+
+    def __str__(self):
+        return f"{self.company_id}:{self.event_type} (enabled={self.is_enabled})"
+
+
+
 
 
 

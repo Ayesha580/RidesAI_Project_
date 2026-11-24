@@ -8,6 +8,11 @@ from .views import (OrderCatalogAPIView, OrderListCreateAPIView, OrderStatusAPIV
 from .calling_views import IncomingAICallWebhookView
 from .evolution_views import ConnectWhatsAppView, EvolutionWebhookView
 from .analytics_views import AnalyticsOverviewAPIView, AnalyticsExportCSVAPIView
+from .notification_views import (
+    NotificationTemplateListAPIView,
+    NotificationTemplateDetailAPIView,
+    NotificationTemplateResetAPIView,
+)
 
 urlpatterns = [
     path("orders/catalog/", OrderCatalogAPIView.as_view(), name="order-catalog"),
@@ -39,5 +44,8 @@ urlpatterns = [
     path("owner/assistant/", OwnerBusinessAssistantAPIView.as_view(), name="owner-business-assistant"),
     path("analytics/overview/", AnalyticsOverviewAPIView.as_view(), name="analytics-overview"),
     path("analytics/export/csv/", AnalyticsExportCSVAPIView.as_view(), name="analytics-export-csv"),
+    path("notifications/templates/", NotificationTemplateListAPIView.as_view(), name="notification-templates-list"),
+    path("notifications/templates/<str:event_type>/", NotificationTemplateDetailAPIView.as_view(), name="notification-templates-detail"),
+    path("notifications/templates/<str:event_type>/reset/", NotificationTemplateResetAPIView.as_view(), name="notification-templates-reset"),
     path("hospital/", include("operations.hospital_urls")),
 ]

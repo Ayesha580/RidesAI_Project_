@@ -12,8 +12,8 @@ Across **27 distinct functional and non-functional requirements** extracted from
 
 | Status | Count | Percentage |
 | :--- | :---: | :---: |
-| ✅ **Completed & Verified** | **20** | **74.1%** |
-| 🟡 **Partially Implemented** | **3** | **11.1%** |
+| ✅ **Completed & Verified** | **21** | **77.8%** |
+| 🟡 **Partially Implemented** | **2** | **7.4%** |
 | ❌ **Not Started / Pending** | **3** | **11.1%** |
 | ⚠️ **Out-of-Scope / External Dependency** | **1** | **3.7%** |
 | **Total PRD Requirements Audited** | **27** | **100%** |
@@ -60,7 +60,7 @@ Across **27 distinct functional and non-functional requirements** extracted from
 | **§8.3** | **Channel 3: Shareable Rides AI Business Link** (zero-integration public link, mobile & desktop) | ✅ | `frontend/src/operations/PublicAgentPage.jsx` (`/agent/:publicId`), `/api/operations/public/agent/<uuid:public_id>/chat/`, `/catalog/`, `/conversation/<uuid:conversation_id>/`. | Fully verified end-to-end with 100% voice-only UX. |
 | **§9 (Analytics)** | **Business Dashboard Analytics & Exportable Operational Reports** (time-series revenue/orders, channel/status breakdown, top items, CSV & PDF exports) | ✅ | `ridesai_backend/operations/analytics_views.py` (`/api/operations/analytics/overview/`, `/api/operations/analytics/export/csv/`), `frontend/src/operations/AnalyticsReports.jsx` (7d/30d/90d/custom ranges, interactive SVG time-series & donut charts, 1-click CSV download & branded print-to-PDF export), plus 100% Voice-Only **Owner AI Business Manager** (`OwnerBusinessAssistant.jsx`). | Verified on PostgreSQL 16 (`AdvancedAnalyticsAndReportsTests`, strict multi-tenant isolation). |
 | **§11 (Core)** | **Automated Customer Order & Status Notifications** | ✅ | `ridesai_backend/operations/notifications.py` (`send_order_status_notification`, `send_appointment_status_notification`, `send_prescription_status_notification`, `send_return_status_notification`) dispatching via Evolution API / Meta Cloud API. | Verified across Restaurant, Clinic, Pharmacy, and Retail lifecycle tests. |
-| **§11 (Config)** | **Owner-Configurable Notification Wording & Channel Preferences** | 🟡 | Hardcoded English/Roman Urdu status templates exist in `operations/notifications.py` (`build_status_message`). | No owner settings UI/model to customize message wording or toggle individual status notification triggers/channels. |
+| **§11 (Config)** | **Owner-Configurable Notification Wording & Channel Preferences** | ✅ | `operations/models.py` (`NotificationTemplate`, migration `0014`), `operations/notifications.py` (`render_notification_template` with safe `{{placeholder}}` substitution & per-channel skip logic), `operations/notification_views.py` (`/api/operations/notifications/templates/`), `frontend/src/operations/NotificationSettings.jsx` (per-event Enabled/WhatsApp/Email toggles, placeholder chips, live preview, Reset to Default). | Verified on PostgreSQL 16 (`NotificationTemplatesTests`, strict multi-tenant isolation). |
 | **§12 (Isolation)** | **Multi-Tenant Data Isolation & Prompt-Injection Safeguards** | ✅ | Server-enforced `company` scoping across all ORM queries, views, AI customer tools, and Owner AI Business Manager tools; fail-closed unmapped `phone_number_id` guard; rate limits & monthly voice quotas. | Verified across all 137 tests (`accounts`, `billing`, `operations`). |
 | **§12 (Billing)** | **Subscription Billing, Monthly Voice Quotas & Exempt Email Rule** | ✅ | `billing/services.py` (`consume_company_message` atomic `select_for_update`), `billing/views.py` (`/api/billing/overview/`, `/plans/`, `/select-plan/`, `/webhook/`, `/cancel/`, `/resume/`), `billing/management/commands/send_billing_reminders.py`, `BillingTab.jsx` (monthly usage meter + price display), `BILLING_EXEMPT_EMAILS = ["ayeshaarshed145@gmail.com"]`. | Verified in `billing/tests.py` and `operations/tests.py`. |
 | **§12 (DB & Recovery)** | **Production Database (PostgreSQL), Backups & Recovery Pipeline** | ✅ | `ridesai_backend/config/settings.py` (`DATABASE_URL` via `dj-database-url`, `CONN_MAX_AGE=600`, `CONN_HEALTH_CHECKS=True`, SSL toggle), `ridesai_backend/scripts/migrate_sqlite_to_postgres.py` (6-step backup/export/migrate/load/sequence-reset/parity pipeline), `POSTGRESQL_MIGRATION_GUIDE.md`. | Live-verified on PostgreSQL 16: **533 / 533 rows** migrated, 49 sequences reset, **140 / 140 tests passing**. |
@@ -104,8 +104,8 @@ Across **27 distinct functional and non-functional requirements** extracted from
    - Built `/api/operations/analytics/overview/` (PostgreSQL `TruncDate`/`TruncWeek` aggregations), `/api/operations/analytics/export/csv/`, and `AnalyticsReports.jsx` with interactive charts and 1-click CSV & branded PDF exports.
 2. **Automated Knowledge Learning / FAQ Proposals (PRD §6):**
    - Add a background job or AI classifier that flags repeated unanswered customer questions and surfaces draft FAQ proposals in `KnowledgeBaseForm.jsx` for one-click owner approval.
-3. **Configurable Notification Templates & Channel Toggles (PRD §11):**
-   - Allow owners to customize status-update wording and enable/disable specific order lifecycle alerts per channel.
+3. ✅ **Completed & Verified — Configurable Notification Templates & Channel Toggles (PRD §11):**
+   - Built `NotificationTemplate` PostgreSQL model (`0014`), `render_notification_template` safe substitution & toggle enforcement, `/api/operations/notifications/templates/` CRUD + reset API, and `NotificationSettings.jsx` under Owner Settings.
 4. **Data Retention, Consent & Account Deletion (PRD §12):**
    - Add a configurable retention policy management command (e.g., anonymizing/purging old `AgentMessage` records) and customer consent tracking.
 5. **Interactive Map Pin / Geocoding & Dedicated Table/Reservation UI (PRD §3, §4.3, §15):**
