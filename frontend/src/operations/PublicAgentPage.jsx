@@ -17,9 +17,11 @@ export default function PublicAgentPage() {
 
   // Conversation & Read-only Display State
   const isEmbed = typeof window !== "undefined" && new URLSearchParams(window.location.search).get("embed") === "1";
+  const storageKey = `ridesai_public_conv_${publicId}`;
   const [conversationId, setConversationId] = useState(null);
   const conversationIdRef = useRef(null);
   const [messages, setMessages] = useState([]);
+  const [hydratingChat, setHydratingChat] = useState(false);
   const [error, setError] = useState("");
   const [monthlyLimitReached, setMonthlyLimitReached] = useState(false);
   const [aiPaused, setAiPaused] = useState(false);
@@ -61,11 +63,13 @@ export default function PublicAgentPage() {
     scrollToBottom();
   }, [messages, interimTranscript, voiceState]);
 
-  // Load business catalog and info
+  // Load business catalog, info, and hydrate any saved conversation from localStorage
   useEffect(() => {
+    let cancelled = false;
     api
       .get(`/operations/public/agent/${publicId}/catalog/`)
       .then(({ data }) => {
+        if (cancelled) return;
         setCatalog(data.items || []);
         setServiceAreas(data.service_areas || []);
         if (data.business) setBusinessName(data.business);
@@ -77,15 +81,82 @@ export default function PublicAgentPage() {
           setError("This business's AI Voice Agent has reached its monthly usage limit. Please contact the business directly.");
         }
       })
-      .catch((err) =>
-        setError(err.response?.data?.detail || "This business assistant is currently unavailable.")
-      );
+      .catch((err) => {
+        if (!cancelled) {
+          setError(err.response?.data?.detail || "This business assistant is currently unavailable.");
+        }
+      });
+
+    // Hydrate saved conversation on mount / page reload
+    let savedConvId = null;
+    try {
+      savedConvId = window.localStorage.getItem(storageKey);
+    } catch {
+      savedConvId = null;
+    }
+
+    if (savedConvId) {
+      conversationIdRef.current = savedConvId;
+      setConversationId(savedConvId);
+      setHydratingChat(true);
+      api
+        .get(`/operations/public/agent/${publicId}/conversation/${savedConvId}/`)
+        .then(({ data }) => {
+          if (cancelled) return;
+          const hydrated = (data?.messages || []).map((m) => ({
+            role: m.role,
+            content: m.content,
+            is_voice: Boolean(m.metadata?.is_voice),
+            audio_url: m.metadata?.audio_url || null,
+            menu_items: m.metadata?.menu_items || [],
+            order_summary: m.metadata?.order_summary || null,
+          }));
+          if (hydrated.length > 0) {
+            setMessages(hydrated);
+          }
+        })
+        .catch((err) => {
+          if (cancelled) return;
+          // Clear stale/invalid conversation ID on 404/400 so the user can start fresh cleanly
+          if (err?.response?.status === 404 || err?.response?.status === 400) {
+            try {
+              window.localStorage.removeItem(storageKey);
+            } catch {}
+            conversationIdRef.current = null;
+            setConversationId(null);
+          }
+        })
+        .finally(() => {
+          if (!cancelled) setHydratingChat(false);
+        });
+    } else {
+      conversationIdRef.current = null;
+      setConversationId(null);
+      setMessages([]);
+    }
 
     return () => {
+      cancelled = true;
       stopAllAudio();
       stopAllRecording();
     };
-  }, [publicId]);
+  }, [publicId, storageKey]);
+
+  // Clear saved conversation and start a fresh voice session
+  const handleNewChat = () => {
+    stopAllAudio();
+    stopAllRecording();
+    try {
+      window.localStorage.removeItem(storageKey);
+    } catch {}
+    conversationIdRef.current = null;
+    setConversationId(null);
+    setMessages([]);
+    setError("");
+    setInterimTranscript("");
+    setRecordingSeconds(0);
+    setVoiceState("idle");
+  };
 
   const stopAllAudio = () => {
     if (currentAudioRef.current) {
@@ -164,6 +235,9 @@ export default function PublicAgentPage() {
       if (data?.conversation_id) {
         conversationIdRef.current = data.conversation_id;
         setConversationId(data.conversation_id);
+        try {
+          window.localStorage.setItem(storageKey, data.conversation_id);
+        } catch {}
       }
       const reply = data.reply_text || data.answer || "";
       const actualTranscript = data.transcript || optimisticText;
@@ -568,27 +642,53 @@ export default function PublicAgentPage() {
             </p>
           </div>
 
-          {/* Customer Details Pill / Button */}
-          <button
-            type="button"
-            onClick={() => setShowContactModal(true)}
-            style={{
-              background: "#faf5ff",
-              border: "1px solid #e9d5ff",
-              borderRadius: "14px",
-              padding: isEmbed ? "6px 10px" : "8px 14px",
-              fontSize: isEmbed ? "11px" : "12px",
-              fontWeight: "600",
-              color: "#7e22ce",
-              cursor: "pointer",
-              display: "flex",
-              alignItems: "center",
-              gap: "6px",
-            }}
-          >
-            <span>👤</span>
-            <span>{customer.name || customer.phone ? `${customer.name || customer.phone}` : "Add Details"}</span>
-          </button>
+          {/* Header Action Buttons: New Chat & Customer Details */}
+          <div style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
+            <button
+              type="button"
+              onClick={handleNewChat}
+              disabled={voiceState === "processing" || hydratingChat}
+              title="Start a fresh voice chat session"
+              style={{
+                background: "#ffffff",
+                border: "1px solid #f0abfc",
+                borderRadius: "14px",
+                padding: isEmbed ? "6px 10px" : "8px 13px",
+                fontSize: isEmbed ? "11px" : "12px",
+                fontWeight: "600",
+                color: "#a21caf",
+                cursor: voiceState === "processing" || hydratingChat ? "not-allowed" : "pointer",
+                display: "flex",
+                alignItems: "center",
+                gap: "5px",
+                opacity: voiceState === "processing" || hydratingChat ? 0.6 : 1,
+              }}
+            >
+              <span>✨</span>
+              <span>New Chat</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setShowContactModal(true)}
+              style={{
+                background: "#faf5ff",
+                border: "1px solid #e9d5ff",
+                borderRadius: "14px",
+                padding: isEmbed ? "6px 10px" : "8px 14px",
+                fontSize: isEmbed ? "11px" : "12px",
+                fontWeight: "600",
+                color: "#7e22ce",
+                cursor: "pointer",
+                display: "flex",
+                alignItems: "center",
+                gap: "6px",
+              }}
+            >
+              <span>👤</span>
+              <span>{customer.name || customer.phone ? `${customer.name || customer.phone}` : "Add Details"}</span>
+            </button>
+          </div>
         </header>
 
         {/* Read-Only Transcript & Cards Feed */}

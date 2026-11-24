@@ -3,7 +3,7 @@ from django.conf import settings
 from django.test import TestCase
 from rest_framework.test import APIClient
 from accounts.models import StaffRole, User
-from companies.models import Company
+from companies.models import Company, CatalogCategory
 from datetime import date, timedelta
 from django.utils import timezone
 from .models import (
@@ -4510,6 +4510,141 @@ class P0WhatsAppDBAndSecurityTests(TestCase):
         finally:
             # Restore original dev settings module state
             importlib.reload(settings_mod)
+
+
+class AIUpsellingSuggestionsTests(TestCase):
+    """Tests for Smart Catalog-Grounded AI Upselling & Cross-Selling Suggestions."""
+
+    def setUp(self):
+        self.client = APIClient()
+        self.company_a = Company.objects.create(
+            name="Burger House Upsell",
+            business_type="restaurant",
+            status=Company.STATUS_ACTIVE,
+            payment_status=Company.PAYMENT_OK,
+            subscription_status=Company.SUBSCRIPTION_ACTIVE,
+            enable_upselling=True,
+        )
+        self.company_b = Company.objects.create(
+            name="Other Tenant Pizza",
+            business_type="restaurant",
+            status=Company.STATUS_ACTIVE,
+            payment_status=Company.PAYMENT_OK,
+            subscription_status=Company.SUBSCRIPTION_ACTIVE,
+            enable_upselling=True,
+        )
+        self.owner_a = User.objects.create_user(
+            username="upsell_owner_a",
+            email="upsell_owner_a@example.com",
+            password="Password123!",
+            role=User.ROLE_OWNER,
+            company=self.company_a,
+            is_active=True,
+        )
+        self.cat_mains = CatalogCategory.objects.create(company=self.company_a, name="Burgers")
+        self.cat_sides = CatalogCategory.objects.create(company=self.company_a, name="Sides")
+        self.cat_drinks = CatalogCategory.objects.create(company=self.company_a, name="Beverages")
+        self.cat_desserts = CatalogCategory.objects.create(company=self.company_a, name="Desserts")
+
+        self.burger = CatalogItem.objects.create(
+            company=self.company_a, category=self.cat_mains, name="Zinger Burger", price=Decimal("650.00"), is_available=True
+        )
+        self.fries = CatalogItem.objects.create(
+            company=self.company_a, category=self.cat_sides, name="Crispy Fries", price=Decimal("250.00"), is_available=True
+        )
+        self.drink = CatalogItem.objects.create(
+            company=self.company_a, category=self.cat_drinks, name="Cold Drink", price=Decimal("150.00"), is_available=True
+        )
+        self.brownie = CatalogItem.objects.create(
+            company=self.company_a, category=self.cat_desserts, name="Molten Brownie", price=Decimal("350.00"), is_available=True
+        )
+        # Out-of-stock item in Company A
+        self.oos_wings = CatalogItem.objects.create(
+            company=self.company_a, category=self.cat_sides, name="Out Of Stock Wings", price=Decimal("400.00"), is_available=True
+        )
+        Inventory.objects.create(company=self.company_a, item=self.oos_wings, quantity=Decimal("0"), is_unlimited=False)
+        # Unavailable item in Company A
+        self.unavail_dip = CatalogItem.objects.create(
+            company=self.company_a, category=self.cat_sides, name="Hidden Garlic Dip", price=Decimal("90.00"), is_available=False
+        )
+        # Other company's item
+        self.other_company_drink = CatalogItem.objects.create(
+            company=self.company_b, name="Tenant B Secret Shake", price=Decimal("299.00"), is_available=True
+        )
+
+    def test_get_upsell_suggestions_strict_tenant_and_stock_isolation(self):
+        from operations.whatsapp_agent import get_upsell_suggestions
+
+        suggestions = get_upsell_suggestions(self.company_a, ordered_item_names=["Zinger Burger"])
+        names = [s["name"] for s in suggestions]
+
+        self.assertGreaterEqual(len(suggestions), 2)
+        self.assertLessEqual(len(suggestions), 3)
+        self.assertIn("Crispy Fries", names)
+        self.assertIn("Cold Drink", names)
+        # Excludes already ordered, out-of-stock, unavailable, and other tenant's items
+        self.assertNotIn("Zinger Burger", names)
+        self.assertNotIn("Out Of Stock Wings", names)
+        self.assertNotIn("Hidden Garlic Dip", names)
+        self.assertNotIn("Tenant B Secret Shake", names)
+        # Exact Rs. price formatting
+        fries_entry = next(s for s in suggestions if s["name"] == "Crispy Fries")
+        self.assertEqual(fries_entry["price_formatted"], "Rs. 250")
+
+    def test_system_prompt_respects_enable_upselling_toggle(self):
+        from operations.whatsapp_agent import (
+            _build_system_prompt,
+            get_business_context_for_company,
+            get_upsell_suggestions,
+        )
+
+        # Enabled (default True)
+        ctx_on = get_business_context_for_company(self.company_a)
+        self.assertTrue(ctx_on["enable_upselling"])
+        prompt_on = _build_system_prompt("Ali", ctx_on)
+        self.assertIn("SMART UPSELLING & CROSS-SELLING RULES", prompt_on)
+        self.assertIn("Crispy Fries", prompt_on)
+
+        # Disabled (False)
+        self.company_a.enable_upselling = False
+        self.company_a.save(update_fields=["enable_upselling"])
+        self.assertEqual(get_upsell_suggestions(self.company_a, ["Zinger Burger"]), [])
+
+        ctx_off = get_business_context_for_company(self.company_a)
+        self.assertFalse(ctx_off["enable_upselling"])
+        prompt_off = _build_system_prompt("Ali", ctx_off)
+        self.assertNotIn("SMART UPSELLING & CROSS-SELLING RULES", prompt_off)
+
+    def test_agent_settings_patch_persists_enable_upselling(self):
+        self.client.force_authenticate(user=self.owner_a)
+
+        # GET defaults to True
+        res_get = self.client.get("/api/operations/agent/settings/")
+        self.assertEqual(res_get.status_code, 200)
+        self.assertTrue(res_get.data["enable_upselling"])
+
+        # PATCH to False
+        res_patch = self.client.patch(
+            "/api/operations/agent/settings/",
+            {"enable_upselling": False},
+            format="json",
+        )
+        self.assertEqual(res_patch.status_code, 200)
+        self.assertFalse(res_patch.data["enable_upselling"])
+        self.company_a.refresh_from_db()
+        self.assertFalse(self.company_a.enable_upselling)
+
+        # PATCH back to True
+        res_patch2 = self.client.patch(
+            "/api/operations/agent/settings/",
+            {"enable_upselling": True},
+            format="json",
+        )
+        self.assertEqual(res_patch2.status_code, 200)
+        self.assertTrue(res_patch2.data["enable_upselling"])
+        self.company_a.refresh_from_db()
+        self.assertTrue(self.company_a.enable_upselling)
+
 
 
 

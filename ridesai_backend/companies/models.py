@@ -109,6 +109,7 @@ class Company(models.Model):
     # AI Agent actions are opt-in and scoped to this business.
     agent_enabled = models.BooleanField(default=False)
     is_ai_paused = models.BooleanField(default=False, help_text="When True, AI automated voice/text replies are paused across Web Link, Widget, and WhatsApp.")
+    enable_upselling = models.BooleanField(default=True, help_text="When True, the customer AI Voice Agent suggests 1-2 relevant available add-ons before confirming an order.")
     is_calling_enabled = models.BooleanField(default=False)
     max_daily_voice_notes = models.IntegerField(default=15)
     max_daily_text_messages = models.IntegerField(default=50)

@@ -333,6 +333,7 @@ class AgentSettingsAPIView(BusinessAPIView):
         return Response({
             "enabled": self.company.agent_enabled,
             "is_ai_paused": self.company.is_ai_paused,
+            "enable_upselling": self.company.enable_upselling,
             "allowed_actions": self.company.agent_allowed_actions,
             "greeting": self.company.agent_greeting,
             "tone": self.company.agent_tone,
@@ -351,6 +352,8 @@ class AgentSettingsAPIView(BusinessAPIView):
         self.company.agent_enabled = bool(request.data.get("enabled", self.company.agent_enabled))
         if "is_ai_paused" in request.data:
             self.company.is_ai_paused = bool(request.data["is_ai_paused"])
+        if "enable_upselling" in request.data:
+            self.company.enable_upselling = bool(request.data["enable_upselling"])
         self.company.agent_allowed_actions = actions
         self.company.agent_greeting = str(request.data.get("greeting", self.company.agent_greeting))[:2000]
         tone = request.data.get("tone", self.company.agent_tone)
@@ -360,12 +363,13 @@ class AgentSettingsAPIView(BusinessAPIView):
         self.company.agent_support_phone = str(request.data.get("support_phone", self.company.agent_support_phone))[:30]
         self.company.agent_support_email = str(request.data.get("support_email", self.company.agent_support_email))[:254]
         self.company.save(update_fields=[
-            "agent_enabled", "is_ai_paused", "agent_allowed_actions", "agent_greeting",
+            "agent_enabled", "is_ai_paused", "enable_upselling", "agent_allowed_actions", "agent_greeting",
             "agent_tone", "agent_support_phone", "agent_support_email"
         ])
         return Response({
             "enabled": self.company.agent_enabled,
             "is_ai_paused": self.company.is_ai_paused,
+            "enable_upselling": self.company.enable_upselling,
             "allowed_actions": actions,
             "greeting": self.company.agent_greeting,
             "tone": self.company.agent_tone,

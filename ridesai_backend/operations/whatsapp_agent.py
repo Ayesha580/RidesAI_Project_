@@ -263,8 +263,32 @@ TOOL_SUBMIT_RETURN_REQUEST = {
     },
 }
 
+TOOL_GET_UPSELL_SUGGESTIONS = {
+    "type": "function",
+    "function": {
+        "name": "get_upsell_suggestions",
+        "description": (
+            "Fetches up to 3 real, currently in-stock complementary add-on or cross-sell items "
+            "(such as fries, drinks, dips, desserts, or related accessories) from this business's live catalog "
+            "based on the items the customer is ordering."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "ordered_item_names": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "List of item names the customer has already selected for their order.",
+                }
+            },
+            "required": ["ordered_item_names"],
+        },
+    },
+}
+
 AGENT_TOOLS = [
     TOOL_GET_CATALOG_ITEMS,
+    TOOL_GET_UPSELL_SUGGESTIONS,
     TOOL_CREATE_ORDER,
     TOOL_CHECK_ORDER_STATUS,
     TOOL_SUBMIT_PRESCRIPTION_REQUEST,
@@ -287,7 +311,7 @@ CATEGORY_AGENT_PROFILES = {
             "- Primary duty is presenting delicious food options, taking takeaway/delivery food orders, "
             "and confirming customer delivery addresses."
         ),
-        "tools": [TOOL_GET_CATALOG_ITEMS, TOOL_CREATE_ORDER, TOOL_CHECK_ORDER_STATUS],
+        "tools": [TOOL_GET_CATALOG_ITEMS, TOOL_GET_UPSELL_SUGGESTIONS, TOOL_CREATE_ORDER, TOOL_CHECK_ORDER_STATUS],
     },
     "pharmacy": {
         "key": "pharmacy",
@@ -301,7 +325,7 @@ CATEGORY_AGENT_PROFILES = {
             "Instead, call `submit_prescription_request` with the medicine names and customer details, and inform the customer that their prescription request has been registered and a licensed pharmacist will review and confirm it.\n"
             "- Inform customers that prescription-only medicines require presenting a valid physical or digital doctor's prescription upon delivery."
         ),
-        "tools": [TOOL_GET_CATALOG_ITEMS, TOOL_CREATE_ORDER, TOOL_CHECK_ORDER_STATUS, TOOL_SUBMIT_PRESCRIPTION_REQUEST],
+        "tools": [TOOL_GET_CATALOG_ITEMS, TOOL_GET_UPSELL_SUGGESTIONS, TOOL_CREATE_ORDER, TOOL_CHECK_ORDER_STATUS, TOOL_SUBMIT_PRESCRIPTION_REQUEST],
     },
     "clinic": {
         "key": "clinic",
@@ -330,7 +354,7 @@ CATEGORY_AGENT_PROFILES = {
             "- ORDER TRACKING: Call `check_order_status` if the customer inquires about their recent order.\n"
             "- RETURNS & EXCHANGES: If a customer wants to return or exchange an item, gather their details, reason, and order number (if known), then call `submit_return_request`."
         ),
-        "tools": [TOOL_GET_CATALOG_ITEMS, TOOL_CREATE_ORDER, TOOL_CHECK_ORDER_STATUS, TOOL_SUBMIT_RETURN_REQUEST],
+        "tools": [TOOL_GET_CATALOG_ITEMS, TOOL_GET_UPSELL_SUGGESTIONS, TOOL_CREATE_ORDER, TOOL_CHECK_ORDER_STATUS, TOOL_SUBMIT_RETURN_REQUEST],
     },
 }
 
@@ -349,6 +373,164 @@ def get_category_agent_config(business_type: Optional[str]) -> Dict[str, Any]:
         return CATEGORY_AGENT_PROFILES["retail"]
     # Default to restaurant
     return CATEGORY_AGENT_PROFILES["restaurant"]
+
+
+# ============================================================================
+# Smart Catalog-Grounded Upselling & Cross-Selling Engine (Multi-Tenant)
+# ============================================================================
+
+_RESTAURANT_MAIN_KEYWORDS = (
+    "burger", "pizza", "biryani", "shawarma", "karahi", "wrap", "pasta",
+    "steak", "sandwich", "roll", "tikka", "broast", "kebab", "platter",
+    "rice", "handi", "pulao", "nihari", "haleem", "deal", "combo",
+)
+_RESTAURANT_SIDE_KEYWORDS = (
+    "fries", "fry", "nugget", "wing", "salad", "dip", "sauce", "mayo",
+    "garlic", "coleslaw", "raita", "naan", "roti", "side", "snack", "onion ring",
+)
+_RESTAURANT_DRINK_KEYWORDS = (
+    "drink", "cola", "pepsi", "coke", "sprite", "7up", "fanta", "mirinda",
+    "juice", "shake", "water", "tea", "chai", "coffee", "lassi", "beverage",
+    "mojito", "soda", "margarita", "smoothie", "slush",
+)
+_RESTAURANT_DESSERT_KEYWORDS = (
+    "cake", "brownie", "ice cream", "gulab", "kheer", "dessert", "sweet",
+    "cookie", "lava", "pudding", "halwa", "pastry", "donut", "waffle",
+)
+
+
+def _classify_restaurant_bucket(name_and_cat: str) -> str:
+    text = (name_and_cat or "").lower()
+    if any(k in text for k in _RESTAURANT_DRINK_KEYWORDS):
+        return "drink"
+    if any(k in text for k in _RESTAURANT_DESSERT_KEYWORDS):
+        return "dessert"
+    if any(k in text for k in _RESTAURANT_SIDE_KEYWORDS):
+        return "side"
+    if any(k in text for k in _RESTAURANT_MAIN_KEYWORDS):
+        return "main"
+    return "other"
+
+
+def get_upsell_suggestions(
+    company: Optional[Company],
+    ordered_item_names: Optional[List[str]] = None,
+    max_suggestions: int = 3,
+) -> List[Dict[str, Any]]:
+    """
+    Returns up to `max_suggestions` (default 3) real, currently available & in-stock
+    CatalogItem upsell/cross-sell suggestions strictly scoped to `company`.
+
+    Zero-Hallucination & Strict Multi-Tenant Guarantees:
+    - Queries ONLY `CatalogItem.objects.filter(company=company, is_available=True)`.
+    - Excludes items with tracked Inventory quantity <= 0 (out-of-stock).
+    - Excludes items already in `ordered_item_names`.
+    """
+    if not company or not getattr(company, "enable_upselling", True):
+        return []
+
+    ordered_clean = [str(n).strip().lower() for n in (ordered_item_names or []) if str(n).strip()]
+
+    qs = (
+        CatalogItem.objects.filter(company=company, is_available=True)
+        .select_related("category")
+        .order_by("id")
+    )
+
+    # Preload inventory map for this company to exclude out-of-stock tracked items in O(1)
+    inv_map = {
+        inv.item_id: inv
+        for inv in Inventory.objects.filter(company=company).only("item_id", "quantity", "is_unlimited")
+    }
+
+    available_candidates: List[Dict[str, Any]] = []
+    ordered_categories = set()
+
+    for item in qs:
+        item_name_lower = (item.name or "").strip().lower()
+        cat_name = (item.category.name if item.category else "").strip()
+
+        # Check if item is already in ordered list
+        is_already_ordered = any(
+            ord_name == item_name_lower or ord_name in item_name_lower or item_name_lower in ord_name
+            for ord_name in ordered_clean
+        )
+        if is_already_ordered:
+            if cat_name:
+                ordered_categories.add(cat_name.lower())
+            continue
+
+        # Exclude out-of-stock tracked inventory items
+        inv = inv_map.get(item.id)
+        if inv and not inv.is_unlimited and inv.quantity <= 0:
+            continue
+
+        price_val = float(item.price or 0)
+        price_str = f"Rs. {int(price_val)}" if price_val == int(price_val) else f"Rs. {price_val:.2f}"
+        available_candidates.append({
+            "id": item.id,
+            "name": item.name,
+            "price": price_val,
+            "price_formatted": price_str,
+            "category": cat_name,
+            "_bucket": _classify_restaurant_bucket(f"{item.name} {cat_name}"),
+        })
+
+    if not available_candidates:
+        return []
+
+    biz_type = (getattr(company, "business_type", "") or "restaurant").strip().lower()
+
+    if "restaurant" in biz_type or not any(k in biz_type for k in ("pharm", "med", "clinic", "hosp", "retail", "store", "shop", "grocery")):
+        ordered_buckets = {_classify_restaurant_bucket(n) for n in ordered_clean}
+        ordered_has_main = "main" in ordered_buckets
+        ordered_only_sides = bool(ordered_buckets) and ordered_buckets.issubset({"side", "other"})
+
+        if ordered_only_sides and not ordered_has_main:
+            # Customer ordered only snacks/sides -> suggest drinks and mains
+            preferred_order = ["drink", "main", "dessert", "side", "other"]
+        else:
+            # Customer ordered main(s) (or empty) -> suggest sides/fries, drinks, dips/desserts
+            preferred_order = ["side", "drink", "dessert", "other", "main"]
+
+        # Diversity-first selection: pick 1 from each preferred bucket first, then fill remaining
+        selected: List[Dict[str, Any]] = []
+        used_ids = set()
+        for bucket in preferred_order:
+            if len(selected) >= max_suggestions:
+                break
+            for cand in available_candidates:
+                if cand["id"] not in used_ids and cand["_bucket"] == bucket:
+                    selected.append(cand)
+                    used_ids.add(cand["id"])
+                    break
+        if len(selected) < max_suggestions:
+            for bucket in preferred_order:
+                for cand in available_candidates:
+                    if len(selected) >= max_suggestions:
+                        break
+                    if cand["id"] not in used_ids and cand["_bucket"] == bucket:
+                        selected.append(cand)
+                        used_ids.add(cand["id"])
+    else:
+        # Retail / Pharmacy / Clinic: prioritize items from OTHER active categories first
+        other_cat = [
+            c for c in available_candidates
+            if c["category"] and c["category"].lower() not in ordered_categories
+        ]
+        same_or_uncat = [c for c in available_candidates if c not in other_cat]
+        selected = (other_cat + same_or_uncat)[:max_suggestions]
+
+    return [
+        {
+            "id": c["id"],
+            "name": c["name"],
+            "price": c["price"],
+            "price_formatted": c["price_formatted"],
+            "category": c["category"],
+        }
+        for c in selected[:max_suggestions]
+    ]
 
 
 # ============================================================================
@@ -958,6 +1140,8 @@ def get_business_context_for_company(company: Optional[Company]) -> Dict[str, An
         "phone": (company.phone or company.agent_support_phone if company else "") or "",
         "address": (company.address if company else "") or "",
         "business_type": (company.business_type if company else "") or "restaurant",
+        "enable_upselling": bool(getattr(company, "enable_upselling", True)) if company else False,
+        "upsell_candidates": [],
         "catalog": [],
         "knowledge": [],
         "hours": [],
@@ -973,6 +1157,8 @@ def get_business_context_for_company(company: Optional[Company]) -> Dict[str, An
             .values("id", "name", "price", "description")[:40]
         )
         context["catalog"] = items
+        if context["enable_upselling"]:
+            context["upsell_candidates"] = get_upsell_suggestions(company, ordered_item_names=[], max_suggestions=3)
 
         # Fetch approved FAQs and business knowledge
         faqs = list(
@@ -1120,6 +1306,32 @@ def _build_system_prompt(
             "- Continue the conversation directly and fulfill their confirmation or query without resetting.\n"
         )
 
+    upsell_instruction = ""
+    upsell_checkout_step = ""
+    if context.get("enable_upselling", True):
+        upsell_candidates = context.get("upsell_candidates") or []
+        candidate_hint = ""
+        if upsell_candidates:
+            pairs = ", ".join(f"{u['name']} ({u['price_formatted']})" for u in upsell_candidates[:3])
+            candidate_hint = f"\n- Top available add-ons right now: {pairs}."
+        upsell_instruction = (
+            "\nSMART UPSELLING & CROSS-SELLING RULES (MANDATORY BEFORE CHECKOUT, NON-PUSHY, CATALOG-GROUNDED):\n"
+            "- Whenever a customer orders a main item and upselling has NOT yet been offered for the current order in the conversation history, "
+            "you MUST call `get_upsell_suggestions` with their selected item names and suggest 1-2 real, currently available add-ons with their exact Rs. prices "
+            "BEFORE (or in the exact same turn as) asking for their name, phone number, and delivery address. "
+            "NEVER skip straight to checkout without offering an add-on first!"
+            f"{candidate_hint}\n"
+            "- Match the customer's language (e.g., English: 'Would you like to add Crispy Fries (Rs. 250) or a Cold Drink (Rs. 150)?' "
+            "or Roman Urdu: 'Kya aap is ke sath Crispy Fries (Rs. 250) ya Cold Drink (Rs. 150) add karna chahenge?').\n"
+            "- ASK ONLY ONCE PER ORDER: If you already suggested add-ons earlier in this order OR if the customer declines "
+            "('nahi', 'nahi bas yehi', 'no thanks', 'no', 'bas'), immediately respect their decision and proceed directly to confirm/place the order without asking again.\n"
+            "- If the customer accepts an add-on, include it in `create_order`. NEVER invent items or prices not in the catalog.\n"
+        )
+        upsell_checkout_step = (
+            " If upselling has NOT been offered yet for this order, you MUST call `get_upsell_suggestions` and suggest 1-2 real available add-ons "
+            "(with exact Rs. prices) in this exact turn right before or alongside asking for their name, phone, and address."
+        )
+
     return f"""You are the official AI Assistant for {biz_name} on WhatsApp.
 Your primary role is {role_desc}.
 
@@ -1151,6 +1363,7 @@ GLOBAL HEALTH & DIETARY GUARDRAILS (PRD MANDATORY):
 - Do not promise medical efficacy or replace clinical judgment.
 {history_mode_instruction}
 {voice_mode_instruction}
+{upsell_instruction}
 
 STRICT TOOL CALLING RULES:
 1. Tool `get_catalog_items`:
@@ -1159,7 +1372,7 @@ STRICT TOOL CALLING RULES:
 2. Tool `create_order`:
    - Active for ordering verticals. Use ONLY when the customer has specified what they want to order, provided their real full name and real phone number, AND provided their delivery address.
    - MANDATORY REAL CONTACT RULE: If the customer's real name or phone number is unknown (e.g., web voice customer or name is 'Valued Customer'), you MUST ask for their full name, phone number, and delivery address before confirming or creating an order. NEVER invent or guess a dummy phone number (e.g. '03001234567') or use 'Valued Customer'.
-   - If the customer lists items to order but has NOT provided an address, name, or phone number yet: do NOT call `create_order`. Instead, list their selected items with prices in Rs., calculate the total in Rs., and ask them: "Please provide your full name, phone number, and delivery address to confirm and place your order."
+   - If the customer lists items to order but has NOT provided an address, name, or phone number yet: do NOT call `create_order`. Instead, list their selected items with prices in Rs., calculate the total in Rs.,{upsell_checkout_step} and ask them for their full name, phone number, and delivery address to confirm and place the order.
    - When spoken by the customer, extract their real name, phone number, and delivery address and combine with items from conversation history to immediately call `create_order`.
    - Under NO circumstances loop or ask "What would you like to order?" if the customer has already stated the items in prior turns. Maintain full multi-turn context and combine the remembered items with the provided address and contact details to call `create_order`.
    - When the customer provides their contact info and confirms (e.g., 'hanjee', 'hanjee krden', 'ji kar dein', 'haan', 'done', 'ok', 'confirm', 'yes', 'bhej do'): IMMEDIATELY call `create_order` using the items, name, phone, and address from the conversation history, and return the confirmation.
@@ -1371,7 +1584,9 @@ def _generate_agent_reply(
             llm_max_tokens = int(getattr(settings, "OPENAI_MAX_TOKENS", 200))
             biz_type = context.get("business_type") or "restaurant"
             cat_cfg = get_category_agent_config(biz_type)
-            active_tools = cat_cfg.get("tools") or AGENT_TOOLS
+            active_tools = list(cat_cfg.get("tools") or AGENT_TOOLS)
+            if not context.get("enable_upselling", True):
+                active_tools = [t for t in active_tools if t.get("function", {}).get("name") != "get_upsell_suggestions"]
 
             response = client.chat.completions.create(
                 model=model,
@@ -1406,6 +1621,16 @@ def _generate_agent_reply(
                             company=company,
                             search_query=fn_args.get("search_query"),
                         )
+                    elif fn_name == "get_upsell_suggestions":
+                        suggestions = get_upsell_suggestions(
+                            company=company,
+                            ordered_item_names=fn_args.get("ordered_item_names") or [],
+                            max_suggestions=3,
+                        )
+                        tool_result = {
+                            "enabled": bool(getattr(company, "enable_upselling", True)),
+                            "suggestions": suggestions,
+                        }
                     elif fn_name == "create_order":
                         phone_arg = (fn_args.get("customer_phone") or "").strip() or sender_phone
                         if not phone_arg and conversation_obj and conversation_obj.customer_phone:

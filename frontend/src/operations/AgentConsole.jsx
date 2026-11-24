@@ -13,12 +13,13 @@ const ACTIONS = [
 ];
 export default function AgentConsole() {
   const [activeTab, setActiveTab] = useState("manager"); // "manager" | "config"
-  const [settings, setSettings] = useState({ enabled: false, is_ai_paused: false, allowed_actions: [], greeting: "", tone: "friendly", support_phone: "", support_email: "" });
+  const [settings, setSettings] = useState({ enabled: false, is_ai_paused: false, enable_upselling: true, allowed_actions: [], greeting: "", tone: "friendly", support_phone: "", support_email: "" });
   const [messages, setMessages] = useState([]);
   const [message, setMessage] = useState("");
   const [conversationId, setConversationId] = useState(null);
   const [loading, setLoading] = useState(true);
   const [togglingPause, setTogglingPause] = useState(false);
+  const [togglingUpsell, setTogglingUpsell] = useState(false);
   const [sending, setSending] = useState(false);
   const [error, setError] = useState("");
   const [lastAssistantReply, setLastAssistantReply] = useState("");
@@ -35,6 +36,19 @@ export default function AgentConsole() {
       setError(errorText(e));
     } finally {
       setTogglingPause(false);
+    }
+  };
+  const toggleUpselling = async () => {
+    setTogglingUpsell(true);
+    setError("");
+    try {
+      const nextVal = !(settings.enable_upselling !== false);
+      const { data } = await operationsApi.updateAgentSettings({ ...settings, enable_upselling: nextVal });
+      setSettings(data);
+    } catch (e) {
+      setError(errorText(e));
+    } finally {
+      setTogglingUpsell(false);
     }
   };
   const save = async () => { setError(""); try { const { data } = await operationsApi.updateAgentSettings(settings); setSettings(data); } catch (e) { setError(errorText(e)); } };
@@ -171,6 +185,87 @@ export default function AgentConsole() {
             }}
           >
             {togglingPause ? "Updating..." : settings.is_ai_paused ? "▶ Resume AI Agent" : "⏸ Pause AI Agent"}
+          </button>
+        </div>
+
+        {/* AI Upselling & Cross-Selling Suggestions Toggle */}
+        <div style={{
+          background: "#ffffff",
+          border: settings.enable_upselling !== false ? "1px solid #f0abfc" : "1px solid #e2e8f0",
+          borderRadius: 14,
+          padding: "14px 20px",
+          marginBottom: 18,
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          flexWrap: "wrap",
+          gap: 12,
+        }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+            <div style={{
+              width: 40,
+              height: 40,
+              borderRadius: 12,
+              background: settings.enable_upselling !== false ? "#fdf4ff" : "#f1f5f9",
+              display: "grid",
+              placeItems: "center",
+              fontSize: 19,
+            }}>
+              ✨
+            </div>
+            <div>
+              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <h4 style={{ margin: 0, fontSize: 15, fontWeight: 700, color: "#1e293b" }}>
+                  ✨ AI Upselling &amp; Add-on Suggestions
+                </h4>
+                <span style={{
+                  fontSize: 11,
+                  fontWeight: 700,
+                  textTransform: "uppercase",
+                  padding: "2px 8px",
+                  borderRadius: 10,
+                  background: settings.enable_upselling !== false ? "#fdf4ff" : "#f1f5f9",
+                  color: settings.enable_upselling !== false ? "#a21caf" : "#64748b",
+                }}>
+                  {settings.enable_upselling !== false ? "Active" : "Off"}
+                </span>
+              </div>
+              <p style={{ margin: "3px 0 0", fontSize: 12.5, color: "#64748b" }}>
+                AI naturally suggests available drinks, sides, or add-ons before confirming orders
+              </p>
+            </div>
+          </div>
+          <button
+            type="button"
+            role="switch"
+            aria-checked={settings.enable_upselling !== false}
+            disabled={togglingUpsell || loading}
+            onClick={toggleUpselling}
+            style={{
+              position: "relative",
+              width: 52,
+              height: 28,
+              borderRadius: 999,
+              border: "none",
+              cursor: togglingUpsell || loading ? "not-allowed" : "pointer",
+              background: settings.enable_upselling !== false ? "#ff77ff" : "#cbd5e1",
+              boxShadow: settings.enable_upselling !== false ? "0 2px 10px rgba(255,119,255,0.4)" : "none",
+              transition: "background 0.2s ease",
+              padding: 0,
+            }}
+            title={settings.enable_upselling !== false ? "Turn off AI upselling" : "Turn on AI upselling"}
+          >
+            <span style={{
+              position: "absolute",
+              top: 3,
+              left: settings.enable_upselling !== false ? 27 : 3,
+              width: 22,
+              height: 22,
+              borderRadius: "50%",
+              background: "#ffffff",
+              boxShadow: "0 1px 3px rgba(0,0,0,0.2)",
+              transition: "left 0.2s ease",
+            }} />
           </button>
         </div>
         <section style={{ background: "white", border: "1px solid #e5e7eb", borderRadius: 14, padding: 18, marginBottom: 18 }}>
