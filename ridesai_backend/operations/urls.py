@@ -21,6 +21,12 @@ from .faq_views import (
     ApprovedFAQDetailAPIView,
 )
 from .table_views import RestaurantTableListCreateAPIView, RestaurantTableDetailAPIView
+from .privacy_views import (
+    DataRetentionPolicyAPIView,
+    DataRetentionRunPurgeAPIView,
+    CustomerConsentListCreateAPIView,
+    CustomerEraseAPIView,
+)
 
 urlpatterns = [
     path("orders/catalog/", OrderCatalogAPIView.as_view(), name="order-catalog"),
@@ -62,5 +68,9 @@ urlpatterns = [
     path("faqs/<int:pk>/", ApprovedFAQDetailAPIView.as_view(), name="approved-faqs-detail"),
     path("tables/", RestaurantTableListCreateAPIView.as_view(), name="restaurant-tables-list"),
     path("tables/<int:pk>/", RestaurantTableDetailAPIView.as_view(), name="restaurant-tables-detail"),
+    path("privacy/retention/", DataRetentionPolicyAPIView.as_view(), name="privacy-retention-policy"),
+    path("privacy/retention/run-purge/", DataRetentionRunPurgeAPIView.as_view(), name="privacy-retention-run-purge"),
+    path("privacy/consents/", CustomerConsentListCreateAPIView.as_view(), name="privacy-consents-list"),
+    path("privacy/erase-customer/", CustomerEraseAPIView.as_view(), name="privacy-erase-customer"),
     path("hospital/", include("operations.hospital_urls")),
 ]

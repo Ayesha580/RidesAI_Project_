@@ -56,6 +56,7 @@ import HospitalDashboard from "./operations/HospitalDashboard";
 import AnalyticsReports from "./operations/AnalyticsReports";
 import NotificationSettings from "./operations/NotificationSettings";
 import TablesFloorPlan from "./operations/TablesFloorPlan";
+import PrivacyComplianceSettings from "./operations/PrivacyComplianceSettings";
 import RetailFulfillment from "./operations/RetailFulfillment";
 import RetailReturns from "./operations/RetailReturns";
 
@@ -202,6 +203,7 @@ export default function App() {
       <Route path="/owner/analytics" element={<Guard roles={["owner"]}><AnalyticsReports /></Guard>} />
       <Route path="/owner/reports" element={<Guard roles={["owner"]}><AnalyticsReports /></Guard>} />
       <Route path="/owner/notifications" element={<Guard roles={["owner"]}><NotificationSettings /></Guard>} />
+      <Route path="/owner/privacy" element={<Guard roles={["owner"]}><PrivacyComplianceSettings /></Guard>} />
       <Route path="/owner/billing" element={<Navigate to="/owner/settings?tab=billing" replace />} />
       <Route path="/owner/tables" element={<Navigate to="/owner/m/tables" replace />} />
       <Route path="/owner/reservations" element={<Navigate to="/owner/m/reservations" replace />} />

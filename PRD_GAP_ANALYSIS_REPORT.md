@@ -12,9 +12,9 @@ Across **27 distinct functional and non-functional requirements** extracted from
 
 | Status | Count | Percentage |
 | :--- | :---: | :---: |
-| ✅ **Completed & Verified** | **23** | **85.2%** |
+| ✅ **Completed & Verified** | **24** | **88.9%** |
 | 🟡 **Partially Implemented** | **1** | **3.7%** |
-| ❌ **Not Started / Pending** | **2** | **7.4%** |
+| ❌ **Not Started / Pending** | **1** | **3.7%** |
 | ⚠️ **Out-of-Scope / External Dependency** | **1** | **3.7%** |
 | **Total PRD Requirements Audited** | **27** | **100%** |
 
@@ -65,7 +65,7 @@ Across **27 distinct functional and non-functional requirements** extracted from
 | **§12 (Billing)** | **Subscription Billing, Monthly Voice Quotas & Exempt Email Rule** | ✅ | `billing/services.py` (`consume_company_message` atomic `select_for_update`), `billing/views.py` (`/api/billing/overview/`, `/plans/`, `/select-plan/`, `/webhook/`, `/cancel/`, `/resume/`), `billing/management/commands/send_billing_reminders.py`, `BillingTab.jsx` (monthly usage meter + price display), `BILLING_EXEMPT_EMAILS = ["ayeshaarshed145@gmail.com"]`. | Verified in `billing/tests.py` and `operations/tests.py`. |
 | **§12 (DB & Recovery)** | **Production Database (PostgreSQL), Backups & Recovery Pipeline** | ✅ | `ridesai_backend/config/settings.py` (`DATABASE_URL` via `dj-database-url`, `CONN_MAX_AGE=600`, `CONN_HEALTH_CHECKS=True`, SSL toggle), `ridesai_backend/scripts/migrate_sqlite_to_postgres.py` (6-step backup/export/migrate/load/sequence-reset/parity pipeline), `POSTGRESQL_MIGRATION_GUIDE.md`. | Live-verified on PostgreSQL 16: **533 / 533 rows** migrated, 49 sequences reset, **140 / 140 tests passing**. |
 | **§12 (Security)** | **Production Security Hardening** (HTTPS/HSTS, secure cookies, strict CORS when `DJANGO_DEBUG=False`) | ✅ | `ridesai_backend/config/settings.py` (`CORS_ALLOW_ALL_ORIGINS=False`, `SECURE_SSL_REDIRECT`, `SESSION_COOKIE_SECURE`, `CSRF_COOKIE_SECURE`, `SECURE_HSTS_SECONDS=31536000`, `SECURE_HSTS_INCLUDE_SUBDOMAINS=True`, `SECURE_HSTS_PRELOAD=True`, `SECURE_PROXY_SSL_HEADER`, `SECURE_CONTENT_TYPE_NOSNIFF=True` when `DEBUG=False`); `.env.example`. | Verified via `DJANGO_DEBUG=False python manage.py check --deploy` (**0 issues, 0 silenced**) and `P0WhatsAppDBAndSecurityTests`. |
-| **§12 (Privacy)** | **Configurable Data Retention, Consent Ledger & Deletion Workflows** | ❌ | Multi-tenant logical separation and JWT/OTP auth exist. | No automated data retention/TTL purge command, customer consent tracking table, or self-service GDPR/account data deletion endpoint. |
+| **§12 (Privacy)** | **Configurable Data Retention, Consent Ledger & Deletion Workflows** | ✅ | `operations/models.py` (`DataRetentionPolicy`, `CustomerConsentLog`, migration `0017`), `operations/privacy_service.py`, `operations/management/commands/purge_expired_data.py`, `operations/privacy_views.py` (`/api/operations/privacy/retention/`, `/run-purge/`, `/consents/`, `/erase-customer/`), `PrivacyComplianceSettings.jsx` (`🛡️ Privacy & Data` tab + `/owner/privacy`). | Verified on PostgreSQL 16 (`DataRetentionAndConsentTests`, preserves financial totals, strict multi-tenant isolation). |
 | **§12 / §15** | **Production Hosting, SSL/HTTPS, Live External Credentials & Monitoring** | ⚠️ | `python manage.py check --deploy` passes with 0 DB/config errors (only local `DEBUG=True` HTTPS warnings); `.env.example` and `POSTGRESQL_MIGRATION_GUIDE.md` document all required production settings. | Requires client/DevOps provisioning: VPS/cloud host, domain + SSL, `DJANGO_DEBUG=False`, live SMTP, live Polar workspace keys/webhooks, live Meta WhatsApp webhook approval, cron for `send_billing_reminders`, and APM/error monitoring (e.g., Sentry). |
 
 ---
@@ -106,8 +106,8 @@ Across **27 distinct functional and non-functional requirements** extracted from
    - Built `SuggestedFAQ` PostgreSQL model (`0015`), `log_unanswered_question` AI tool with deduplication, `/api/operations/faqs/suggestions/` approval/dismissal APIs, and `✨ Suggested FAQs (Pending)` review tab in `KnowledgeBaseForm.jsx`.
 3. ✅ **Completed & Verified — Configurable Notification Templates & Channel Toggles (PRD §11):**
    - Built `NotificationTemplate` PostgreSQL model (`0014`), `render_notification_template` safe substitution & toggle enforcement, `/api/operations/notifications/templates/` CRUD + reset API, and `NotificationSettings.jsx` under Owner Settings.
-4. **Data Retention, Consent & Account Deletion (PRD §12):**
-   - Add a configurable retention policy management command (e.g., anonymizing/purging old `AgentMessage` records) and customer consent tracking.
+4. ✅ **Completed & Verified — Data Retention, Consent & Account Deletion (PRD §12):**
+   - Built `DataRetentionPolicy` & `CustomerConsentLog` (`0017`), `purge_expired_data` management command, `/api/operations/privacy/` retention/consent/erasure endpoints, and `PrivacyComplianceSettings.jsx` under Owner Settings.
 5. ✅ **Completed & Verified — Interactive Map Pin / Geocoding & Dedicated Table/Floor-Plan UI (PRD §3, §4.3, §15):**
    - Added `Order.delivery_lat`/`delivery_lng` + OpenStreetMap pin picker & Geolocation in `PublicAgentPage.jsx` + Rider map links, plus `RestaurantTable` (`0016`) and `TablesFloorPlan.jsx` drag-and-drop visual floor-plan UI.
 

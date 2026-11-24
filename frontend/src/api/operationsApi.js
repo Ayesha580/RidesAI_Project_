@@ -118,3 +118,13 @@ export const tablesApi = {
   remove: (id) => api.delete(`/operations/tables/${id}/`),
 };
 
+export const privacyApi = {
+  getRetention: () => api.get("/operations/privacy/retention/"),
+  updateRetention: (data) => api.patch("/operations/privacy/retention/", data),
+  runPurge: (data = {}) => api.post("/operations/privacy/retention/run-purge/", data),
+  listConsents: () => api.get("/operations/privacy/consents/"),
+  recordConsent: (data) => api.post("/operations/privacy/consents/", data),
+  eraseCustomer: (customer_phone_or_email) =>
+    api.post("/operations/privacy/erase-customer/", { customer_phone_or_email }),
+};
+

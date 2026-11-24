@@ -5,11 +5,13 @@ import ProfileTab from "./settings/ProfileTab";
 import BillingTab from "./settings/BillingTab";
 import WhatsAppConnectCard from "./settings/WhatsAppConnectCard";
 import NotificationSettings from "../../operations/NotificationSettings";
+import PrivacyComplianceSettings from "../../operations/PrivacyComplianceSettings";
 
 const TABS = [
   { id: "profile", icon: "👤", label: "Profile" },
   { id: "whatsapp", icon: "💬", label: "WhatsApp AI" },
   { id: "notifications", icon: "🔔", label: "Notifications" },
+  { id: "privacy", icon: "🛡️", label: "Privacy & Data" },
   { id: "billing", icon: "💳", label: "Billing" },
 ];
 
@@ -130,6 +132,7 @@ export default function OwnerSettings() {
         </div>
       )}
       {tab === "notifications" && <NotificationSettings embedded />}
+      {tab === "privacy" && <PrivacyComplianceSettings embedded />}
       {tab === "billing" && <BillingTab suspended={locked} />}
     </OwnerLayout>
   );

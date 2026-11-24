@@ -927,6 +927,68 @@ class RestaurantTable(models.Model):
         return f"{self.table_number} ({self.zone}) - {self.status}"
 
 
+# ============================================================================
+# Privacy, Data Retention & Customer Consent Ledger (PRD §12 — Multi-Tenant)
+# ============================================================================
+
+class DataRetentionPolicy(models.Model):
+    company = models.OneToOneField(
+        "companies.Company",
+        on_delete=models.CASCADE,
+        related_name="retention_policy",
+    )
+    chat_retention_days = models.PositiveIntegerField(default=90)
+    order_pii_retention_days = models.PositiveIntegerField(default=365)
+    auto_purge_enabled = models.BooleanField(default=False)
+    last_purge_at = models.DateTimeField(null=True, blank=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    def __str__(self):
+        return f"RetentionPolicy(company={self.company_id}, chat={self.chat_retention_days}d, pii={self.order_pii_retention_days}d)"
+
+
+class CustomerConsentLog(models.Model):
+    CONSENT_VOICE_AI = "voice_ai_recording"
+    CONSENT_WHATSAPP = "whatsapp_notifications"
+    CONSENT_DATA_PROC = "data_processing"
+    CONSENT_MARKETING = "marketing_upsell"
+    CONSENT_TYPE_CHOICES = [
+        (CONSENT_VOICE_AI, "Voice AI Recording & Processing"),
+        (CONSENT_WHATSAPP, "WhatsApp Notifications"),
+        (CONSENT_DATA_PROC, "Order & Data Processing"),
+        (CONSENT_MARKETING, "Marketing & Upsell Offers"),
+    ]
+
+    CHANNEL_CHOICES = [
+        ("public_web", "Public Web"),
+        ("widget", "Website Widget"),
+        ("whatsapp", "WhatsApp"),
+        ("dashboard", "Dashboard"),
+    ]
+
+    company = models.ForeignKey(
+        "companies.Company",
+        on_delete=models.CASCADE,
+        related_name="customer_consents",
+        db_index=True,
+    )
+    customer_identifier = models.CharField(max_length=160, db_index=True)
+    consent_type = models.CharField(max_length=40, choices=CONSENT_TYPE_CHOICES)
+    granted = models.BooleanField(default=True)
+    channel = models.CharField(max_length=24, choices=CHANNEL_CHOICES, default="public_web")
+    recorded_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ("-recorded_at",)
+        indexes = [
+            models.Index(fields=["company", "customer_identifier", "-recorded_at"]),
+        ]
+
+    def __str__(self):
+        return f"[{self.company_id}] {self.customer_identifier} - {self.consent_type} ({self.granted})"
+
+
+
 
 
 

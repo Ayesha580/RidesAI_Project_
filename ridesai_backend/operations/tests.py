@@ -5432,6 +5432,163 @@ class MapPinAndFloorPlanTests(TestCase):
         self.assertEqual(RestaurantTable.objects.get(pk=table_id).pos_x, 280)
 
 
+class DataRetentionAndConsentTests(TestCase):
+    """Tests for PRD §12 Data Retention Policy, Consent Ledger, Purge Command & Customer Erasure."""
+
+    def setUp(self):
+        self.client = APIClient()
+        self.company_a = Company.objects.create(
+            name="Privacy Cafe Alpha",
+            business_type="restaurant",
+            status=Company.STATUS_ACTIVE,
+            payment_status=Company.PAYMENT_OK,
+            subscription_status=Company.SUBSCRIPTION_ACTIVE,
+        )
+        self.company_b = Company.objects.create(
+            name="Privacy Store Beta",
+            business_type="retail",
+            status=Company.STATUS_ACTIVE,
+            payment_status=Company.PAYMENT_OK,
+            subscription_status=Company.SUBSCRIPTION_ACTIVE,
+        )
+        self.owner_a = User.objects.create_user(
+            username="priv_owner_a",
+            email="priv_owner_a@example.com",
+            password="Password123!",
+            role=User.ROLE_OWNER,
+            company=self.company_a,
+            is_active=True,
+        )
+        self.owner_b = User.objects.create_user(
+            username="priv_owner_b",
+            email="priv_owner_b@example.com",
+            password="Password123!",
+            role=User.ROLE_OWNER,
+            company=self.company_b,
+            is_active=True,
+        )
+
+    def test_retention_policy_crud_and_purge_command_preserves_financial_totals(self):
+        from django.core.management import call_command
+
+        self.client.force_authenticate(user=self.owner_a)
+        res_get = self.client.get("/api/operations/privacy/retention/")
+        self.assertEqual(res_get.status_code, 200)
+        self.assertEqual(res_get.data["chat_retention_days"], 90)
+
+        res_patch = self.client.patch(
+            "/api/operations/privacy/retention/",
+            {"chat_retention_days": 30, "order_pii_retention_days": 60, "auto_purge_enabled": True},
+            format="json",
+        )
+        self.assertEqual(res_patch.status_code, 200)
+        self.assertTrue(res_patch.data["auto_purge_enabled"])
+
+        # Seed expired vs fresh data in Company A, plus expired data in Company B (auto_purge disabled)
+        old_dt = timezone.now() - timedelta(days=120)
+        conv_a = AgentConversation.objects.create(company=self.company_a, customer_name="Old User", customer_phone="03001111111")
+        old_msg = AgentMessage.objects.create(conversation=conv_a, role="user", content="Expired chat")
+        AgentMessage.objects.filter(pk=old_msg.pk).update(created_at=old_dt)
+        fresh_msg = AgentMessage.objects.create(conversation=conv_a, role="user", content="Fresh chat")
+
+        old_order_a = Order.objects.create(
+            company=self.company_a,
+            customer_name="Old Customer",
+            customer_phone="03001111111",
+            delivery_address="House 12, Old Street",
+            status=Order.STATUS_DELIVERED,
+            total=Decimal("2450.00"),
+        )
+        Order.objects.filter(pk=old_order_a.pk).update(created_at=old_dt)
+
+        old_order_b = Order.objects.create(
+            company=self.company_b,
+            customer_name="Tenant B Customer",
+            customer_phone="03002222222",
+            delivery_address="Tenant B Street",
+            status=Order.STATUS_DELIVERED,
+            total=Decimal("3100.00"),
+        )
+        Order.objects.filter(pk=old_order_b.pk).update(created_at=old_dt)
+
+        # Dry-run leaves data untouched
+        call_command("purge_expired_data", "--dry-run")
+        self.assertTrue(AgentMessage.objects.filter(pk=old_msg.pk).exists())
+
+        # Real run purges Company A expired data ONLY, keeping financial total intact
+        call_command("purge_expired_data")
+        self.assertFalse(AgentMessage.objects.filter(pk=old_msg.pk).exists())
+        self.assertTrue(AgentMessage.objects.filter(pk=fresh_msg.pk).exists())
+
+        old_order_a.refresh_from_db()
+        self.assertEqual(old_order_a.customer_name, "Anonymized")
+        self.assertEqual(old_order_a.customer_phone, "")
+        self.assertEqual(old_order_a.delivery_address, "")
+        self.assertEqual(old_order_a.total, Decimal("2450.00"))  # Financial total preserved!
+
+        # Company B untouched (strict multi-tenant isolation)
+        old_order_b.refresh_from_db()
+        self.assertEqual(old_order_b.customer_name, "Tenant B Customer")
+
+    def test_consent_ledger_and_right_to_erasure_tenant_isolation(self):
+        self.client.force_authenticate(user=self.owner_a)
+
+        # Record consent for Company A
+        c_res = self.client.post(
+            "/api/operations/privacy/consents/",
+            {
+                "customer_identifier": "03009998877",
+                "consent_type": "voice_ai_recording",
+                "channel": "public_web",
+                "granted": True,
+            },
+            format="json",
+        )
+        self.assertEqual(c_res.status_code, 201)
+
+        # Same customer phone exists in both Company A and Company B
+        order_a = Order.objects.create(
+            company=self.company_a,
+            customer_name="Sana Tariq",
+            customer_phone="03009998877",
+            delivery_address="Street A",
+            total=Decimal("1200.00"),
+        )
+        order_b = Order.objects.create(
+            company=self.company_b,
+            customer_name="Sana Tariq",
+            customer_phone="03009998877",
+            delivery_address="Street B",
+            total=Decimal("1500.00"),
+        )
+
+        # Erase customer in Company A
+        erase_res = self.client.post(
+            "/api/operations/privacy/erase-customer/",
+            {"customer_phone_or_email": "03009998877"},
+            format="json",
+        )
+        self.assertEqual(erase_res.status_code, 200)
+        self.assertEqual(erase_res.data["anonymized_orders"], 1)
+        self.assertEqual(erase_res.data["anonymized_consents"], 1)
+
+        order_a.refresh_from_db()
+        self.assertEqual(order_a.customer_name, "Anonymized")
+        self.assertEqual(order_a.customer_phone, "")
+        self.assertEqual(order_a.total, Decimal("1200.00"))
+
+        # Company B's order & consents remain completely untouched
+        order_b.refresh_from_db()
+        self.assertEqual(order_b.customer_name, "Sana Tariq")
+        self.assertEqual(order_b.customer_phone, "03009998877")
+
+        self.client.force_authenticate(user=self.owner_b)
+        list_b = self.client.get("/api/operations/privacy/consents/")
+        self.assertEqual(list_b.status_code, 200)
+        self.assertEqual(list_b.data, [])
+
+
+
 
 
 
