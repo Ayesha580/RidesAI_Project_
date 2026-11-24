@@ -988,6 +988,42 @@ class CustomerConsentLog(models.Model):
         return f"[{self.company_id}] {self.customer_identifier} - {self.consent_type} ({self.granted})"
 
 
+# ============================================================================
+# Platform Owner / Super Admin Audit Log (PRD §2.1 & §10)
+# ============================================================================
+
+class PlatformAuditLog(models.Model):
+    actor = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="platform_audit_actions",
+    )
+    actor_email = models.CharField(max_length=254, blank=True, default="")
+    action = models.CharField(max_length=80, db_index=True)
+    target_company = models.ForeignKey(
+        "companies.Company",
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="platform_audit_logs",
+    )
+    target_company_name = models.CharField(max_length=200, blank=True, default="")
+    details = models.JSONField(default=dict, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ("-created_at",)
+        indexes = [
+            models.Index(fields=["action", "-created_at"]),
+        ]
+
+    def __str__(self):
+        return f"{self.action} -> {self.target_company_name} by {self.actor_email}"
+
+
+
 
 
 

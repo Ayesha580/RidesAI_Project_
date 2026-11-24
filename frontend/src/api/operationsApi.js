@@ -128,3 +128,11 @@ export const privacyApi = {
     api.post("/operations/privacy/erase-customer/", { customer_phone_or_email }),
 };
 
+export const superAdminApi = {
+  getOverview: () => api.get("/superadmin/overview/"),
+  listCompanies: (params = {}) => api.get("/superadmin/companies/", { params }),
+  updateCompanyStatus: (id, is_active, reason = "") =>
+    api.patch(`/superadmin/companies/${id}/status/`, { is_active, reason }),
+  listAuditLogs: () => api.get("/superadmin/audit-logs/"),
+};
+

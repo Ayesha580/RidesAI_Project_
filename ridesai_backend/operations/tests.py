@@ -5377,6 +5377,7 @@ class MapPinAndFloorPlanTests(TestCase):
         self.assertEqual(list_b.status_code, 200)
         self.assertEqual(list_b.data, [])
 
+
     def test_restaurant_table_floor_plan_coordinates_and_isolation(self):
         from operations.models import RestaurantTable
 
@@ -5426,6 +5427,7 @@ class MapPinAndFloorPlanTests(TestCase):
         list_b = self.client.get("/api/operations/tables/")
         self.assertEqual(list_b.status_code, 200)
         self.assertEqual(list_b.data, [])
+
 
         cross_patch = self.client.patch(f"/api/operations/tables/{table_id}/", {"pos_x": 0}, format="json")
         self.assertEqual(cross_patch.status_code, 404)
@@ -5586,6 +5588,127 @@ class DataRetentionAndConsentTests(TestCase):
         list_b = self.client.get("/api/operations/privacy/consents/")
         self.assertEqual(list_b.status_code, 200)
         self.assertEqual(list_b.data, [])
+
+
+class SuperAdminDashboardTests(TestCase):
+    """Tests for PRD §2.1 & §10 Platform Owner / Super Admin Dashboard (is_superuser protected)."""
+
+    def setUp(self):
+        self.client = APIClient()
+        self.superuser = User.objects.create_superuser(
+            username="platform_superadmin",
+            email="superadmin@ridesai.com",
+            password="SuperPassword123!",
+        )
+        self.company_rest = Company.objects.create(
+            name="SuperAdmin Grill House",
+            business_type="restaurant",
+            status=Company.STATUS_ACTIVE,
+            is_approved=True,
+            payment_status=Company.PAYMENT_OK,
+            subscription_status=Company.SUBSCRIPTION_ACTIVE,
+            messages_used=120,
+            message_limit=1000,
+        )
+        self.company_hosp = Company.objects.create(
+            name="SuperAdmin Care Hospital",
+            business_type="hospital",
+            status=Company.STATUS_ACTIVE,
+            is_approved=True,
+            payment_status=Company.PAYMENT_OK,
+            subscription_status=Company.SUBSCRIPTION_ACTIVE,
+            messages_used=45,
+            message_limit=1000,
+        )
+        self.owner_user = User.objects.create_user(
+            username="regular_owner_sa",
+            email="regular_owner@example.com",
+            password="Password123!",
+            role=User.ROLE_OWNER,
+            company=self.company_rest,
+            is_active=True,
+        )
+        self.staff_user = User.objects.create_user(
+            username="regular_staff_sa",
+            email="regular_staff@example.com",
+            password="Password123!",
+            role=User.ROLE_STAFF,
+            company=self.company_rest,
+            is_active=True,
+        )
+        Order.objects.create(
+            company=self.company_rest,
+            customer_name="Ali",
+            customer_phone="03001234567",
+            status="delivered",
+            total=Decimal("1800.00"),
+        )
+
+    def test_non_superusers_receive_403_on_all_superadmin_endpoints(self):
+        endpoints = [
+            ("get", "/api/superadmin/overview/"),
+            ("get", "/api/superadmin/companies/"),
+            ("patch", f"/api/superadmin/companies/{self.company_rest.id}/status/"),
+            ("get", "/api/superadmin/audit-logs/"),
+        ]
+        for user in (self.owner_user, self.staff_user):
+            self.client.force_authenticate(user=user)
+            for method, url in endpoints:
+                if method == "get":
+                    res = self.client.get(url)
+                else:
+                    res = self.client.patch(url, {"is_active": False}, format="json")
+                self.assertEqual(res.status_code, 403, f"Expected 403 for {user.username} on {method} {url}")
+
+    def test_superuser_overview_companies_status_toggle_and_audit_log(self):
+        self.client.force_authenticate(user=self.superuser)
+
+        # 1. Overview
+        ov = self.client.get("/api/superadmin/overview/")
+        self.assertEqual(ov.status_code, 200)
+        self.assertEqual(ov.data["kpis"]["total_businesses"], 2)
+        self.assertEqual(ov.data["kpis"]["active_businesses"], 2)
+        self.assertEqual(ov.data["kpis"]["suspended_businesses"], 0)
+        self.assertEqual(ov.data["kpis"]["platform_gmv_rs"], 1800.0)
+        self.assertEqual(ov.data["kpis"]["total_voice_messages_used"], 165)
+
+        # 2. List & filter companies by vertical
+        hosp_list = self.client.get("/api/superadmin/companies/?vertical=hospital")
+        self.assertEqual(hosp_list.status_code, 200)
+        self.assertEqual(len(hosp_list.data), 1)
+        self.assertEqual(hosp_list.data[0]["name"], "SuperAdmin Care Hospital")
+
+        # 3. Suspend company -> updates DB & creates PlatformAuditLog
+        sus = self.client.patch(
+            f"/api/superadmin/companies/{self.company_rest.id}/status/",
+            {"is_active": False, "reason": "Manual review"},
+            format="json",
+        )
+        self.assertEqual(sus.status_code, 200)
+        self.assertFalse(sus.data["is_active"])
+        self.company_rest.refresh_from_db()
+        self.assertEqual(self.company_rest.payment_status, Company.PAYMENT_SUSPENDED)
+
+        # 4. Audit logs reflect suspension
+        logs = self.client.get("/api/superadmin/audit-logs/")
+        self.assertEqual(logs.status_code, 200)
+        self.assertEqual(len(logs.data), 1)
+        self.assertEqual(logs.data[0]["action"], "company_suspended")
+        self.assertEqual(logs.data[0]["actor_email"], "superadmin@ridesai.com")
+        self.assertEqual(logs.data[0]["target_company_name"], "SuperAdmin Grill House")
+
+        # 5. Re-activate company -> creates second audit log
+        act = self.client.patch(
+            f"/api/superadmin/companies/{self.company_rest.id}/status/",
+            {"is_active": True},
+            format="json",
+        )
+        self.assertEqual(act.status_code, 200)
+        self.assertTrue(act.data["is_active"])
+        logs2 = self.client.get("/api/superadmin/audit-logs/")
+        self.assertEqual(len(logs2.data), 2)
+        self.assertEqual(logs2.data[0]["action"], "company_activated")
+
 
 
 

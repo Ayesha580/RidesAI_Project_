@@ -1,13 +1,14 @@
 // src/App.jsx
 import { Navigate, Route, Routes, useParams } from "react-router-dom";
 import { useAuth } from "./context/AuthContext";
-import { AuthOnly, Guard, Loading, homeFor } from "./components/Guards";
+import { AuthOnly, Guard, SuperAdminGuard, Loading, homeFor } from "./components/Guards";
 import Catalog from "./components/catalog/Catalog";
 import { moduleIcon, moduleLabel } from "./constants/modules";
 // public / shared
 import AccountSuspended from "./pages/AccountSuspended";
 import AdminCompanies from "./pages/AdminCompanies";
 import AdminLogin from "./pages/AdminLogin";
+import SuperAdminDashboard from "./pages/SuperAdminDashboard";
 import Billing from "./pages/Billing";
 import Landing from "./pages/Landing";
 import Login from "./pages/Login";
@@ -151,6 +152,7 @@ export default function App() {
       <Route path="/businesses" element={<Businesses />} />
       <Route path="/pricing" element={<Pricing />} />
       <Route path="/admin/dashboard" element={<Guard roles={["superadmin"]}><AdminCompanies /></Guard>} />
+      <Route path="/superadmin" element={<SuperAdminGuard><SuperAdminDashboard /></SuperAdminGuard>} />
 
       <Route path="/owner/dashboard" element={<Guard roles={["owner"]}><OwnerDashboard /></Guard>} />
       <Route path="/owner/staff" element={<Guard roles={["owner"]}><OwnerStaff /></Guard>} />

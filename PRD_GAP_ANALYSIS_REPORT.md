@@ -12,9 +12,9 @@ Across **27 distinct functional and non-functional requirements** extracted from
 
 | Status | Count | Percentage |
 | :--- | :---: | :---: |
-| ✅ **Completed & Verified** | **24** | **88.9%** |
+| ✅ **Completed & Verified** | **25** | **92.6%** |
 | 🟡 **Partially Implemented** | **1** | **3.7%** |
-| ❌ **Not Started / Pending** | **1** | **3.7%** |
+| ❌ **Not Started / Pending** | **0** | **0.0%** |
 | ⚠️ **Out-of-Scope / External Dependency** | **1** | **3.7%** |
 | **Total PRD Requirements Audited** | **27** | **100%** |
 
@@ -40,7 +40,7 @@ Across **27 distinct functional and non-functional requirements** extracted from
 
 | PRD Ref | PRD Requirement | Status | What Is Completed (File / Endpoint Evidence) | What Is Remaining / Notes |
 | :--- | :--- | :---: | :--- | :--- |
-| **§2.1 & §10** | **Platform Owner / Super Admin Dashboard** (cross-tenant overview, business management, platform analytics, audit logs, internal staff) | ❌ | Django built-in `/admin/` exists (`ridesai_backend/config/urls.py`). Legacy UI files `frontend/src/pages/AdminCompanies.jsx` and `AdminLogin.jsx` remain in codebase. | Platform-wide super-admin APIs and dashboard were intentionally excluded per `IMPLEMENTATION_ACCEPTANCE_MATRIX.md` & `CHANGELOG.md`. Needs dedicated super-admin APIs + UI if required by client. |
+| **§2.1 & §10** | **Platform Owner / Super Admin Dashboard** (cross-tenant overview, business management, platform analytics, audit logs) | ✅ | `operations/models.py` (`PlatformAuditLog`, migration `0018`), `operations/superadmin_views.py` (`/api/superadmin/overview/`, `/companies/`, `/companies/<id>/status/`, `/audit-logs/` strictly guarded by `IsSuperAdminUser`), `frontend/src/pages/SuperAdminDashboard.jsx` (`/superadmin` guarded by `SuperAdminGuard` + `👑 Super Admin` topbar shortcut). | Verified on PostgreSQL 16 (`SuperAdminDashboardTests`, strict 403 for owners/staff). |
 | **§2.2** | **Business Owner / Business Admin Workspace** (profile, locations, hours, service areas, catalog, orders, staff, integrations) | ✅ | `frontend/src/owner/pages/OwnerDashboard.jsx`, `OwnerSettings.jsx`, `ProfileTab.jsx`; `ridesai_backend/accounts/profile_views.py`, `companies/business_config.py` (`/api/companies/locations/`, `/hours/`, `/service-areas/`), `companies/views.py`. | Fully verified. |
 | **§2.3** | **Business Employees & Role-Based Access Control (RBAC)** (custom roles, module grants, granular API permissions, task/order routing) | ✅ | `ridesai_backend/accounts/models.py` (`StaffRole`), `accounts/staff_views.py` (`/api/accounts/roles/`, `/staff/`, `/modules/`), `accounts/business_permissions.py`; `frontend/src/owner/pages/OwnerRoles.jsx`, `OwnerStaff.jsx`, `frontend/src/staff/pages/StaffDashboard.jsx`. | Verified with backend permission & isolation tests. |
 | **§3 (1–3)** | **Business Registration, Email OTP Verification & Account Recovery** | ✅ | `ridesai_backend/accounts/views.py` (`/api/accounts/register/`, `/verify-email/`, `/resend-verification/`, `/forgot-password/`, `/reset-password/`, `/login/` supporting email or username); `Register.jsx`, `VerifyEmail.jsx`, `ForgotPassword.jsx`, `ResetPassword.jsx`. | Verified in `accounts/tests.py`. Live inbox delivery requires production SMTP credentials. |
@@ -96,8 +96,8 @@ Across **27 distinct functional and non-functional requirements** extracted from
    - Added `whatsapp_phone_number_id`, `whatsapp_access_token`, `whatsapp_verify_token`, `whatsapp_is_active`, and `whatsapp_updated_at` to `companies.Company` (`0019_company_whatsapp_cloud_fields` + safe non-overwriting one-time data migration `0020_migrate_whatsapp_config_json`), converted `operations/whatsapp_storage.py` to 100% PostgreSQL ORM, and ignored `operations/whatsapp_config.json` in `.gitignore`.
 2. ✅ **Completed & Verified — Production Security Hardening (`ridesai_backend/config/settings.py`):**
    - Enforced `CORS_ALLOW_ALL_ORIGINS=False`, `SECURE_SSL_REDIRECT`, `SESSION_COOKIE_SECURE`, `CSRF_COOKIE_SECURE`, `SECURE_HSTS_SECONDS=31536000`, `SECURE_HSTS_INCLUDE_SUBDOMAINS=True`, `SECURE_HSTS_PRELOAD=True`, `SECURE_PROXY_SSL_HEADER`, and `SECURE_CONTENT_TYPE_NOSNIFF=True` whenever `DJANGO_DEBUG=False` (leaving `DEBUG=True` local dev unaffected). Verified with `check --deploy` returning **0 issues**.
-3. **Stakeholder Decision Required — Platform Super-Admin Dashboard (PRD §2.1 & §10):**
-   - Confirm whether Django `/admin/` suffices for launch or if a custom React/DRF Platform Owner Dashboard (cross-tenant metrics, business suspension, platform audit logs) is required for Phase 1 go-live.
+3. ✅ **Completed & Verified — Platform Super-Admin Dashboard (PRD §2.1 & §10):**
+   - Built `PlatformAuditLog` (`0018`), strictly `is_superuser`-guarded `/api/superadmin/` overview/companies/status/audit-logs APIs, and `SuperAdminDashboard.jsx` (`/superadmin`).
 
 ### P1 — Important Polish / Post-Launch Enhancements
 1. ✅ **Completed & Verified — Business Analytics & Exportable Operational Reports (PRD §9):**

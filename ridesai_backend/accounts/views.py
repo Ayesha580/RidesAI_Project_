@@ -612,6 +612,7 @@ class MeAPIView(APIView):
         data["role_name"] = _role_name(request.user)
         data["role_label"] = _role_label(request.user)
         data["must_change_password"] = request.user.must_change_password
+        data["is_superuser"] = bool(request.user.is_superuser)
         data["modules"] = request.user.get_modules()
         data["permissions"] = request.user.get_permissions()
         data.update(_business_info(request.user))

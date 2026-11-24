@@ -196,6 +196,26 @@ export default function OwnerTopbar({ groups = [], locked, billingPath, user, on
         </div>
 
         <div className="ol-top-right">
+          {user?.is_superuser && (
+            <button
+              type="button"
+              onClick={() => navigate("/superadmin")}
+              style={{
+                padding: "7px 12px",
+                borderRadius: 10,
+                border: "1px solid #f0abfc",
+                background: "#fdf4ff",
+                color: "#a21caf",
+                fontWeight: 700,
+                fontSize: 12,
+                cursor: "pointer",
+                whiteSpace: "nowrap",
+              }}
+              title="Open Platform Super Admin Dashboard"
+            >
+              👑 Super Admin
+            </button>
+          )}
           <button
             className="ol-icon-btn"
             title="Conversations"

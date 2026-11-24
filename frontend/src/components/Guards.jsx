@@ -60,6 +60,14 @@ export function AuthOnly({ children }) {
   return children;
 }
 
+export function SuperAdminGuard({ children }) {
+  const { user, loading } = useAuth();
+  if (loading) return <Loading />;
+  if (!user) return <Navigate to="/login" replace />;
+  if (!user.is_superuser) return <Navigate to={homeFor(user)} replace />;
+  return children;
+}
+
 export function Guard({ roles, children }) {
   const { user, loading } = useAuth();
   if (loading) return <Loading />;
