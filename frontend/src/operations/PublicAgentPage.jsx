@@ -87,10 +87,10 @@ export default function PublicAgentPage() {
         }
       });
 
-    // Hydrate saved conversation on mount / page reload
+    // Hydrate saved conversation on mount / page reload (sessionStorage clears automatically on tab close)
     let savedConvId = null;
     try {
-      savedConvId = window.localStorage.getItem(storageKey);
+      savedConvId = window.sessionStorage.getItem(storageKey);
     } catch {
       savedConvId = null;
     }
@@ -120,7 +120,7 @@ export default function PublicAgentPage() {
           // Clear stale/invalid conversation ID on 404/400 so the user can start fresh cleanly
           if (err?.response?.status === 404 || err?.response?.status === 400) {
             try {
-              window.localStorage.removeItem(storageKey);
+              window.sessionStorage.removeItem(storageKey);
             } catch {}
             conversationIdRef.current = null;
             setConversationId(null);
@@ -147,7 +147,7 @@ export default function PublicAgentPage() {
     stopAllAudio();
     stopAllRecording();
     try {
-      window.localStorage.removeItem(storageKey);
+      window.sessionStorage.removeItem(storageKey);
     } catch {}
     conversationIdRef.current = null;
     setConversationId(null);
@@ -236,7 +236,7 @@ export default function PublicAgentPage() {
         conversationIdRef.current = data.conversation_id;
         setConversationId(data.conversation_id);
         try {
-          window.localStorage.setItem(storageKey, data.conversation_id);
+          window.sessionStorage.setItem(storageKey, data.conversation_id);
         } catch {}
       }
       const reply = data.reply_text || data.answer || "";

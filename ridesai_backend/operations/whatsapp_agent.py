@@ -1518,7 +1518,7 @@ def _generate_agent_reply(
 
     if conversation_obj:
         try:
-            msgs = list(conversation_obj.messages.order_by("-created_at")[:15])
+            msgs = list(conversation_obj.messages.order_by("-created_at")[:13])
             # If the most recent message matches the current turn's user message, skip it
             if msgs and msgs[0].role == "user" and (msgs[0].content or "").strip() == str(message_text).strip():
                 msgs = msgs[1:]
@@ -1553,6 +1553,8 @@ def _generate_agent_reply(
         except Exception as e:
             logger.warning(f"[WhatsApp Agent] Could not load conversation history: {e}")
 
+    # Strict LLM sliding window cap (max 12 recent messages) to keep token costs flat
+    history_messages = history_messages[-12:]
     context["has_prior_history"] = has_prior_history
 
     api_key = getattr(settings, "OPENAI_API_KEY", "") or os.environ.get("OPENAI_API_KEY", "")
