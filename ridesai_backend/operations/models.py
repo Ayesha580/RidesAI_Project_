@@ -799,6 +799,70 @@ class NotificationTemplate(models.Model):
         return f"{self.company_id}:{self.event_type} (enabled={self.is_enabled})"
 
 
+# ============================================================================
+# Automated AI FAQ Suggestions & Continuous Learning Loop (Multi-Tenant)
+# ============================================================================
+
+class SuggestedFAQ(models.Model):
+    STATUS_PENDING = "pending"
+    STATUS_APPROVED = "approved"
+    STATUS_DISMISSED = "dismissed"
+    STATUS_CHOICES = [
+        (STATUS_PENDING, "Pending"),
+        (STATUS_APPROVED, "Approved"),
+        (STATUS_DISMISSED, "Dismissed"),
+    ]
+
+    CHANNEL_PUBLIC_WEB = "public_web"
+    CHANNEL_WIDGET = "widget"
+    CHANNEL_WHATSAPP = "whatsapp"
+    CHANNEL_CHOICES = [
+        (CHANNEL_PUBLIC_WEB, "Public Web"),
+        (CHANNEL_WIDGET, "Website Widget"),
+        (CHANNEL_WHATSAPP, "WhatsApp"),
+    ]
+
+    company = models.ForeignKey(
+        "companies.Company",
+        on_delete=models.CASCADE,
+        related_name="suggested_faqs",
+        db_index=True,
+    )
+    question = models.TextField()
+    suggested_answer = models.TextField(blank=True, default="")
+    source_channel = models.CharField(
+        max_length=24,
+        choices=CHANNEL_CHOICES,
+        default=CHANNEL_PUBLIC_WEB,
+    )
+    occurrence_count = models.PositiveIntegerField(default=1)
+    status = models.CharField(
+        max_length=20,
+        choices=STATUS_CHOICES,
+        default=STATUS_PENDING,
+        db_index=True,
+    )
+    approved_knowledge = models.ForeignKey(
+        "companies.BusinessKnowledge",
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="source_suggestions",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ("-occurrence_count", "-updated_at")
+        indexes = [
+            models.Index(fields=["company", "status", "-occurrence_count"]),
+        ]
+
+    def __str__(self):
+        return f"[{self.company_id}] ({self.status} x{self.occurrence_count}) {self.question[:60]}"
+
+
+
 
 
 

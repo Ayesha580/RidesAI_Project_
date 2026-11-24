@@ -13,6 +13,13 @@ from .notification_views import (
     NotificationTemplateDetailAPIView,
     NotificationTemplateResetAPIView,
 )
+from .faq_views import (
+    SuggestedFAQListAPIView,
+    SuggestedFAQApproveAPIView,
+    SuggestedFAQDismissAPIView,
+    ApprovedFAQListCreateAPIView,
+    ApprovedFAQDetailAPIView,
+)
 
 urlpatterns = [
     path("orders/catalog/", OrderCatalogAPIView.as_view(), name="order-catalog"),
@@ -47,5 +54,10 @@ urlpatterns = [
     path("notifications/templates/", NotificationTemplateListAPIView.as_view(), name="notification-templates-list"),
     path("notifications/templates/<str:event_type>/", NotificationTemplateDetailAPIView.as_view(), name="notification-templates-detail"),
     path("notifications/templates/<str:event_type>/reset/", NotificationTemplateResetAPIView.as_view(), name="notification-templates-reset"),
+    path("faqs/suggestions/", SuggestedFAQListAPIView.as_view(), name="faq-suggestions-list"),
+    path("faqs/suggestions/<int:pk>/approve/", SuggestedFAQApproveAPIView.as_view(), name="faq-suggestions-approve"),
+    path("faqs/suggestions/<int:pk>/dismiss/", SuggestedFAQDismissAPIView.as_view(), name="faq-suggestions-dismiss"),
+    path("faqs/", ApprovedFAQListCreateAPIView.as_view(), name="approved-faqs-list"),
+    path("faqs/<int:pk>/", ApprovedFAQDetailAPIView.as_view(), name="approved-faqs-detail"),
     path("hospital/", include("operations.hospital_urls")),
 ]

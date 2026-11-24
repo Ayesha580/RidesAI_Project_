@@ -101,3 +101,13 @@ export const notificationTemplatesApi = {
   reset: (eventType) => api.post(`/operations/notifications/templates/${eventType}/reset/`),
 };
 
+export const faqLearningApi = {
+  listSuggestions: (params = {}) => api.get("/operations/faqs/suggestions/", { params }),
+  approveSuggestion: (id, data) => api.post(`/operations/faqs/suggestions/${id}/approve/`, data),
+  dismissSuggestion: (id) => api.post(`/operations/faqs/suggestions/${id}/dismiss/`),
+  listFaqs: () => api.get("/operations/faqs/"),
+  createFaq: (data) => api.post("/operations/faqs/", data),
+  updateFaq: (id, data) => api.patch(`/operations/faqs/${id}/`, data),
+  deleteFaq: (id) => api.delete(`/operations/faqs/${id}/`),
+};
+

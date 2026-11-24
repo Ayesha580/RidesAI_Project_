@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useCallback } from "react";
 import OwnerLayout from "../../../owner/components/OwnerLayout";
 import api, { errorText } from "../../../api/axiosClient";
+import { faqLearningApi } from "../../../api/operationsApi";
 
 const css = `
 .kb-container {
@@ -256,7 +257,12 @@ const SUGGESTIONS = [
 ];
 
 export default function KnowledgeBaseForm() {
+  const [activeTab, setActiveTab] = useState("suggested"); // "suggested" | "approved"
   const [faqs, setFaqs] = useState([]);
+  const [suggestions, setSuggestions] = useState([]);
+  const [pendingCount, setPendingCount] = useState(0);
+  const [suggestionDrafts, setSuggestionDrafts] = useState({});
+  const [busySuggestionId, setBusySuggestionId] = useState(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [search, setSearch] = useState("");
@@ -267,18 +273,71 @@ export default function KnowledgeBaseForm() {
   const [answer, setAnswer] = useState("");
   const [entryType, setEntryType] = useState("faq");
 
-  // Fetch knowledge items from backend
+  // Fetch knowledge items & pending AI-suggested FAQs from backend
   const loadKnowledge = useCallback(async () => {
     setLoading(true);
     try {
-      const { data } = await api.get("/companies/knowledge/");
-      setFaqs(Array.isArray(data) ? data : data.results || []);
+      const [kbRes, sugRes] = await Promise.allSettled([
+        api.get("/companies/knowledge/"),
+        faqLearningApi.listSuggestions({ status: "pending" }),
+      ]);
+      if (kbRes.status === "fulfilled") {
+        const d = kbRes.value.data;
+        setFaqs(Array.isArray(d) ? d : d.results || []);
+      }
+      if (sugRes.status === "fulfilled") {
+        const list = sugRes.value.data?.suggestions || [];
+        const pCount = sugRes.value.data?.pending_count ?? list.length;
+        setSuggestions(list);
+        setPendingCount(pCount);
+        const nextDrafts = {};
+        list.forEach((s) => {
+          nextDrafts[s.id] = { question: s.question || "", answer: s.suggested_answer || "" };
+        });
+        setSuggestionDrafts(nextDrafts);
+      }
     } catch (err) {
       setNotice({ type: "error", text: errorText(err) });
     } finally {
       setLoading(false);
     }
   }, []);
+
+  const handleApproveSuggestion = async (sug) => {
+    const draft = suggestionDrafts[sug.id] || { question: sug.question, answer: sug.suggested_answer };
+    if (!draft.question?.trim() || !draft.answer?.trim()) {
+      setNotice({ type: "error", text: "Please provide an answer before approving and teaching the AI." });
+      return;
+    }
+    setBusySuggestionId(sug.id);
+    setNotice({ type: "", text: "" });
+    try {
+      await faqLearningApi.approveSuggestion(sug.id, {
+        question: draft.question.trim(),
+        answer: draft.answer.trim(),
+      });
+      setNotice({ type: "success", text: `Approved "${draft.question.trim()}" — your AI Voice Agent now knows this answer!` });
+      await loadKnowledge();
+    } catch (err) {
+      setNotice({ type: "error", text: errorText(err) });
+    } finally {
+      setBusySuggestionId(null);
+    }
+  };
+
+  const handleDismissSuggestion = async (sugId) => {
+    setBusySuggestionId(sugId);
+    setNotice({ type: "", text: "" });
+    try {
+      await faqLearningApi.dismissSuggestion(sugId);
+      setNotice({ type: "success", text: "Suggested FAQ dismissed." });
+      await loadKnowledge();
+    } catch (err) {
+      setNotice({ type: "error", text: errorText(err) });
+    } finally {
+      setBusySuggestionId(null);
+    }
+  };
 
   useEffect(() => {
     loadKnowledge();
@@ -359,6 +418,191 @@ export default function KnowledgeBaseForm() {
           </div>
         )}
 
+        {/* Tab Switcher: Suggested FAQs (Pending) vs Approved Knowledge Base */}
+        <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+          <button
+            type="button"
+            onClick={() => setActiveTab("suggested")}
+            style={{
+              padding: "10px 18px",
+              borderRadius: 12,
+              border: activeTab === "suggested" ? "1px solid #ff77ff" : "1px solid #e2e8f0",
+              background: activeTab === "suggested" ? "#ff77ff" : "#ffffff",
+              color: activeTab === "suggested" ? "#ffffff" : "#475569",
+              fontWeight: 700,
+              fontSize: 13.5,
+              cursor: "pointer",
+              display: "inline-flex",
+              alignItems: "center",
+              gap: 8,
+              boxShadow: activeTab === "suggested" ? "0 4px 14px rgba(255,119,255,0.35)" : "none",
+            }}
+          >
+            <span>✨ Suggested FAQs (Pending)</span>
+            <span
+              style={{
+                padding: "2px 8px",
+                borderRadius: 999,
+                fontSize: 11.5,
+                fontWeight: 800,
+                background: activeTab === "suggested" ? "rgba(255,255,255,0.28)" : "#fdf4ff",
+                color: activeTab === "suggested" ? "#ffffff" : "#a21caf",
+              }}
+            >
+              {pendingCount}
+            </span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setActiveTab("approved")}
+            style={{
+              padding: "10px 18px",
+              borderRadius: 12,
+              border: activeTab === "approved" ? "1px solid #ff77ff" : "1px solid #e2e8f0",
+              background: activeTab === "approved" ? "#ff77ff" : "#ffffff",
+              color: activeTab === "approved" ? "#ffffff" : "#475569",
+              fontWeight: 700,
+              fontSize: 13.5,
+              cursor: "pointer",
+              display: "inline-flex",
+              alignItems: "center",
+              gap: 8,
+              boxShadow: activeTab === "approved" ? "0 4px 14px rgba(255,119,255,0.35)" : "none",
+            }}
+          >
+            <span>📚 Approved Knowledge Base ({faqs.length})</span>
+          </button>
+        </div>
+
+        {activeTab === "suggested" ? (
+          <div className="kb-card">
+            <div className="kb-card-header">
+              <div className="kb-brand">
+                <div className="kb-icon-badge">✨</div>
+                <div>
+                  <h2>AI-Detected Customer Questions (Pending Review)</h2>
+                  <p>
+                    Questions customers asked that weren&apos;t in your Knowledge Base yet. Approve once to teach your AI Voice Agent immediately.
+                  </p>
+                </div>
+              </div>
+            </div>
+
+            <div style={{ padding: 20, display: "grid", gap: 14 }}>
+              {loading ? (
+                <p style={{ color: "#6b7280", margin: 0 }}>Loading suggested FAQs...</p>
+              ) : suggestions.length === 0 ? (
+                <div className="kb-empty">
+                  <span className="kb-empty-icon">🎉</span>
+                  <strong>All caught up!</strong>
+                  <p style={{ margin: "6px 0 0", fontSize: 13 }}>
+                    No pending unanswered customer questions right now. When customers ask about policies not yet in your FAQ, they will appear here automatically.
+                  </p>
+                </div>
+              ) : (
+                suggestions.map((sug) => {
+                  const draft = suggestionDrafts[sug.id] || { question: sug.question, answer: sug.suggested_answer };
+                  const isBusy = busySuggestionId === sug.id;
+                  return (
+                    <div
+                      key={sug.id}
+                      style={{
+                        border: "1px solid #f0abfc",
+                        borderRadius: 14,
+                        padding: 16,
+                        background: "#fffcff",
+                        display: "grid",
+                        gap: 10,
+                      }}
+                    >
+                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8 }}>
+                        <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                          <span style={{ fontSize: 11, fontWeight: 700, padding: "3px 9px", borderRadius: 999, background: "#fdf4ff", color: "#a21caf", border: "1px solid #f5d0fe" }}>
+                            {sug.source_channel_label || sug.source_channel}
+                          </span>
+                          <span style={{ fontSize: 11.5, fontWeight: 700, padding: "3px 9px", borderRadius: 999, background: "#fef3c7", color: "#92400e" }}>
+                            Asked {sug.occurrence_count} {sug.occurrence_count === 1 ? "time" : "times"}
+                          </span>
+                        </div>
+                      </div>
+
+                      <div className="kb-field">
+                        <label className="kb-label">Customer Question</label>
+                        <input
+                          type="text"
+                          className="kb-input"
+                          value={draft.question}
+                          onChange={(e) =>
+                            setSuggestionDrafts((prev) => ({
+                              ...prev,
+                              [sug.id]: { ...draft, question: e.target.value },
+                            }))
+                          }
+                        />
+                      </div>
+
+                      <div className="kb-field">
+                        <label className="kb-label">Approved Official Answer</label>
+                        <textarea
+                          rows={3}
+                          className="kb-textarea"
+                          placeholder="Type the official answer your AI Voice Agent should speak to customers..."
+                          value={draft.answer}
+                          onChange={(e) =>
+                            setSuggestionDrafts((prev) => ({
+                              ...prev,
+                              [sug.id]: { ...draft, answer: e.target.value },
+                            }))
+                          }
+                        />
+                      </div>
+
+                      <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+                        <button
+                          type="button"
+                          disabled={isBusy}
+                          onClick={() => handleApproveSuggestion(sug)}
+                          style={{
+                            padding: "9px 16px",
+                            borderRadius: 10,
+                            border: "none",
+                            background: "#ff77ff",
+                            color: "#ffffff",
+                            fontWeight: 700,
+                            fontSize: 13,
+                            cursor: isBusy ? "not-allowed" : "pointer",
+                            boxShadow: "0 3px 10px rgba(255,119,255,0.35)",
+                          }}
+                        >
+                          {isBusy ? "Saving..." : "✅ Approve & Teach AI"}
+                        </button>
+                        <button
+                          type="button"
+                          disabled={isBusy}
+                          onClick={() => handleDismissSuggestion(sug.id)}
+                          style={{
+                            padding: "9px 14px",
+                            borderRadius: 10,
+                            border: "1px solid #e2e8f0",
+                            background: "#ffffff",
+                            color: "#64748b",
+                            fontWeight: 600,
+                            fontSize: 13,
+                            cursor: isBusy ? "not-allowed" : "pointer",
+                          }}
+                        >
+                          Dismiss
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })
+              )}
+            </div>
+          </div>
+        ) : (
+          <>
         {/* Add Q&A Card */}
         <div className="kb-card bg-white rounded-2xl border border-gray-100 shadow-sm overflow-hidden">
           <div className="kb-card-header p-6 border-b border-gray-100 flex items-center justify-between">
@@ -531,6 +775,8 @@ export default function KnowledgeBaseForm() {
             )}
           </div>
         </div>
+          </>
+        )}
       </div>
     </OwnerLayout>
   );

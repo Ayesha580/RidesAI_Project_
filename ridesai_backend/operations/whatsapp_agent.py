@@ -330,6 +330,32 @@ TOOL_BOOK_LAB_TEST = {
     },
 }
 
+TOOL_LOG_UNANSWERED_QUESTION = {
+    "type": "function",
+    "function": {
+        "name": "log_unanswered_question",
+        "description": (
+            "Logs a customer's business policy or general question that is NOT answered by the current catalog "
+            "or Frequently Asked Questions (e.g. parking, halal certification, insurance accepted, return window) "
+            "so the business owner can review and approve an official FAQ answer."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "question": {
+                    "type": "string",
+                    "description": "The customer's unanswered question in clear form.",
+                },
+                "draft_answer": {
+                    "type": "string",
+                    "description": "Optional brief placeholder/draft answer if obvious, otherwise leave empty.",
+                },
+            },
+            "required": ["question"],
+        },
+    },
+}
+
 AGENT_TOOLS = [
     TOOL_GET_CATALOG_ITEMS,
     TOOL_GET_UPSELL_SUGGESTIONS,
@@ -341,6 +367,7 @@ AGENT_TOOLS = [
     TOOL_GET_HOSPITAL_DEPARTMENTS,
     TOOL_BOOK_LAB_TEST,
     TOOL_SUBMIT_RETURN_REQUEST,
+    TOOL_LOG_UNANSWERED_QUESTION,
 ]
 
 
@@ -357,7 +384,7 @@ CATEGORY_AGENT_PROFILES = {
             "- Primary duty is presenting delicious food options, taking takeaway/delivery food orders, "
             "and confirming customer delivery addresses."
         ),
-        "tools": [TOOL_GET_CATALOG_ITEMS, TOOL_GET_UPSELL_SUGGESTIONS, TOOL_CREATE_ORDER, TOOL_CHECK_ORDER_STATUS],
+        "tools": [TOOL_GET_CATALOG_ITEMS, TOOL_GET_UPSELL_SUGGESTIONS, TOOL_CREATE_ORDER, TOOL_CHECK_ORDER_STATUS, TOOL_LOG_UNANSWERED_QUESTION],
     },
     "pharmacy": {
         "key": "pharmacy",
@@ -371,7 +398,7 @@ CATEGORY_AGENT_PROFILES = {
             "Instead, call `submit_prescription_request` with the medicine names and customer details, and inform the customer that their prescription request has been registered and a licensed pharmacist will review and confirm it.\n"
             "- Inform customers that prescription-only medicines require presenting a valid physical or digital doctor's prescription upon delivery."
         ),
-        "tools": [TOOL_GET_CATALOG_ITEMS, TOOL_GET_UPSELL_SUGGESTIONS, TOOL_CREATE_ORDER, TOOL_CHECK_ORDER_STATUS, TOOL_SUBMIT_PRESCRIPTION_REQUEST],
+        "tools": [TOOL_GET_CATALOG_ITEMS, TOOL_GET_UPSELL_SUGGESTIONS, TOOL_CREATE_ORDER, TOOL_CHECK_ORDER_STATUS, TOOL_SUBMIT_PRESCRIPTION_REQUEST, TOOL_LOG_UNANSWERED_QUESTION],
     },
     "hospital": {
         "key": "hospital",
@@ -397,6 +424,7 @@ CATEGORY_AGENT_PROFILES = {
             TOOL_GET_CATALOG_ITEMS,
             TOOL_GET_UPSELL_SUGGESTIONS,
             TOOL_CHECK_ORDER_STATUS,
+            TOOL_LOG_UNANSWERED_QUESTION,
         ],
     },
     "clinic": {
@@ -413,7 +441,7 @@ CATEGORY_AGENT_PROFILES = {
             "or offer medical treatment advice. Always advise consulting a qualified doctor or visiting the emergency room for urgent symptoms.\n"
             "- Do NOT attempt to place food or takeaway delivery orders via `create_order`."
         ),
-        "tools": [TOOL_GET_CLINIC_DOCTORS, TOOL_BOOK_APPOINTMENT, TOOL_GET_CATALOG_ITEMS, TOOL_CHECK_ORDER_STATUS],
+        "tools": [TOOL_GET_CLINIC_DOCTORS, TOOL_BOOK_APPOINTMENT, TOOL_GET_CATALOG_ITEMS, TOOL_CHECK_ORDER_STATUS, TOOL_LOG_UNANSWERED_QUESTION],
     },
     "retail": {
         "key": "retail",
@@ -426,7 +454,7 @@ CATEGORY_AGENT_PROFILES = {
             "- ORDER TRACKING: Call `check_order_status` if the customer inquires about their recent order.\n"
             "- RETURNS & EXCHANGES: If a customer wants to return or exchange an item, gather their details, reason, and order number (if known), then call `submit_return_request`."
         ),
-        "tools": [TOOL_GET_CATALOG_ITEMS, TOOL_GET_UPSELL_SUGGESTIONS, TOOL_CREATE_ORDER, TOOL_CHECK_ORDER_STATUS, TOOL_SUBMIT_RETURN_REQUEST],
+        "tools": [TOOL_GET_CATALOG_ITEMS, TOOL_GET_UPSELL_SUGGESTIONS, TOOL_CREATE_ORDER, TOOL_CHECK_ORDER_STATUS, TOOL_SUBMIT_RETURN_REQUEST, TOOL_LOG_UNANSWERED_QUESTION],
     },
 }
 
@@ -610,6 +638,69 @@ def get_upsell_suggestions(
 # ============================================================================
 # Tool Execution Functions (Atomic Database Transactions & Multi-Tenant Guarded)
 # ============================================================================
+
+def log_unanswered_question(
+    company: Optional[Company],
+    question: str,
+    draft_answer: str = "",
+    source_channel: str = "public_web",
+) -> Dict[str, Any]:
+    """
+    Logs an unanswered customer question as a company-scoped SuggestedFAQ.
+    Deduplicates case-insensitively per company by incrementing `occurrence_count`
+    if a matching pending suggestion already exists.
+    """
+    if not company:
+        return {"success": False, "error": "Company context missing."}
+
+    clean_q = re.sub(r"\s+", " ", str(question or "")).strip()
+    if len(clean_q) < 3:
+        return {"success": False, "error": "Question too short to log."}
+
+    clean_draft = str(draft_answer or "").strip()[:1000]
+    valid_channels = {"public_web", "widget", "whatsapp"}
+    channel = source_channel if source_channel in valid_channels else "public_web"
+
+    try:
+        from operations.models import SuggestedFAQ
+        existing = SuggestedFAQ.objects.filter(
+            company=company,
+            status=SuggestedFAQ.STATUS_PENDING,
+            question__iexact=clean_q,
+        ).first()
+
+        if existing:
+            existing.occurrence_count += 1
+            update_fields = ["occurrence_count", "updated_at"]
+            if clean_draft and not (existing.suggested_answer or "").strip():
+                existing.suggested_answer = clean_draft
+                update_fields.append("suggested_answer")
+            existing.save(update_fields=update_fields)
+            return {
+                "success": True,
+                "suggestion_id": existing.id,
+                "deduplicated": True,
+                "occurrence_count": existing.occurrence_count,
+            }
+
+        created = SuggestedFAQ.objects.create(
+            company=company,
+            question=clean_q,
+            suggested_answer=clean_draft,
+            source_channel=channel,
+            occurrence_count=1,
+            status=SuggestedFAQ.STATUS_PENDING,
+        )
+        return {
+            "success": True,
+            "suggestion_id": created.id,
+            "deduplicated": False,
+            "occurrence_count": 1,
+        }
+    except Exception as exc:
+        logger.warning(f"[FAQ Learning] Failed to log unanswered question for company {company.id}: {exc}")
+        return {"success": False, "error": str(exc)}
+
 
 def execute_get_hospital_departments(company: Company, ward_type: Optional[str] = None) -> Dict[str, Any]:
     """Fetches active hospital departments, wards, and live bed availability strictly for `company`."""
@@ -1572,6 +1663,8 @@ STRICT TOOL CALLING RULES:
      * If a customer specifies a different city (outside {delivery_zones_str}), politely inform them that we currently only deliver within {delivery_zones_str}.
 3. Tool `check_order_status`:
    - Use when the customer asks about order status, tracking, or previous orders.
+4. Tool `log_unanswered_question`:
+   - If a customer asks a genuine business policy or store question that is NOT answered by the catalog or FREQUENTLY ASKED QUESTIONS & POLICIES above (e.g. parking, halal certification, insurance accepted, return window, franchise info), call `log_unanswered_question` with their question so the business owner can approve an official FAQ answer, then politely inform the customer that our team will confirm. NEVER fabricate policies!
 
 STRICT CONVERSATIONAL & LOCALIZATION RULES:
 - MULTILINGUAL INQUIRIES: English, Urdu, and Pakistani Roman Urdu requests about menus, items, prices, orders, delivery, medicines, appointments, or products (e.g., 'menu', 'bhej', 'bhejo', 'dikhao', 'chahiye', 'order', 'rate', 'price', 'kya hai') are ALWAYS valid in-scope inquiries. NEVER reject them, and NEVER deflect with 'I can only help with food orders'.
@@ -1905,6 +1998,14 @@ def _generate_agent_reply(
                             scheduled_date=fn_args.get("scheduled_date"),
                             scheduled_time=fn_args.get("scheduled_time"),
                             notes=fn_args.get("notes", ""),
+                        )
+                    elif fn_name == "log_unanswered_question":
+                        ch = "whatsapp" if (sender_phone and not conversation_obj) else "public_web"
+                        tool_result = log_unanswered_question(
+                            company=company,
+                            question=fn_args.get("question") or str(message_text),
+                            draft_answer=fn_args.get("draft_answer", ""),
+                            source_channel=ch,
                         )
                     elif fn_name == "submit_return_request":
                         tool_result = execute_submit_return_request(

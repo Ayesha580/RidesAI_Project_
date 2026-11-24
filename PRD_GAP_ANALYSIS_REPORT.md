@@ -12,9 +12,9 @@ Across **27 distinct functional and non-functional requirements** extracted from
 
 | Status | Count | Percentage |
 | :--- | :---: | :---: |
-| ✅ **Completed & Verified** | **21** | **77.8%** |
+| ✅ **Completed & Verified** | **22** | **81.5%** |
 | 🟡 **Partially Implemented** | **2** | **7.4%** |
-| ❌ **Not Started / Pending** | **3** | **11.1%** |
+| ❌ **Not Started / Pending** | **2** | **7.4%** |
 | ⚠️ **Out-of-Scope / External Dependency** | **1** | **3.7%** |
 | **Total PRD Requirements Audited** | **27** | **100%** |
 
@@ -53,7 +53,7 @@ Across **27 distinct functional and non-functional requirements** extracted from
 | **§4.3 / §15** | **Interactive Map Pin / Geocoding / Device GPS Capture** | 🟡 | Radius distance calculation (`lat`/`lng`) implemented in backend `ServiceArea` eligibility check. | No interactive map-pin widget or third-party geocoding API (e.g., Google Maps / Mapbox) integrated in the customer ordering UI. |
 | **§5.1 & §5.2** | **Context-Aware Recommendations & Health Safeguards** (catalogue-grounded add-ons, cautious non-diagnostic health guidance, explicit confirmation) | ✅ | `ridesai_backend/operations/whatsapp_agent.py` system prompt enforces live-catalog-only recommendations, non-diagnostic health disclaimers, allergy/special notes capture, and explicit confirmation before ordering. | Verified in `operations/tests.py`. |
 | **§6 (Part 1)** | **Business Knowledge Workspace** (profile, locations, hours, FAQs, policies, procedures, support contacts, approval) | ✅ | `companies/models.py` (`BusinessKnowledge`, `BusinessLocation`, `OperatingHour`), `companies/business_config.py` (`/api/companies/knowledge/`, `/knowledge/{id}/approve/`), `frontend/src/operations/components/agent-settings/KnowledgeBaseForm.jsx`. | Active & approved entries automatically injected into AI agent context. |
-| **§6 (Part 2)** | **Controlled Continuous Learning & Automated FAQ Proposals** (mining repeated questions, proposing FAQ updates for owner review) | ❌ | Manual owner approval endpoint exists (`/api/companies/knowledge/{id}/approve/`). | Automated conversation mining, repeated-question detection, and AI-proposed FAQ drafts for owner review are not yet implemented. |
+| **§6 (Part 2)** | **Controlled Continuous Learning & Automated FAQ Proposals** (mining repeated questions, proposing FAQ updates for owner review) | ✅ | `operations/models.py` (`SuggestedFAQ`, migration `0015`), `operations/whatsapp_agent.py` (`log_unanswered_question` + `TOOL_LOG_UNANSWERED_QUESTION` with case-insensitive deduplication & `occurrence_count`), `operations/faq_views.py` (`/api/operations/faqs/suggestions/`, `/approve/`, `/dismiss/`, `/faqs/`), `KnowledgeBaseForm.jsx` (`✨ Suggested FAQs (Pending)` tab + 1-click `✅ Approve & Teach AI`). | Verified on PostgreSQL 16 (`AIFAQLearningLoopTests`, immediate prompt grounding + strict multi-tenant isolation). |
 | **§7** | **Human Handover & Customer Support Escalation** (escalation trigger, employee takeover, full context transfer, pause AI) | ✅ | `operations/models.py` (`AgentConversation.status="human_handover"`), `operations/views.py` (`/api/operations/agent/toggle-pause/`, `/agent/conversations/`), `operations/dashboard_views.py` (`/api/dashboard/conversations/<key>/reply/`), `AgentConversations.jsx`, `ConversationsView.jsx`. | Owner AI Pause/Resume immediately pauses automated replies across Web Link, Widget, and WhatsApp. |
 | **§8.1** | **Channel 1: WhatsApp Integration** (Meta Cloud API + Evolution API QR, voice notes, order updates) | ✅ | `operations/whatsapp_service.py`, `operations/whatsapp_storage.py` (100% PostgreSQL ORM-backed via `Company` fields in migrations `0019`/`0020`), `operations/evolution_client.py`, `operations/evolution_views.py` (`/api/operations/whatsapp/connect/`, `/evolution-webhook/`), `operations/views.py` (`/whatsapp/webhook/`, `/agent/whatsapp-settings/`), `WhatsAppSettings.jsx`, `WhatsAppConnectCard.jsx`. | Fully migrated off `whatsapp_config.json` into PostgreSQL (multi-tenant verified in `P0WhatsAppDBAndSecurityTests`). |
 | **§8.2** | **Channel 2: Embeddable Website Voice Widget (`<script>`)** | ✅ | `operations/views.py` (`PublicAgentWidgetScriptAPIView` at `/api/operations/widget/<public_id>.js` & `/public/agent/<public_id>/widget.js`), floating `#ff77ff` mic bubble opening `/agent/<public_id>?embed=1` in a popup iframe, copy-paste embed UI in `WhatsAppSettings.jsx`. | Verified with UUID validation hardening & tests. |
@@ -102,8 +102,8 @@ Across **27 distinct functional and non-functional requirements** extracted from
 ### P1 — Important Polish / Post-Launch Enhancements
 1. ✅ **Completed & Verified — Business Analytics & Exportable Operational Reports (PRD §9):**
    - Built `/api/operations/analytics/overview/` (PostgreSQL `TruncDate`/`TruncWeek` aggregations), `/api/operations/analytics/export/csv/`, and `AnalyticsReports.jsx` with interactive charts and 1-click CSV & branded PDF exports.
-2. **Automated Knowledge Learning / FAQ Proposals (PRD §6):**
-   - Add a background job or AI classifier that flags repeated unanswered customer questions and surfaces draft FAQ proposals in `KnowledgeBaseForm.jsx` for one-click owner approval.
+2. ✅ **Completed & Verified — Automated Knowledge Learning / FAQ Proposals (PRD §6):**
+   - Built `SuggestedFAQ` PostgreSQL model (`0015`), `log_unanswered_question` AI tool with deduplication, `/api/operations/faqs/suggestions/` approval/dismissal APIs, and `✨ Suggested FAQs (Pending)` review tab in `KnowledgeBaseForm.jsx`.
 3. ✅ **Completed & Verified — Configurable Notification Templates & Channel Toggles (PRD §11):**
    - Built `NotificationTemplate` PostgreSQL model (`0014`), `render_notification_template` safe substitution & toggle enforcement, `/api/operations/notifications/templates/` CRUD + reset API, and `NotificationSettings.jsx` under Owner Settings.
 4. **Data Retention, Consent & Account Deletion (PRD §12):**

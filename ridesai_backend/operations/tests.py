@@ -5162,6 +5162,140 @@ class NotificationTemplatesTests(TestCase):
         mock_evo_send.assert_not_called()
 
 
+class AIFAQLearningLoopTests(TestCase):
+    """Tests for P1 Automated AI FAQ Suggestions & Continuous Learning Loop (Multi-Tenant)."""
+
+    def setUp(self):
+        self.client = APIClient()
+        self.company_a = Company.objects.create(
+            name="Learning Cafe Alpha",
+            business_type="restaurant",
+            status=Company.STATUS_ACTIVE,
+            payment_status=Company.PAYMENT_OK,
+            subscription_status=Company.SUBSCRIPTION_ACTIVE,
+        )
+        self.company_b = Company.objects.create(
+            name="Learning Clinic Beta",
+            business_type="clinic",
+            status=Company.STATUS_ACTIVE,
+            payment_status=Company.PAYMENT_OK,
+            subscription_status=Company.SUBSCRIPTION_ACTIVE,
+        )
+        self.owner_a = User.objects.create_user(
+            username="faq_owner_a",
+            email="faq_owner_a@example.com",
+            password="Password123!",
+            role=User.ROLE_OWNER,
+            company=self.company_a,
+            is_active=True,
+        )
+        self.owner_b = User.objects.create_user(
+            username="faq_owner_b",
+            email="faq_owner_b@example.com",
+            password="Password123!",
+            role=User.ROLE_OWNER,
+            company=self.company_b,
+            is_active=True,
+        )
+
+    def test_log_unanswered_question_deduplicates_and_increments_occurrence_count(self):
+        from operations.models import SuggestedFAQ
+        from operations.whatsapp_agent import log_unanswered_question
+
+        res1 = log_unanswered_question(
+            company=self.company_a,
+            question="Do you have free customer parking?",
+            source_channel="public_web",
+        )
+        self.assertTrue(res1["success"])
+        self.assertFalse(res1["deduplicated"])
+        self.assertEqual(res1["occurrence_count"], 1)
+
+        # Asking again with different casing/whitespace increments existing row instead of duplicating
+        res2 = log_unanswered_question(
+            company=self.company_a,
+            question="  do you have   free customer parking? ",
+            draft_answer="Yes, valet parking is available outside.",
+            source_channel="whatsapp",
+        )
+        self.assertTrue(res2["success"])
+        self.assertTrue(res2["deduplicated"])
+        self.assertEqual(res2["occurrence_count"], 2)
+        self.assertEqual(res2["suggestion_id"], res1["suggestion_id"])
+        self.assertEqual(SuggestedFAQ.objects.filter(company=self.company_a).count(), 1)
+
+    def test_approve_suggestion_teaches_ai_immediately_with_strict_tenant_isolation(self):
+        from companies.models import BusinessKnowledge
+        from operations.models import SuggestedFAQ
+        from operations.whatsapp_agent import (
+            _build_system_prompt,
+            get_business_context_for_company,
+            log_unanswered_question,
+        )
+
+        logged = log_unanswered_question(
+            company=self.company_a,
+            question="Is your chicken 100% Zabiha Halal?",
+            source_channel="whatsapp",
+        )
+        sug_id = logged["suggestion_id"]
+
+        # Company B MUST NOT see, approve, or dismiss Company A's suggestion
+        self.client.force_authenticate(user=self.owner_b)
+        list_b = self.client.get("/api/operations/faqs/suggestions/?status=pending")
+        self.assertEqual(list_b.status_code, 200)
+        self.assertEqual(list_b.data["pending_count"], 0)
+        self.assertEqual(list_b.data["suggestions"], [])
+
+        cross_approve = self.client.post(
+            f"/api/operations/faqs/suggestions/{sug_id}/approve/",
+            {"question": "Hack", "answer": "Hacked"},
+            format="json",
+        )
+        self.assertEqual(cross_approve.status_code, 404)
+
+        cross_dismiss = self.client.post(f"/api/operations/faqs/suggestions/{sug_id}/dismiss/")
+        self.assertEqual(cross_dismiss.status_code, 404)
+
+        # Company A approves the suggestion
+        self.client.force_authenticate(user=self.owner_a)
+        approve_res = self.client.post(
+            f"/api/operations/faqs/suggestions/{sug_id}/approve/",
+            {
+                "question": "Is your chicken 100% Zabiha Halal?",
+                "answer": "Yes, all our meat is 100% certified Zabiha Halal.",
+            },
+            format="json",
+        )
+        self.assertEqual(approve_res.status_code, 200)
+        self.assertEqual(approve_res.data["suggestion"]["status"], "approved")
+        self.assertTrue(
+            BusinessKnowledge.objects.filter(
+                company=self.company_a,
+                title="Is your chicken 100% Zabiha Halal?",
+                is_approved=True,
+                is_active=True,
+            ).exists()
+        )
+
+        # Immediately grounded in Customer AI Voice Agent system prompt for Company A (and NOT Company B)
+        ctx_a = get_business_context_for_company(self.company_a)
+        prompt_a = _build_system_prompt("Ayesha", ctx_a)
+        self.assertIn("Is your chicken 100% Zabiha Halal?", prompt_a)
+        self.assertIn("100% certified Zabiha Halal", prompt_a)
+
+        ctx_b = get_business_context_for_company(self.company_b)
+        prompt_b = _build_system_prompt("Ayesha", ctx_b)
+        self.assertNotIn("100% certified Zabiha Halal", prompt_b)
+
+        # Dismiss workflow verified for Company A
+        logged2 = log_unanswered_question(company=self.company_a, question="Random off-topic question?")
+        dismiss_res = self.client.post(f"/api/operations/faqs/suggestions/{logged2['suggestion_id']}/dismiss/")
+        self.assertEqual(dismiss_res.status_code, 200)
+        self.assertEqual(SuggestedFAQ.objects.get(pk=logged2["suggestion_id"]).status, "dismissed")
+
+
+
 
 
 
