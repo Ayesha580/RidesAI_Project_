@@ -58,6 +58,8 @@ import AnalyticsReports from "./operations/AnalyticsReports";
 import NotificationSettings from "./operations/NotificationSettings";
 import TablesFloorPlan from "./operations/TablesFloorPlan";
 import PrivacyComplianceSettings from "./operations/PrivacyComplianceSettings";
+import StaffAttendance from "./operations/StaffAttendance";
+import SuppliersManagement from "./operations/SuppliersManagement";
 import RetailFulfillment from "./operations/RetailFulfillment";
 import RetailReturns from "./operations/RetailReturns";
 
@@ -77,6 +79,8 @@ function OwnerModulePage() {
   if (moduleKey === "lab_tests") return <HospitalDashboard defaultTab="lab_tests" />;
   if (moduleKey === "reports") return <AnalyticsReports />;
   if (moduleKey === "tables" || moduleKey === "reservations") return <TablesFloorPlan />;
+  if (moduleKey === "attendance") return <StaffAttendance />;
+  if (moduleKey === "suppliers") return <SuppliersManagement />;
   if (moduleKey === "appointments") return <ClinicAppointments />;
   if (moduleKey === "doctors") return <ClinicDoctors />;
   if (moduleKey === "patients") return <ClinicPatients />;
@@ -112,6 +116,8 @@ function StaffModulePage() {
   if (moduleKey === "lab_tests") return <HospitalDashboard staff defaultTab="lab_tests" />;
   if (moduleKey === "reports") return <AnalyticsReports staff />;
   if (moduleKey === "tables" || moduleKey === "reservations") return <TablesFloorPlan staff />;
+  if (moduleKey === "attendance") return <StaffAttendance staff />;
+  if (moduleKey === "suppliers") return <SuppliersManagement staff />;
   if (moduleKey === "appointments") return <ClinicAppointments staff />;
   if (moduleKey === "doctors") return <ClinicDoctors staff />;
   if (moduleKey === "patients") return <ClinicPatients staff />;
@@ -206,6 +212,8 @@ export default function App() {
       <Route path="/owner/reports" element={<Guard roles={["owner"]}><AnalyticsReports /></Guard>} />
       <Route path="/owner/notifications" element={<Guard roles={["owner"]}><NotificationSettings /></Guard>} />
       <Route path="/owner/privacy" element={<Guard roles={["owner"]}><PrivacyComplianceSettings /></Guard>} />
+      <Route path="/owner/attendance" element={<Guard roles={["owner"]}><StaffAttendance /></Guard>} />
+      <Route path="/owner/suppliers" element={<Guard roles={["owner"]}><SuppliersManagement /></Guard>} />
       <Route path="/owner/billing" element={<Navigate to="/owner/settings?tab=billing" replace />} />
       <Route path="/owner/tables" element={<Navigate to="/owner/m/tables" replace />} />
       <Route path="/owner/reservations" element={<Navigate to="/owner/m/reservations" replace />} />

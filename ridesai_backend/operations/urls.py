@@ -27,6 +27,11 @@ from .privacy_views import (
     CustomerConsentListCreateAPIView,
     CustomerEraseAPIView,
 )
+from .staff_supplier_views import (
+    StaffAttendanceAPIView,
+    SupplierListCreateAPIView,
+    SupplierDetailAPIView,
+)
 
 urlpatterns = [
     path("orders/catalog/", OrderCatalogAPIView.as_view(), name="order-catalog"),
@@ -72,5 +77,8 @@ urlpatterns = [
     path("privacy/retention/run-purge/", DataRetentionRunPurgeAPIView.as_view(), name="privacy-retention-run-purge"),
     path("privacy/consents/", CustomerConsentListCreateAPIView.as_view(), name="privacy-consents-list"),
     path("privacy/erase-customer/", CustomerEraseAPIView.as_view(), name="privacy-erase-customer"),
+    path("attendance/", StaffAttendanceAPIView.as_view(), name="staff-attendance"),
+    path("suppliers/", SupplierListCreateAPIView.as_view(), name="suppliers-list-create"),
+    path("suppliers/<int:pk>/", SupplierDetailAPIView.as_view(), name="suppliers-detail"),
     path("hospital/", include("operations.hospital_urls")),
 ]

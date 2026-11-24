@@ -136,3 +136,15 @@ export const superAdminApi = {
   listAuditLogs: () => api.get("/superadmin/audit-logs/"),
 };
 
+export const attendanceApi = {
+  getByDate: (date) => api.get("/operations/attendance/", { params: date ? { date } : {} }),
+  mark: (data) => api.post("/operations/attendance/", data),
+};
+
+export const suppliersApi = {
+  list: (params = {}) => api.get("/operations/suppliers/", { params }),
+  create: (data) => api.post("/operations/suppliers/", data),
+  update: (id, data) => api.patch(`/operations/suppliers/${id}/`, data),
+  remove: (id) => api.delete(`/operations/suppliers/${id}/`),
+};
+

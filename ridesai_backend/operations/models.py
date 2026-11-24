@@ -1023,6 +1023,85 @@ class PlatformAuditLog(models.Model):
         return f"{self.action} -> {self.target_company_name} by {self.actor_email}"
 
 
+# ============================================================================
+# Staff Attendance & Suppliers Management (PRD §3 / §9 — Multi-Tenant)
+# ============================================================================
+
+class StaffAttendance(models.Model):
+    STATUS_PRESENT = "present"
+    STATUS_ABSENT = "absent"
+    STATUS_LATE = "late"
+    STATUS_HALF_DAY = "half_day"
+    STATUS_ON_LEAVE = "on_leave"
+    STATUS_CHOICES = [
+        (STATUS_PRESENT, "Present"),
+        (STATUS_ABSENT, "Absent"),
+        (STATUS_LATE, "Late"),
+        (STATUS_HALF_DAY, "Half Day"),
+        (STATUS_ON_LEAVE, "On Leave"),
+    ]
+
+    company = models.ForeignKey(
+        "companies.Company",
+        on_delete=models.CASCADE,
+        related_name="staff_attendances",
+        db_index=True,
+    )
+    staff_user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="attendance_records",
+    )
+    date = models.DateField(db_index=True)
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default=STATUS_PRESENT)
+    check_in_time = models.TimeField(null=True, blank=True)
+    check_out_time = models.TimeField(null=True, blank=True)
+    notes = models.CharField(max_length=255, blank=True, default="")
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ("-date", "staff_user_id")
+        constraints = [
+            models.UniqueConstraint(
+                fields=["company", "staff_user", "date"],
+                name="unique_staff_attendance_per_company_day",
+            )
+        ]
+
+    def __str__(self):
+        return f"{self.staff_user_id} ({self.date}) - {self.status}"
+
+
+class Supplier(models.Model):
+    company = models.ForeignKey(
+        "companies.Company",
+        on_delete=models.CASCADE,
+        related_name="suppliers",
+        db_index=True,
+    )
+    name = models.CharField(max_length=200)
+    contact_person = models.CharField(max_length=160, blank=True, default="")
+    phone = models.CharField(max_length=40, blank=True, default="")
+    email = models.EmailField(blank=True, default="")
+    category = models.CharField(max_length=100, blank=True, default="")
+    address = models.TextField(blank=True, default="")
+    payment_terms = models.CharField(max_length=80, blank=True, default="")
+    is_active = models.BooleanField(default=True)
+    notes = models.TextField(blank=True, default="")
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ("name",)
+        indexes = [
+            models.Index(fields=["company", "is_active", "category"]),
+        ]
+
+    def __str__(self):
+        return f"{self.name} ({self.category or 'General'})"
+
+
+
 
 
 

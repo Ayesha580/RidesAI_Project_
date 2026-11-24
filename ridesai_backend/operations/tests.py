@@ -5710,6 +5710,133 @@ class SuperAdminDashboardTests(TestCase):
         self.assertEqual(logs2.data[0]["action"], "company_activated")
 
 
+class StaffAttendanceAndSuppliersTests(TestCase):
+    """Tests for PRD §3 / §9 Staff Attendance & Suppliers Management (Multi-Tenant)."""
+
+    def setUp(self):
+        self.client = APIClient()
+        self.company_a = Company.objects.create(
+            name="Ops Hub Alpha",
+            business_type="restaurant",
+            status=Company.STATUS_ACTIVE,
+            payment_status=Company.PAYMENT_OK,
+            subscription_status=Company.SUBSCRIPTION_ACTIVE,
+        )
+        self.company_b = Company.objects.create(
+            name="Ops Hub Beta",
+            business_type="pharmacy",
+            status=Company.STATUS_ACTIVE,
+            payment_status=Company.PAYMENT_OK,
+            subscription_status=Company.SUBSCRIPTION_ACTIVE,
+        )
+        self.owner_a = User.objects.create_user(
+            username="att_owner_a",
+            email="att_owner_a@example.com",
+            password="Password123!",
+            role=User.ROLE_OWNER,
+            company=self.company_a,
+            is_active=True,
+        )
+        self.staff_a = User.objects.create_user(
+            username="att_staff_a",
+            email="att_staff_a@example.com",
+            password="Password123!",
+            first_name="Kashif",
+            role=User.ROLE_STAFF,
+            company=self.company_a,
+            is_active=True,
+        )
+        self.owner_b = User.objects.create_user(
+            username="att_owner_b",
+            email="att_owner_b@example.com",
+            password="Password123!",
+            role=User.ROLE_OWNER,
+            company=self.company_b,
+            is_active=True,
+        )
+
+    def test_staff_attendance_mark_update_and_tenant_isolation(self):
+        self.client.force_authenticate(user=self.owner_a)
+
+        # Mark staff_a present with check-in/out times
+        mark_res = self.client.post(
+            "/api/operations/attendance/",
+            {
+                "staff_user_id": self.staff_a.id,
+                "date": "2026-11-24",
+                "status": "late",
+                "check_in_time": "09:20",
+                "check_out_time": "18:00",
+                "notes": "Traffic delay",
+            },
+            format="json",
+        )
+        self.assertEqual(mark_res.status_code, 200)
+        self.assertEqual(mark_res.data["status"], "late")
+        self.assertEqual(mark_res.data["check_in_time"], "09:20")
+
+        # GET sheet reflects summary & record
+        sheet = self.client.get("/api/operations/attendance/?date=2026-11-24")
+        self.assertEqual(sheet.status_code, 200)
+        self.assertEqual(sheet.data["summary"]["late"], 1)
+        staff_entry = next(r for r in sheet.data["staff"] if r["staff_user_id"] == self.staff_a.id)
+        self.assertEqual(staff_entry["status"], "late")
+
+        # Tenant B cannot mark attendance for Tenant A's staff
+        self.client.force_authenticate(user=self.owner_b)
+        cross_mark = self.client.post(
+            "/api/operations/attendance/",
+            {"staff_user_id": self.staff_a.id, "date": "2026-11-24", "status": "absent"},
+            format="json",
+        )
+        self.assertEqual(cross_mark.status_code, 404)
+
+    def test_suppliers_crud_and_tenant_isolation(self):
+        from operations.models import Supplier
+
+        self.client.force_authenticate(user=self.owner_a)
+        create_res = self.client.post(
+            "/api/operations/suppliers/",
+            {
+                "name": "Fresh Valley Produce",
+                "contact_person": "Imran Khan",
+                "phone": "03001234567",
+                "category": "Produce",
+                "payment_terms": "Net 15",
+            },
+            format="json",
+        )
+        self.assertEqual(create_res.status_code, 201)
+        sup_id = create_res.data["id"]
+
+        # Update supplier
+        patch_res = self.client.patch(
+            f"/api/operations/suppliers/{sup_id}/",
+            {"payment_terms": "Net 30", "is_active": False},
+            format="json",
+        )
+        self.assertEqual(patch_res.status_code, 200)
+        self.assertEqual(patch_res.data["payment_terms"], "Net 30")
+        self.assertFalse(patch_res.data["is_active"])
+
+        # Tenant B cannot see, edit, or delete Tenant A's supplier
+        self.client.force_authenticate(user=self.owner_b)
+        list_b = self.client.get("/api/operations/suppliers/")
+        self.assertEqual(list_b.status_code, 200)
+        self.assertEqual(list_b.data, [])
+
+        cross_del = self.client.delete(f"/api/operations/suppliers/{sup_id}/")
+        self.assertEqual(cross_del.status_code, 404)
+        self.assertTrue(Supplier.objects.filter(pk=sup_id).exists())
+
+        # Tenant A deletes cleanly
+        self.client.force_authenticate(user=self.owner_a)
+        del_a = self.client.delete(f"/api/operations/suppliers/{sup_id}/")
+        self.assertEqual(del_a.status_code, 204)
+        self.assertFalse(Supplier.objects.filter(pk=sup_id).exists())
+
+
+
 
 
 
