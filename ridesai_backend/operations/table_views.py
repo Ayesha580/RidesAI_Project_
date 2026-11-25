@@ -18,6 +18,7 @@ def _serialize_table(t: RestaurantTable) -> dict:
         "capacity": t.capacity,
         "status": t.status,
         "status_label": t.get_status_display(),
+        "section": t.section or RestaurantTable.SECTION_INDOOR,
         "zone": t.zone,
         "shape": t.shape,
         "pos_x": t.pos_x,
@@ -75,12 +76,17 @@ class RestaurantTableListCreateAPIView(APIView):
         default_x = 40 + (count % 4) * 165
         default_y = 40 + (count // 4) * 140
 
+        section_val = str(request.data.get("section") or RestaurantTable.SECTION_INDOOR).strip().lower()
+        if section_val not in {c[0] for c in RestaurantTable.SECTION_CHOICES}:
+            section_val = RestaurantTable.SECTION_INDOOR
+
         table = RestaurantTable.objects.create(
             company=company,
             table_number=table_number,
             capacity=max(1, int(request.data.get("capacity", 4) or 4)),
             status=status_val,
-            zone=str(request.data.get("zone") or "Main Hall").strip()[:60] or "Main Hall",
+            section=section_val,
+            zone=str(request.data.get("zone") or section_val.title()).strip()[:60] or "Main Hall",
             shape=shape,
             pos_x=max(0, int(request.data.get("pos_x", default_x) if request.data.get("pos_x") is not None else default_x)),
             pos_y=max(0, int(request.data.get("pos_y", default_y) if request.data.get("pos_y") is not None else default_y)),
@@ -116,6 +122,10 @@ class RestaurantTableDetailAPIView(APIView):
                     table.guest_phone = ""
                     table.reservation_time = ""
                     table.active_order = None
+        if "section" in request.data and str(request.data["section"]).strip():
+            sec = str(request.data["section"]).strip().lower()
+            if sec in {c[0] for c in RestaurantTable.SECTION_CHOICES}:
+                table.section = sec
         if "zone" in request.data and str(request.data["zone"]).strip():
             table.zone = str(request.data["zone"]).strip()[:60]
         if "shape" in request.data:

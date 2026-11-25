@@ -40,6 +40,14 @@ from .staff_supplier_views import (
 from .restaurant_dashboard_views import RestaurantDashboardSummaryAPIView
 from .restaurant_kds_views import RestaurantKDSListAPIView, RestaurantKDSBumpAPIView
 from .customer_recall_views import CustomerLookupAPIView
+from .restaurant_floor_views import (
+    RestaurantFloorPlanAPIView,
+    RestaurantTableStatusAPIView,
+    RestaurantReservationListCreateAPIView,
+    RestaurantReservationDetailAPIView,
+    RestaurantReservationSeatAPIView,
+    RestaurantReservationCompleteAPIView,
+)
 
 urlpatterns = [
     path("orders/catalog/", OrderCatalogAPIView.as_view(), name="order-catalog"),
@@ -95,6 +103,12 @@ urlpatterns = [
     path("restaurant/dashboard-summary/", RestaurantDashboardSummaryAPIView.as_view(), name="restaurant-dashboard-summary"),
     path("restaurant/kds/", RestaurantKDSListAPIView.as_view(), name="restaurant-kds-list"),
     path("restaurant/kds/<int:order_id>/bump/", RestaurantKDSBumpAPIView.as_view(), name="restaurant-kds-bump"),
+    path("restaurant/floor-plan/", RestaurantFloorPlanAPIView.as_view(), name="restaurant-floor-plan"),
+    path("restaurant/tables/<int:table_id>/status/", RestaurantTableStatusAPIView.as_view(), name="restaurant-table-status"),
+    path("restaurant/reservations/", RestaurantReservationListCreateAPIView.as_view(), name="restaurant-reservations-list"),
+    path("restaurant/reservations/<int:pk>/", RestaurantReservationDetailAPIView.as_view(), name="restaurant-reservations-detail"),
+    path("restaurant/reservations/<int:pk>/seat/", RestaurantReservationSeatAPIView.as_view(), name="restaurant-reservations-seat"),
+    path("restaurant/reservations/<int:pk>/complete/", RestaurantReservationCompleteAPIView.as_view(), name="restaurant-reservations-complete"),
     path("customers/lookup/", CustomerLookupAPIView.as_view(), name="customers-lookup"),
     path("hospital/", include("operations.hospital_urls")),
 ]

@@ -77,6 +77,68 @@ def _delivery_area_for_order(company, payload):
     raise ValueError("Delivery is unavailable at this address. Please choose collection or contact the business.")
 
 
+class TableOccupiedConflictError(Exception):
+    """Raised when attempting to assign a dine-in order to a table already occupied by another customer."""
+
+
+ACTIVE_DINE_IN_STATUSES = [
+    Order.STATUS_NEW,
+    Order.STATUS_PENDING,
+    Order.STATUS_CONFIRMED,
+    Order.STATUS_PREPARING,
+    Order.STATUS_PREPARED,
+    Order.STATUS_READY,
+]
+
+
+def _same_guest(name_a: str, phone_a: str, name_b: str, phone_b: str) -> bool:
+    p_a = re.sub(r"\D", "", str(phone_a or ""))
+    p_b = re.sub(r"\D", "", str(phone_b or ""))
+    if p_a and p_b and p_a[-10:] == p_b[-10:]:
+        return True
+    n_a = str(name_a or "").strip().lower()
+    n_b = str(name_b or "").strip().lower()
+    if n_a and n_b and n_a == n_b:
+        return True
+    return False
+
+
+def release_table_if_idle(order: Order) -> None:
+    """
+    When a dine-in order finishes (delivered/cancelled), frees its assigned table
+    back to 'available' if no other active dine-in orders remain on that table.
+    """
+    from operations.models import RestaurantTable
+
+    if not order or (order.order_type or "").lower() != Order.ORDER_TYPE_DINE_IN:
+        return
+    table = getattr(order, "table", None)
+    if not table and order.table_number:
+        table = RestaurantTable.objects.filter(
+            company=order.company,
+            table_number__iexact=order.table_number.strip(),
+        ).first()
+    if not table:
+        return
+
+    other_active = (
+        Order.objects.filter(
+            company=order.company,
+            order_type=Order.ORDER_TYPE_DINE_IN,
+            status__in=ACTIVE_DINE_IN_STATUSES,
+        )
+        .filter(table=table)
+        .exclude(pk=order.pk)
+        .exists()
+    )
+    if not other_active:
+        table.status = RestaurantTable.STATUS_AVAILABLE
+        table.active_order = None
+        table.guest_name = ""
+        table.guest_phone = ""
+        table.save(update_fields=["status", "active_order", "guest_name", "guest_phone", "updated_at"])
+
+
 def _create_order(company, payload, actor=None, source="dashboard"):
     from operations.models import RestaurantTable
     from operations.restaurant_kds_views import normalize_selected_modifiers
@@ -127,6 +189,30 @@ def _create_order(company, payload, actor=None, source="dashboard"):
         parsed_lng = None
 
     with transaction.atomic():
+        if raw_order_type == Order.ORDER_TYPE_DINE_IN and table_obj:
+            table_obj = RestaurantTable.objects.select_for_update().get(pk=table_obj.pk, company=company)
+            active_on_table = (
+                Order.objects.filter(
+                    company=company,
+                    order_type=Order.ORDER_TYPE_DINE_IN,
+                    table=table_obj,
+                    status__in=ACTIVE_DINE_IN_STATUSES,
+                )
+                .order_by("-created_at")
+                .first()
+            )
+            is_table_busy = (table_obj.status == RestaurantTable.STATUS_OCCUPIED) or bool(active_on_table)
+            if is_table_busy:
+                occ_name = (active_on_table.customer_name if active_on_table else table_obj.guest_name) or ""
+                occ_phone = (active_on_table.customer_phone if active_on_table else table_obj.guest_phone) or ""
+                incoming_phone = str(payload.get("customer_phone") or "").strip()
+                if not _same_guest(occ_name, occ_phone, customer_name, incoming_phone):
+                    occupant_label = occ_name or "another guest"
+                    raise TableOccupiedConflictError(
+                        f"Table {table_obj.table_number} is currently occupied by {occupant_label}. "
+                        "Please select another available table."
+                    )
+
         order = Order.objects.create(company=company, customer_name=customer_name,
             order_type=raw_order_type,
             table=table_obj,
@@ -137,6 +223,13 @@ def _create_order(company, payload, actor=None, source="dashboard"):
             delivery_lat=parsed_lat,
             delivery_lng=parsed_lng,
             notes=payload.get("notes", ""), source=source, created_by=actor)
+
+        if raw_order_type == Order.ORDER_TYPE_DINE_IN and table_obj:
+            table_obj.status = RestaurantTable.STATUS_OCCUPIED
+            table_obj.active_order = order
+            table_obj.guest_name = order.customer_name
+            table_obj.guest_phone = order.customer_phone
+            table_obj.save(update_fields=["status", "active_order", "guest_name", "guest_phone", "updated_at"])
         subtotal = Decimal("0")
         for row in rows:
             item_id = row.get("item_id")
@@ -268,6 +361,8 @@ class OrderListCreateAPIView(BusinessAPIView):
         try:
             order = _create_order(self.company, request.data, actor=request.user,
                                   source="dashboard")
+        except TableOccupiedConflictError as exc:
+            return Response({"detail": str(exc)}, status=409)
         except CatalogItem.DoesNotExist:
             return Response({"items": "One or more selected items do not belong to this business or are unavailable."}, status=400)
         except (InvalidOperation, ValueError, KeyError) as exc:
@@ -338,6 +433,10 @@ class OrderStatusAPIView(BusinessAPIView):
         if next_status == Order.STATUS_DELIVERED:
             from operations.retail_views import complete_linked_exchanges_on_delivery
             complete_linked_exchanges_on_delivery(order, company=self.company)
+
+        # Auto-free dine-in table when order is delivered or cancelled
+        if next_status in (Order.STATUS_DELIVERED, Order.STATUS_CANCELLED):
+            release_table_if_idle(order)
 
         return Response(_order_payload(order))
 

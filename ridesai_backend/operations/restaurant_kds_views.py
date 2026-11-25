@@ -295,4 +295,9 @@ class RestaurantKDSBumpAPIView(APIView):
             new_status=next_status,
         )
 
+        # Auto-free dine-in table when bumped to delivered/cancelled
+        if next_status in (Order.STATUS_DELIVERED, Order.STATUS_CANCELLED):
+            from operations.views import release_table_if_idle
+            release_table_if_idle(order)
+
         return Response(_serialize_kds_ticket(order, now), status=200)

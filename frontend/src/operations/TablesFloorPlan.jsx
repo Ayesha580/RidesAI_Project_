@@ -1,540 +1,648 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { Link, useNavigate } from "react-router-dom";
 import OwnerLayout from "../owner/components/OwnerLayout";
 import StaffLayout from "../staff/components/StaffLayout";
-import { tablesApi } from "../api/operationsApi";
+import { restaurantFloorApi, tablesApi } from "../api/operationsApi";
 import { errorText } from "../api/axiosClient";
 
-const STATUS_STYLES = {
-  available: { bg: "#ecfdf5", border: "#10b981", text: "#047857", badge: "Available" },
-  occupied: { bg: "#fdf2f8", border: "#ec4899", text: "#be185d", badge: "Occupied" },
-  reserved: { bg: "#fffbeb", border: "#f59e0b", text: "#b45309", badge: "Reserved" },
+const SECTIONS = [
+  { key: "all", label: "All Sections" },
+  { key: "indoor", label: "Indoor" },
+  { key: "outdoor", label: "Outdoor" },
+  { key: "vip", label: "VIP" },
+  { key: "rooftop", label: "Rooftop" },
+];
+
+const STATUS_META = {
+  available: { label: "Available", bg: "#ecfdf5", border: "#6ee7b7", text: "#047857", dot: "#10b981" },
+  occupied: { label: "Occupied", bg: "#fdf2ff", border: "#f0abfc", text: "#9c1e9c", dot: "#d946ef" },
+  reserved: { label: "Reserved", bg: "#fffbeb", border: "#fcd34d", text: "#b45309", dot: "#f59e0b" },
+  cleaning: { label: "Cleaning", bg: "#eff6ff", border: "#93c5fd", text: "#1d4ed8", dot: "#3b82f6" },
 };
 
-const DEFAULT_ZONES = ["Main Hall", "Outdoor", "VIP / Family"];
-
 export default function TablesFloorPlan({ staff = false }) {
-  const [viewMode, setViewMode] = useState("floorplan"); // "floorplan" | "grid"
+  const navigate = useNavigate();
+  const Layout = staff ? StaffLayout : OwnerLayout;
+
   const [tables, setTables] = useState([]);
-  const [zoneFilter, setZoneFilter] = useState("ALL");
-  const [selectedId, setSelectedId] = useState(null);
+  const [summary, setSummary] = useState({ total: 0, by_status: {}, by_section: {} });
+  const [sectionFilter, setSectionFilter] = useState("all");
+  const [selectedTable, setSelectedTable] = useState(null);
+  const [showAddModal, setShowAddModal] = useState(false);
   const [loading, setLoading] = useState(true);
-  const [saving, setSaving] = useState(false);
+  const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
-  const canvasRef = useRef(null);
-  const dragStateRef = useRef(null);
 
   const [newTable, setNewTable] = useState({
     table_number: "",
     capacity: 4,
-    zone: "Main Hall",
-    shape: "square",
+    section: "indoor",
   });
-
-  const [editForm, setEditForm] = useState({
-    status: "available",
-    zone: "Main Hall",
-    shape: "square",
-    capacity: 4,
-    pos_x: 60,
-    pos_y: 60,
-    guest_name: "",
-    guest_phone: "",
-    reservation_time: "",
-    notes: "",
-  });
-
-  const loadTables = async () => {
-    setError("");
-    try {
-      const { data } = await tablesApi.list();
-      setTables(Array.isArray(data) ? data : []);
-    } catch (e) {
-      setError(errorText(e));
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  useEffect(() => {
-    loadTables();
-  }, []);
-
-  const zones = useMemo(() => {
-    const set = new Set(DEFAULT_ZONES);
-    tables.forEach((t) => {
-      if (t.zone) set.add(t.zone);
-    });
-    return ["ALL", ...Array.from(set)];
-  }, [tables]);
-
-  const filteredTables = useMemo(
-    () => (zoneFilter === "ALL" ? tables : tables.filter((t) => t.zone === zoneFilter)),
-    [tables, zoneFilter]
-  );
-
-  const selectedTable = useMemo(
-    () => tables.find((t) => t.id === selectedId) || null,
-    [tables, selectedId]
-  );
-
-  useEffect(() => {
-    if (selectedTable) {
-      setEditForm({
-        status: selectedTable.status || "available",
-        zone: selectedTable.zone || "Main Hall",
-        shape: selectedTable.shape || "square",
-        capacity: selectedTable.capacity || 4,
-        pos_x: selectedTable.pos_x ?? 60,
-        pos_y: selectedTable.pos_y ?? 60,
-        guest_name: selectedTable.guest_name || "",
-        guest_phone: selectedTable.guest_phone || "",
-        reservation_time: selectedTable.reservation_time || "",
-        notes: selectedTable.notes || "",
-      });
-    }
-  }, [selectedTable]);
 
   const flashNotice = (msg) => {
     setNotice(msg);
-    setTimeout(() => setNotice(""), 2800);
+    setTimeout(() => setNotice(""), 3000);
   };
+
+  const loadFloorPlan = useCallback(async (silent = false) => {
+    if (!silent) setLoading(true);
+    setError("");
+    try {
+      const { data } = await restaurantFloorApi.getFloorPlan();
+      setTables(Array.isArray(data?.tables) ? data.tables : []);
+      setSummary(data?.summary || { total: 0, by_status: {}, by_section: {} });
+    } catch (err) {
+      setError(errorText(err) || "Failed to load floor plan.");
+    } finally {
+      if (!silent) setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    loadFloorPlan(false);
+    const timer = setInterval(() => loadFloorPlan(true), 20000);
+    return () => clearInterval(timer);
+  }, [loadFloorPlan]);
+
+  const filteredTables = useMemo(() => {
+    if (sectionFilter === "all") return tables;
+    return tables.filter((t) => (t.section || "indoor") === sectionFilter);
+  }, [tables, sectionFilter]);
 
   const handleAddTable = async (e) => {
     e.preventDefault();
     if (!newTable.table_number.trim()) return;
-    setSaving(true);
+    setBusy(true);
     setError("");
     try {
       const { data } = await tablesApi.create({
-        ...newTable,
         table_number: newTable.table_number.trim(),
         capacity: Number(newTable.capacity || 4),
+        section: newTable.section,
+        zone: newTable.section.charAt(0).toUpperCase() + newTable.section.slice(1),
       });
-      setNewTable({ table_number: "", capacity: 4, zone: newTable.zone, shape: newTable.shape });
-      setSelectedId(data.id);
-      await loadTables();
-      flashNotice(`Added table ${data.table_number}.`);
+      setShowAddModal(false);
+      setNewTable({ table_number: "", capacity: 4, section: newTable.section });
+      await loadFloorPlan(true);
+      flashNotice(`Added Table ${data.table_number}.`);
     } catch (err) {
-      setError(errorText(err));
+      setError(errorText(err) || "Failed to create table.");
     } finally {
-      setSaving(false);
+      setBusy(false);
     }
   };
 
-  const handleSaveSelected = async (e) => {
-    e.preventDefault();
-    if (!selectedTable) return;
-    setSaving(true);
+  const handleStatusTransition = async (table, nextStatus) => {
+    setBusy(true);
     setError("");
     try {
-      await tablesApi.update(selectedTable.id, {
-        ...editForm,
-        capacity: Number(editForm.capacity || 1),
-        pos_x: Math.max(0, Number(editForm.pos_x || 0)),
-        pos_y: Math.max(0, Number(editForm.pos_y || 0)),
-      });
-      await loadTables();
-      flashNotice(`Saved ${selectedTable.table_number}.`);
+      await restaurantFloorApi.updateTableStatus(table.id, nextStatus);
+      await loadFloorPlan(true);
+      setSelectedTable((prev) => (prev && prev.id === table.id ? { ...prev, status: nextStatus } : prev));
+      flashNotice(`Table ${table.table_number} marked as ${nextStatus}.`);
     } catch (err) {
-      setError(errorText(err));
+      setError(errorText(err) || "Failed to update table status.");
     } finally {
-      setSaving(false);
-    }
-  };
-
-  const handleQuickStatus = async (table, nextStatus) => {
-    setSaving(true);
-    setError("");
-    try {
-      await tablesApi.update(table.id, { status: nextStatus });
-      await loadTables();
-      flashNotice(`Table ${table.table_number} marked ${nextStatus}.`);
-    } catch (err) {
-      setError(errorText(err));
-    } finally {
-      setSaving(false);
+      setBusy(false);
     }
   };
 
   const handleDeleteTable = async (table) => {
-    setSaving(true);
+    if (!window.confirm(`Delete Table ${table.table_number}?`)) return;
+    setBusy(true);
     setError("");
     try {
       await tablesApi.remove(table.id);
-      if (selectedId === table.id) setSelectedId(null);
-      await loadTables();
-      flashNotice(`Removed table ${table.table_number}.`);
+      setSelectedTable(null);
+      await loadFloorPlan(true);
+      flashNotice(`Removed Table ${table.table_number}.`);
     } catch (err) {
-      setError(errorText(err));
+      setError(errorText(err) || "Failed to delete table.");
     } finally {
-      setSaving(false);
+      setBusy(false);
     }
   };
 
-  // Drag-and-drop repositioning on the visual floor-plan canvas
-  const handlePointerDown = (e, table) => {
-    if (!canvasRef.current) return;
-    const rect = canvasRef.current.getBoundingClientRect();
-    setSelectedId(table.id);
-    dragStateRef.current = {
-      id: table.id,
-      offsetX: e.clientX - rect.left - (table.pos_x || 0),
-      offsetY: e.clientY - rect.top - (table.pos_y || 0),
-      moved: false,
-      lastX: table.pos_x || 0,
-      lastY: table.pos_y || 0,
-    };
+  const handleStartDineInOrder = (table) => {
+    const ordersBase = staff ? "/staff/orders" : "/owner/m/orders";
+    navigate(`${ordersBase}?newOrder=1&orderType=dine_in&tableId=${table.id}`);
   };
 
-  const handleCanvasPointerMove = (e) => {
-    const drag = dragStateRef.current;
-    if (!drag || !canvasRef.current) return;
-    const rect = canvasRef.current.getBoundingClientRect();
-    const nx = Math.max(8, Math.min(Math.round(rect.width - 120), Math.round(e.clientX - rect.left - drag.offsetX)));
-    const ny = Math.max(8, Math.min(Math.round(rect.height - 95), Math.round(e.clientY - rect.top - drag.offsetY)));
-    if (Math.abs(nx - drag.lastX) > 2 || Math.abs(ny - drag.lastY) > 2) {
-      drag.moved = true;
-      drag.lastX = nx;
-      drag.lastY = ny;
-      setTables((prev) => prev.map((t) => (t.id === drag.id ? { ...t, pos_x: nx, pos_y: ny } : t)));
-    }
-  };
-
-  const handleCanvasPointerUp = async () => {
-    const drag = dragStateRef.current;
-    dragStateRef.current = null;
-    if (!drag || !drag.moved) return;
-    try {
-      await tablesApi.update(drag.id, { pos_x: drag.lastX, pos_y: drag.lastY });
-      flashNotice("Saved table position.");
-    } catch (err) {
-      setError(errorText(err));
-    }
-  };
-
-  const counts = useMemo(() => {
-    const c = { available: 0, occupied: 0, reserved: 0 };
-    tables.forEach((t) => {
-      if (c[t.status] !== undefined) c[t.status] += 1;
-    });
-    return c;
-  }, [tables]);
-
-  const Layout = staff ? StaffLayout : OwnerLayout;
+  const byStatus = summary.by_status || {};
+  const bySection = summary.by_section || {};
 
   return (
     <Layout
-      title="Tables & Visual Floor Plan"
-      subtitle="Manage dine-in tables, reservations, zones, and drag-and-drop floor-plan layout."
+      title="Interactive Floor Plan"
+      subtitle="Live dining room status, active dine-in orders, and upcoming reservations."
     >
-      {error && <div className="ad-alert" role="alert">{error}</div>}
-      {notice && (
-        <div style={{ background: "#fdf4ff", border: "1px solid #f0abfc", color: "#86198f", padding: "9px 14px", borderRadius: 10, fontSize: 13, fontWeight: 600, marginBottom: 14 }}>
-          ✅ {notice}
-        </div>
-      )}
+      <div style={{ maxWidth: 1320, margin: "0 auto", display: "flex", flexDirection: "column", gap: 18 }}>
+        {/* Top Controls: Section Pills + Status Legend + Actions */}
+        <div
+          style={{
+            background: "#ffffff",
+            border: "1px solid #f0e6f2",
+            borderRadius: 16,
+            padding: "14px 18px",
+            display: "flex",
+            flexWrap: "wrap",
+            alignItems: "center",
+            justifyContent: "space-between",
+            gap: 12,
+          }}
+        >
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+            {SECTIONS.map((sec) => {
+              const active = sectionFilter === sec.key;
+              const cnt = sec.key === "all" ? summary.total || tables.length : bySection[sec.key] || 0;
+              return (
+                <button
+                  key={sec.key}
+                  type="button"
+                  onClick={() => setSectionFilter(sec.key)}
+                  style={{
+                    border: active ? "1px solid #e040e0" : "1px solid #eedff0",
+                    background: active ? "#ff77ff" : "#faf6fb",
+                    color: active ? "#240729" : "#564861",
+                    borderRadius: 999,
+                    padding: "7px 14px",
+                    fontSize: 13,
+                    fontWeight: active ? 800 : 600,
+                    cursor: "pointer",
+                    display: "inline-flex",
+                    alignItems: "center",
+                    gap: 6,
+                  }}
+                >
+                  <span>{sec.label}</span>
+                  <span
+                    style={{
+                      fontSize: 11.5,
+                      fontWeight: 800,
+                      padding: "1px 7px",
+                      borderRadius: 999,
+                      background: active ? "rgba(36, 7, 41, 0.14)" : "#ffffff",
+                      color: active ? "#240729" : "#7a6985",
+                    }}
+                  >
+                    {cnt}
+                  </span>
+                </button>
+              );
+            })}
+          </div>
 
-      {/* Top Status & View Toggle Bar */}
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 12, marginBottom: 16 }}>
-        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-          <span style={{ padding: "5px 12px", borderRadius: 999, background: "#ecfdf5", color: "#047857", fontSize: 12.5, fontWeight: 700 }}>
-            🟢 Available: {counts.available}
-          </span>
-          <span style={{ padding: "5px 12px", borderRadius: 999, background: "#fdf2f8", color: "#be185d", fontSize: 12.5, fontWeight: 700 }}>
-            🔴 Occupied: {counts.occupied}
-          </span>
-          <span style={{ padding: "5px 12px", borderRadius: 999, background: "#fffbeb", color: "#b45309", fontSize: 12.5, fontWeight: 700 }}>
-            🟡 Reserved: {counts.reserved}
-          </span>
-        </div>
-
-        <div style={{ display: "flex", gap: 8 }}>
-          <button
-            type="button"
-            onClick={() => setViewMode("floorplan")}
-            style={{
-              padding: "8px 14px",
-              borderRadius: 10,
-              border: viewMode === "floorplan" ? "1px solid #ff77ff" : "1px solid #e2e8f0",
-              background: viewMode === "floorplan" ? "#ff77ff" : "#fff",
-              color: viewMode === "floorplan" ? "#fff" : "#475569",
-              fontWeight: 700,
-              fontSize: 12.5,
-              cursor: "pointer",
-            }}
-          >
-            🗺️ Visual Floor-Plan
-          </button>
-          <button
-            type="button"
-            onClick={() => setViewMode("grid")}
-            style={{
-              padding: "8px 14px",
-              borderRadius: 10,
-              border: viewMode === "grid" ? "1px solid #ff77ff" : "1px solid #e2e8f0",
-              background: viewMode === "grid" ? "#ff77ff" : "#fff",
-              color: viewMode === "grid" ? "#fff" : "#475569",
-              fontWeight: 700,
-              fontSize: 12.5,
-              cursor: "pointer",
-            }}
-          >
-            📋 List / Grid View
-          </button>
-        </div>
-      </div>
-
-      {/* Add Table Form + Zone Filter */}
-      <div style={{ background: "#fff", border: "1px solid #e5e7eb", borderRadius: 14, padding: 14, marginBottom: 16, display: "grid", gap: 12 }}>
-        <form onSubmit={handleAddTable} style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))", gap: 10, alignItems: "center" }}>
-          <input placeholder="Table # (e.g. T1, VIP-1)" value={newTable.table_number} onChange={(e) => setNewTable({ ...newTable, table_number: e.target.value })} required style={{ padding: "8px 10px", borderRadius: 8, border: "1px solid #d1d5db" }} />
-          <input type="number" min="1" placeholder="Seats" value={newTable.capacity} onChange={(e) => setNewTable({ ...newTable, capacity: e.target.value })} style={{ padding: "8px 10px", borderRadius: 8, border: "1px solid #d1d5db" }} />
-          <select value={newTable.zone} onChange={(e) => setNewTable({ ...newTable, zone: e.target.value })} style={{ padding: "8px 10px", borderRadius: 8, border: "1px solid #d1d5db" }}>
-            {DEFAULT_ZONES.map((z) => <option key={z} value={z}>{z}</option>)}
-          </select>
-          <select value={newTable.shape} onChange={(e) => setNewTable({ ...newTable, shape: e.target.value })} style={{ padding: "8px 10px", borderRadius: 8, border: "1px solid #d1d5db" }}>
-            <option value="square">Square</option>
-            <option value="round">Round</option>
-            <option value="rect">Rectangle</option>
-          </select>
-          <button type="submit" disabled={saving} className="ad-btn ad-btn-primary">+ Add Table</button>
-        </form>
-
-        <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-          {zones.map((z) => (
-            <button
-              key={z}
-              type="button"
-              onClick={() => setZoneFilter(z)}
+          <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+            <Link
+              to={staff ? "/staff/reservations" : "/owner/m/reservations"}
               style={{
-                padding: "5px 12px",
-                borderRadius: 999,
-                border: zoneFilter === z ? "1px solid #ff77ff" : "1px solid #e2e8f0",
-                background: zoneFilter === z ? "#fdf4ff" : "#fff",
-                color: zoneFilter === z ? "#a21caf" : "#64748b",
+                textDecoration: "none",
+                border: "1px solid #f0abfc",
+                background: "#fdf2ff",
+                color: "#86198f",
+                borderRadius: 10,
+                padding: "8px 14px",
+                fontSize: 13,
                 fontWeight: 700,
-                fontSize: 12,
+              }}
+            >
+              📅 Reservations →
+            </Link>
+            <button
+              type="button"
+              onClick={() => setShowAddModal(true)}
+              style={{
+                border: "none",
+                background: "#ff77ff",
+                color: "#240729",
+                borderRadius: 10,
+                padding: "9px 16px",
+                fontSize: 13,
+                fontWeight: 800,
+                cursor: "pointer",
+                boxShadow: "0 4px 12px rgba(255, 119, 255, 0.35)",
+              }}
+            >
+              + Add Table
+            </button>
+          </div>
+        </div>
+
+        {/* Live Status Legend Strip */}
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 10, alignItems: "center" }}>
+          {Object.entries(STATUS_META).map(([key, meta]) => (
+            <div
+              key={key}
+              style={{
+                display: "inline-flex",
+                alignItems: "center",
+                gap: 7,
+                background: "#ffffff",
+                border: `1px solid ${meta.border}`,
+                borderRadius: 999,
+                padding: "5px 12px",
+                fontSize: 12.5,
+                fontWeight: 700,
+                color: meta.text,
+              }}
+            >
+              <span style={{ width: 8, height: 8, borderRadius: "50%", background: meta.dot }} />
+              <span>{meta.label}:</span>
+              <strong>{byStatus[key] ?? 0}</strong>
+            </div>
+          ))}
+        </div>
+
+        {notice && (
+          <div style={{ background: "#ecfdf5", border: "1px solid #a7f3d0", color: "#047857", borderRadius: 12, padding: "11px 16px", fontSize: 13, fontWeight: 600 }}>
+            ✅ {notice}
+          </div>
+        )}
+        {error && (
+          <div style={{ background: "#fef2f2", border: "1px solid #fecaca", color: "#991b1b", borderRadius: 12, padding: "11px 16px", fontSize: 13 }}>
+            {error}
+          </div>
+        )}
+
+        {/* Interactive Visual Table Grid */}
+        {loading ? (
+          <div style={{ background: "#ffffff", border: "1px solid #f0e6f2", borderRadius: 16, padding: 48, textAlign: "center", color: "#8c7d96" }}>
+            Loading floor plan...
+          </div>
+        ) : filteredTables.length === 0 ? (
+          <div style={{ background: "#ffffff", border: "1px solid #f0e6f2", borderRadius: 16, padding: 52, textAlign: "center" }}>
+            <div style={{ fontSize: 36, marginBottom: 8 }}>🪑</div>
+            <h3 style={{ margin: 0, fontSize: 17, fontWeight: 800, color: "#211426" }}>No Tables in This Section</h3>
+            <p style={{ margin: "6px 0 16px", fontSize: 13.5, color: "#7f7288" }}>
+              Add your dining tables to track live occupancy, dine-in orders, and AI reservations.
+            </p>
+            <button
+              type="button"
+              onClick={() => setShowAddModal(true)}
+              style={{
+                border: "none",
+                background: "#ff77ff",
+                color: "#240729",
+                borderRadius: 10,
+                padding: "9px 18px",
+                fontSize: 13.5,
+                fontWeight: 800,
                 cursor: "pointer",
               }}
             >
-              {z === "ALL" ? "All Zones" : z}
+              + Add Your First Table
             </button>
-          ))}
-        </div>
-      </div>
-
-      {loading ? (
-        <p style={{ color: "#64748b" }}>Loading tables...</p>
-      ) : viewMode === "floorplan" ? (
-        <div style={{ display: "grid", gridTemplateColumns: selectedTable ? "minmax(0, 1fr) 310px" : "1fr", gap: 16, alignItems: "start" }}>
-          {/* Visual Drag-and-Drop Floor Plan Canvas */}
+          </div>
+        ) : (
           <div
-            ref={canvasRef}
-            onPointerMove={handleCanvasPointerMove}
-            onPointerUp={handleCanvasPointerUp}
-            onPointerLeave={handleCanvasPointerUp}
             style={{
-              position: "relative",
-              minHeight: 460,
-              background: "radial-gradient(#e9d5ff 1px, transparent 1px) #fcfaff",
-              backgroundSize: "24px 24px",
-              border: "2px dashed #e9d5ff",
-              borderRadius: 16,
-              overflow: "hidden",
-              userSelect: "none",
+              display: "grid",
+              gridTemplateColumns: "repeat(auto-fill, minmax(245px, 1fr))",
+              gap: 16,
             }}
           >
-            <div style={{ position: "absolute", top: 10, left: 14, fontSize: 11.5, fontWeight: 700, color: "#94a3b8" }}>
-              Drag any table to reposition · Click a table to edit status or reservation
-            </div>
-
-            {filteredTables.length === 0 ? (
-              <div style={{ display: "grid", placeItems: "center", height: 420, color: "#94a3b8", textAlign: "center", padding: 20 }}>
-                <div>
-                  <div style={{ fontSize: 32 }}>🪑</div>
-                  <strong>No tables in this zone yet.</strong>
-                  <p style={{ margin: "4px 0 0", fontSize: 12.5 }}>Add your first table above to design your visual floor plan.</p>
-                </div>
-              </div>
-            ) : (
-              filteredTables.map((t) => {
-                const st = STATUS_STYLES[t.status] || STATUS_STYLES.available;
-                const isSelected = selectedId === t.id;
-                const width = t.shape === "rect" ? 138 : 96;
-                const height = t.shape === "round" ? 96 : 84;
-                const radius = t.shape === "round" ? "50%" : "14px";
-                return (
-                  <div
-                    key={t.id}
-                    onPointerDown={(e) => handlePointerDown(e, t)}
-                    style={{
-                      position: "absolute",
-                      left: t.pos_x ?? 40,
-                      top: t.pos_y ?? 40,
-                      width,
-                      height,
-                      borderRadius: radius,
-                      background: st.bg,
-                      border: `2px solid ${isSelected ? "#ff77ff" : st.border}`,
-                      boxShadow: isSelected ? "0 0 0 4px rgba(255,119,255,0.28)" : "0 4px 12px rgba(15,23,42,0.08)",
-                      display: "flex",
-                      flexDirection: "column",
-                      alignItems: "center",
-                      justifyContent: "center",
-                      cursor: "grab",
-                      padding: 6,
-                      textAlign: "center",
-                    }}
-                  >
-                    <div style={{ fontWeight: 800, fontSize: 14, color: "#0f172a" }}>{t.table_number}</div>
-                    <div style={{ fontSize: 11, fontWeight: 700, color: st.text }}>{st.badge} · {t.capacity}p</div>
-                    {t.guest_name && (
-                      <div style={{ fontSize: 10, color: "#475569", maxWidth: "90%", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                        {t.guest_name}
-                      </div>
-                    )}
-                  </div>
-                );
-              })
-            )}
-          </div>
-
-          {/* Table Inspector Panel */}
-          {selectedTable && (
-            <form onSubmit={handleSaveSelected} style={{ background: "#fff", border: "1px solid #f0abfc", borderRadius: 16, padding: 16, display: "grid", gap: 10 }}>
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                <h4 style={{ margin: 0 }}>Table {selectedTable.table_number}</h4>
-                <button type="button" onClick={() => setSelectedId(null)} style={{ background: "none", border: "none", cursor: "pointer", fontWeight: 700 }}>✕</button>
-              </div>
-
-              <div style={{ display: "flex", gap: 6 }}>
-                {["available", "occupied", "reserved"].map((s) => (
-                  <button
-                    key={s}
-                    type="button"
-                    onClick={() => handleQuickStatus(selectedTable, s)}
-                    style={{
-                      flex: 1,
-                      padding: "6px 4px",
-                      borderRadius: 8,
-                      border: editForm.status === s ? `2px solid ${STATUS_STYLES[s].border}` : "1px solid #e2e8f0",
-                      background: STATUS_STYLES[s].bg,
-                      color: STATUS_STYLES[s].text,
-                      fontWeight: 700,
-                      fontSize: 11,
-                      cursor: "pointer",
-                      textTransform: "capitalize",
-                    }}
-                  >
-                    {s}
-                  </button>
-                ))}
-              </div>
-
-              <label style={{ fontSize: 12, fontWeight: 600 }}>
-                Zone
-                <select value={editForm.zone} onChange={(e) => setEditForm({ ...editForm, zone: e.target.value })} style={{ width: "100%", marginTop: 3, padding: 7, borderRadius: 8, border: "1px solid #d1d5db" }}>
-                  {DEFAULT_ZONES.map((z) => <option key={z} value={z}>{z}</option>)}
-                </select>
-              </label>
-
-              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
-                <label style={{ fontSize: 12, fontWeight: 600 }}>
-                  Shape
-                  <select value={editForm.shape} onChange={(e) => setEditForm({ ...editForm, shape: e.target.value })} style={{ width: "100%", marginTop: 3, padding: 7, borderRadius: 8, border: "1px solid #d1d5db" }}>
-                    <option value="square">Square</option>
-                    <option value="round">Round</option>
-                    <option value="rect">Rectangle</option>
-                  </select>
-                </label>
-                <label style={{ fontSize: 12, fontWeight: 600 }}>
-                  Seats
-                  <input type="number" min="1" value={editForm.capacity} onChange={(e) => setEditForm({ ...editForm, capacity: e.target.value })} style={{ width: "100%", marginTop: 3, padding: 7, borderRadius: 8, border: "1px solid #d1d5db" }} />
-                </label>
-              </div>
-
-              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
-                <label style={{ fontSize: 12, fontWeight: 600 }}>
-                  X Pos
-                  <input type="number" min="0" value={editForm.pos_x} onChange={(e) => setEditForm({ ...editForm, pos_x: e.target.value })} style={{ width: "100%", marginTop: 3, padding: 7, borderRadius: 8, border: "1px solid #d1d5db" }} />
-                </label>
-                <label style={{ fontSize: 12, fontWeight: 600 }}>
-                  Y Pos
-                  <input type="number" min="0" value={editForm.pos_y} onChange={(e) => setEditForm({ ...editForm, pos_y: e.target.value })} style={{ width: "100%", marginTop: 3, padding: 7, borderRadius: 8, border: "1px solid #d1d5db" }} />
-                </label>
-              </div>
-
-              <label style={{ fontSize: 12, fontWeight: 600 }}>
-                Guest / Reservation Name
-                <input value={editForm.guest_name} onChange={(e) => setEditForm({ ...editForm, guest_name: e.target.value })} placeholder="Optional guest name" style={{ width: "100%", marginTop: 3, padding: 7, borderRadius: 8, border: "1px solid #d1d5db" }} />
-              </label>
-
-              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
-                <input value={editForm.guest_phone} onChange={(e) => setEditForm({ ...editForm, guest_phone: e.target.value })} placeholder="Phone" style={{ padding: 7, borderRadius: 8, border: "1px solid #d1d5db", fontSize: 12 }} />
-                <input value={editForm.reservation_time} onChange={(e) => setEditForm({ ...editForm, reservation_time: e.target.value })} placeholder="Time (8:00 PM)" style={{ padding: 7, borderRadius: 8, border: "1px solid #d1d5db", fontSize: 12 }} />
-              </div>
-
-              <button type="submit" disabled={saving} className="ad-btn ad-btn-primary">
-                {saving ? "Saving..." : "Save Table Details"}
-              </button>
-              {!staff && (
-                <button type="button" disabled={saving} onClick={() => handleDeleteTable(selectedTable)} style={{ background: "none", border: "none", color: "#ef4444", fontSize: 12, cursor: "pointer", padding: 0, textAlign: "left" }}>
-                  Delete Table
-                </button>
-              )}
-            </form>
-          )}
-        </div>
-      ) : (
-        /* Grid / List View */
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(230px, 1fr))", gap: 12 }}>
-          {filteredTables.length === 0 ? (
-            <p style={{ color: "#64748b" }}>No tables configured yet.</p>
-          ) : (
-            filteredTables.map((t) => {
-              const st = STATUS_STYLES[t.status] || STATUS_STYLES.available;
+            {filteredTables.map((tbl) => {
+              const meta = STATUS_META[tbl.status] || STATUS_META.available;
               return (
-                <div key={t.id} style={{ background: "#fff", border: `1.5px solid ${st.border}`, borderRadius: 14, padding: 14 }}>
-                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                    <strong style={{ fontSize: 16 }}>Table {t.table_number}</strong>
-                    <span style={{ fontSize: 11, fontWeight: 700, padding: "2px 8px", borderRadius: 999, background: st.bg, color: st.text }}>{st.badge}</span>
+                <button
+                  key={tbl.id}
+                  type="button"
+                  onClick={() => setSelectedTable(tbl)}
+                  style={{
+                    textAlign: "left",
+                    background: "#ffffff",
+                    border: `2px solid ${meta.border}`,
+                    borderRadius: 16,
+                    padding: 18,
+                    cursor: "pointer",
+                    boxShadow: "0 4px 14px rgba(42, 16, 48, 0.04)",
+                    display: "flex",
+                    flexDirection: "column",
+                    gap: 10,
+                    transition: "transform 0.12s ease, box-shadow 0.12s ease",
+                  }}
+                >
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 8 }}>
+                    <div>
+                      <div style={{ fontSize: 20, fontWeight: 800, color: "#211426" }}>
+                        {tbl.table_number}
+                      </div>
+                      <div style={{ fontSize: 12, color: "#7f7288", marginTop: 2 }}>
+                        👥 {tbl.capacity} seats ·{" "}
+                        <span style={{ textTransform: "capitalize", fontWeight: 600 }}>
+                          {tbl.section || "indoor"}
+                        </span>
+                      </div>
+                    </div>
+
+                    <span
+                      style={{
+                        display: "inline-flex",
+                        alignItems: "center",
+                        gap: 5,
+                        background: meta.bg,
+                        color: meta.text,
+                        border: `1px solid ${meta.border}`,
+                        borderRadius: 999,
+                        padding: "3px 10px",
+                        fontSize: 11.5,
+                        fontWeight: 800,
+                      }}
+                    >
+                      <span style={{ width: 6, height: 6, borderRadius: "50%", background: meta.dot }} />
+                      {meta.label}
+                    </span>
                   </div>
-                  <div style={{ fontSize: 12.5, color: "#64748b", marginTop: 4 }}>
-                    {t.zone} · {t.capacity} seats · {t.shape}
-                  </div>
-                  {t.guest_name && (
-                    <div style={{ fontSize: 12, color: "#0f172a", marginTop: 6 }}>
-                      👤 {t.guest_name}{t.reservation_time ? ` (${t.reservation_time})` : ""}
+
+                  {/* Live Order Context */}
+                  {tbl.active_order && (
+                    <div
+                      style={{
+                        background: "#fdf4ff",
+                        border: "1px solid #f5d0fe",
+                        borderRadius: 10,
+                        padding: "8px 10px",
+                        fontSize: 12,
+                        color: "#701a75",
+                      }}
+                    >
+                      <div style={{ fontWeight: 800 }}>
+                        🍽️ #{tbl.active_order.reference} · Rs. {Number(tbl.active_order.total || 0).toLocaleString()}
+                      </div>
+                      <div style={{ fontSize: 11.5, opacity: 0.85, marginTop: 2 }}>
+                        {tbl.active_order.customer_name} · {tbl.active_order.elapsed_minutes}m elapsed
+                      </div>
                     </div>
                   )}
-                  <div style={{ display: "flex", gap: 6, marginTop: 10 }}>
-                    {["available", "occupied", "reserved"].map((s) => (
-                      <button
-                        key={s}
-                        type="button"
-                        onClick={() => handleQuickStatus(t, s)}
-                        style={{
-                          flex: 1,
-                          padding: "5px 4px",
-                          borderRadius: 7,
-                          border: "1px solid #e2e8f0",
-                          background: t.status === s ? STATUS_STYLES[s].bg : "#fff",
-                          color: t.status === s ? STATUS_STYLES[s].text : "#64748b",
-                          fontSize: 11,
-                          fontWeight: 700,
-                          cursor: "pointer",
-                          textTransform: "capitalize",
-                        }}
-                      >
-                        {s}
-                      </button>
-                    ))}
-                  </div>
-                </div>
+
+                  {/* Upcoming Today Reservation Context */}
+                  {tbl.next_reservation && (
+                    <div
+                      style={{
+                        background: "#fffbeb",
+                        border: "1px solid #fde68a",
+                        borderRadius: 10,
+                        padding: "8px 10px",
+                        fontSize: 12,
+                        color: "#92400e",
+                      }}
+                    >
+                      <div style={{ fontWeight: 800 }}>
+                        📅 {tbl.next_reservation.reservation_time} · {tbl.next_reservation.customer_name}
+                      </div>
+                      <div style={{ fontSize: 11.5, opacity: 0.85, marginTop: 2 }}>
+                        Party of {tbl.next_reservation.party_size}
+                      </div>
+                    </div>
+                  )}
+
+                  {!tbl.active_order && !tbl.next_reservation && (
+                    <div style={{ fontSize: 12, color: "#9b8ca6", paddingTop: 2 }}>
+                      Click for quick actions & dine-in order →
+                    </div>
+                  )}
+                </button>
               );
-            })
-          )}
+            })}
+          </div>
+        )}
+      </div>
+
+      {/* Table Action Drawer / Modal */}
+      {selectedTable && (
+        <div
+          onMouseDown={(e) => e.target === e.currentTarget && setSelectedTable(null)}
+          style={{
+            position: "fixed",
+            inset: 0,
+            background: "rgba(25, 12, 32, 0.48)",
+            zIndex: 120,
+            display: "grid",
+            placeItems: "center",
+            padding: 16,
+          }}
+        >
+          <div
+            style={{
+              width: "100%",
+              maxWidth: 460,
+              background: "#ffffff",
+              borderRadius: 18,
+              border: "1px solid #f0e6f2",
+              padding: 22,
+              boxShadow: "0 20px 50px rgba(30, 10, 40, 0.22)",
+              display: "flex",
+              flexDirection: "column",
+              gap: 16,
+            }}
+          >
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+              <div>
+                <h2 style={{ margin: 0, fontSize: 20, fontWeight: 800, color: "#211426" }}>
+                  Table {selectedTable.table_number}
+                </h2>
+                <div style={{ fontSize: 13, color: "#7f7288", marginTop: 2 }}>
+                  👥 {selectedTable.capacity} seats · Section:{" "}
+                  <strong style={{ textTransform: "capitalize" }}>{selectedTable.section || "indoor"}</strong> · Status:{" "}
+                  <strong style={{ textTransform: "capitalize" }}>{selectedTable.status}</strong>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setSelectedTable(null)}
+                style={{ border: "none", background: "transparent", fontSize: 20, cursor: "pointer", color: "#6b7280" }}
+              >
+                ✕
+              </button>
+            </div>
+
+            {selectedTable.active_order && (
+              <div style={{ background: "#fdf4ff", border: "1px solid #f0abfc", borderRadius: 12, padding: 12, fontSize: 13 }}>
+                <div style={{ fontWeight: 800, color: "#86198f" }}>
+                  Active Dine-In Order: #{selectedTable.active_order.reference}
+                </div>
+                <div style={{ color: "#4b5563", marginTop: 4 }}>
+                  Total: <strong>Rs. {Number(selectedTable.active_order.total || 0).toLocaleString()}</strong> ·{" "}
+                  {selectedTable.active_order.elapsed_minutes} mins ago
+                </div>
+              </div>
+            )}
+
+            {/* Primary CTA: Start Dine-In Order */}
+            <button
+              type="button"
+              onClick={() => handleStartDineInOrder(selectedTable)}
+              style={{
+                width: "100%",
+                border: "none",
+                borderRadius: 12,
+                padding: "12px 16px",
+                fontSize: 14,
+                fontWeight: 800,
+                cursor: "pointer",
+                background: "#ff77ff",
+                color: "#240729",
+                boxShadow: "0 4px 14px rgba(255, 119, 255, 0.35)",
+              }}
+            >
+              🍽️ Start Dine-In Order for {selectedTable.table_number}
+            </button>
+
+            {/* 1-Click Status Actions */}
+            <div>
+              <div style={{ fontSize: 12, fontWeight: 700, color: "#7f7288", marginBottom: 8, textTransform: "uppercase" }}>
+                Quick Status Change
+              </div>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(2, 1fr)", gap: 8 }}>
+                <button
+                  type="button"
+                  disabled={busy}
+                  onClick={() => handleStatusTransition(selectedTable, "occupied")}
+                  style={{ padding: "10px 12px", borderRadius: 10, border: "1px solid #f0abfc", background: "#fdf2ff", color: "#86198f", fontWeight: 700, fontSize: 13, cursor: "pointer" }}
+                >
+                  🪑 Mark Occupied
+                </button>
+                <button
+                  type="button"
+                  disabled={busy}
+                  onClick={() => handleStatusTransition(selectedTable, "cleaning")}
+                  style={{ padding: "10px 12px", borderRadius: 10, border: "1px solid #93c5fd", background: "#eff6ff", color: "#1d4ed8", fontWeight: 700, fontSize: 13, cursor: "pointer" }}
+                >
+                  🧹 Mark Cleaning
+                </button>
+                <button
+                  type="button"
+                  disabled={busy}
+                  onClick={() => handleStatusTransition(selectedTable, "available")}
+                  style={{ padding: "10px 12px", borderRadius: 10, border: "1px solid #6ee7b7", background: "#ecfdf5", color: "#047857", fontWeight: 700, fontSize: 13, cursor: "pointer" }}
+                >
+                  ✅ Mark Available
+                </button>
+                <button
+                  type="button"
+                  disabled={busy}
+                  onClick={() => handleStatusTransition(selectedTable, "reserved")}
+                  style={{ padding: "10px 12px", borderRadius: 10, border: "1px solid #fcd34d", background: "#fffbeb", color: "#b45309", fontWeight: 700, fontSize: 13, cursor: "pointer" }}
+                >
+                  📅 Mark Reserved
+                </button>
+              </div>
+            </div>
+
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", borderTop: "1px solid #f2e9f5", paddingTop: 12 }}>
+              <button
+                type="button"
+                disabled={busy}
+                onClick={() => handleDeleteTable(selectedTable)}
+                style={{ border: "none", background: "transparent", color: "#dc2626", fontSize: 12.5, fontWeight: 700, cursor: "pointer" }}
+              >
+                🗑️ Delete Table
+              </button>
+              <button
+                type="button"
+                onClick={() => setSelectedTable(null)}
+                style={{ border: "1px solid #d1d5db", background: "#ffffff", color: "#374151", borderRadius: 9, padding: "7px 14px", fontSize: 13, fontWeight: 600, cursor: "pointer" }}
+              >
+                Close
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Add Table Modal */}
+      {showAddModal && (
+        <div
+          onMouseDown={(e) => e.target === e.currentTarget && setShowAddModal(false)}
+          style={{
+            position: "fixed",
+            inset: 0,
+            background: "rgba(25, 12, 32, 0.48)",
+            zIndex: 120,
+            display: "grid",
+            placeItems: "center",
+            padding: 16,
+          }}
+        >
+          <form
+            onSubmit={handleAddTable}
+            style={{
+              width: "100%",
+              maxWidth: 420,
+              background: "#ffffff",
+              borderRadius: 18,
+              border: "1px solid #f0e6f2",
+              padding: 22,
+              boxShadow: "0 20px 50px rgba(30, 10, 40, 0.22)",
+              display: "flex",
+              flexDirection: "column",
+              gap: 14,
+            }}
+          >
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+              <h2 style={{ margin: 0, fontSize: 18, fontWeight: 800, color: "#211426" }}>Add New Table</h2>
+              <button type="button" onClick={() => setShowAddModal(false)} style={{ border: "none", background: "transparent", fontSize: 20, cursor: "pointer" }}>
+                ✕
+              </button>
+            </div>
+
+            <label style={{ display: "flex", flexDirection: "column", gap: 4, fontSize: 12.5, fontWeight: 600, color: "#4b5563" }}>
+              Table Number / Name *
+              <input
+                required
+                value={newTable.table_number}
+                onChange={(e) => setNewTable((p) => ({ ...p, table_number: e.target.value }))}
+                placeholder="e.g. T1, VIP-2, Patio-4"
+                style={{ padding: "9px 12px", borderRadius: 9, border: "1px solid #d1d5db", fontSize: 13.5 }}
+              />
+            </label>
+
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+              <label style={{ display: "flex", flexDirection: "column", gap: 4, fontSize: 12.5, fontWeight: 600, color: "#4b5563" }}>
+                Capacity (Seats)
+                <input
+                  type="number"
+                  min="1"
+                  max="50"
+                  value={newTable.capacity}
+                  onChange={(e) => setNewTable((p) => ({ ...p, capacity: e.target.value }))}
+                  style={{ padding: "9px 12px", borderRadius: 9, border: "1px solid #d1d5db", fontSize: 13.5 }}
+                />
+              </label>
+
+              <label style={{ display: "flex", flexDirection: "column", gap: 4, fontSize: 12.5, fontWeight: 600, color: "#4b5563" }}>
+                Section
+                <select
+                  value={newTable.section}
+                  onChange={(e) => setNewTable((p) => ({ ...p, section: e.target.value }))}
+                  style={{ padding: "9px 12px", borderRadius: 9, border: "1px solid #d1d5db", fontSize: 13.5 }}
+                >
+                  <option value="indoor">Indoor</option>
+                  <option value="outdoor">Outdoor</option>
+                  <option value="vip">VIP</option>
+                  <option value="rooftop">Rooftop</option>
+                </select>
+              </label>
+            </div>
+
+            <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 4 }}>
+              <button
+                type="button"
+                onClick={() => setShowAddModal(false)}
+                style={{ border: "1px solid #d1d5db", background: "#ffffff", color: "#374151", borderRadius: 10, padding: "9px 15px", fontSize: 13, fontWeight: 600, cursor: "pointer" }}
+              >
+                Cancel
+              </button>
+              <button
+                type="submit"
+                disabled={busy}
+                style={{ border: "none", background: "#ff77ff", color: "#240729", borderRadius: 10, padding: "9px 18px", fontSize: 13.5, fontWeight: 800, cursor: "pointer" }}
+              >
+                {busy ? "Adding..." : "Create Table"}
+              </button>
+            </div>
+          </form>
         </div>
       )}
     </Layout>

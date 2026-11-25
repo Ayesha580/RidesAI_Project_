@@ -166,4 +166,22 @@ export const customersApi = {
   lookup: (q) => api.get("/operations/customers/lookup/", { params: { q } }),
 };
 
+export const restaurantFloorApi = {
+  getFloorPlan: () => api.get("/operations/restaurant/floor-plan/"),
+  updateTableStatus: (tableId, status) =>
+    api.post(`/operations/restaurant/tables/${tableId}/status/`, { status }),
+  listReservations: (params = {}) =>
+    api.get("/operations/restaurant/reservations/", { params }),
+  createReservation: (data) =>
+    api.post("/operations/restaurant/reservations/", data),
+  updateReservation: (id, data) =>
+    api.patch(`/operations/restaurant/reservations/${id}/`, data),
+  deleteReservation: (id) =>
+    api.delete(`/operations/restaurant/reservations/${id}/`),
+  seatReservation: (id, table_id) =>
+    api.post(`/operations/restaurant/reservations/${id}/seat/`, table_id ? { table_id } : {}),
+  completeReservation: (id, table_status = "available") =>
+    api.post(`/operations/restaurant/reservations/${id}/complete/`, { table_status }),
+};
+
 

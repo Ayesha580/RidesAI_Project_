@@ -803,7 +803,7 @@ export default function OrdersView() {
                           <div style={{ fontSize: 11.5, color: "#2563eb", fontWeight: 700, marginTop: 4 }}>
                             🛵 {o.assigned_rider.name}
                           </div>
-                        ) : (
+                        ) : o.order_type !== "dine_in" && o.order_type !== "takeaway" ? (
                           <div style={{ marginTop: 4 }}>
                             <button
                               onClick={() => handleAutoAssignRider(o.id)}
@@ -827,7 +827,7 @@ export default function OrdersView() {
                               🛵 {autoAssigningId === o.id ? "Assigning..." : "Auto-Assign Rider"}
                             </button>
                           </div>
-                        )}
+                        ) : null}
                       </td>
                       <td style={{ fontSize: 12, color: "#787081", whiteSpace: "nowrap" }}>
                         {o.formatted_date || new Date(o.created_at).toLocaleString([], { dateStyle: "short", timeStyle: "short" })}
