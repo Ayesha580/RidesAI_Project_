@@ -2169,7 +2169,9 @@ def _dispatch_whatsapp_text(
         from operations import evolution_client
         logger.info(f"[WhatsApp Routing] Dispatching text via Evolution API (instance: {instance_name}) to {phone}")
         res = evolution_client.send_text_message(instance_name=instance_name, phone=phone, text=text)
-        success = bool(res and not res.get("error"))
+        success = bool(res and not res.get("error") and res.get("success") is not False)
+        if not success:
+            logger.error(f"[WhatsApp Routing ERROR] Evolution text dispatch failed (instance: {instance_name}) -> {phone}: {res}")
         return {
             "success": success,
             "data": res,
@@ -2199,7 +2201,9 @@ def _dispatch_whatsapp_audio(
         logger.info(f"[WhatsApp Routing] Dispatching audio via Evolution API (instance: {instance_name}) to {phone}")
         audio_b64 = base64.b64encode(audio_bytes).decode("utf-8")
         res = evolution_client.send_audio_message(instance_name=instance_name, phone=phone, audio_base64=audio_b64)
-        success = bool(res and not res.get("error"))
+        success = bool(res and not res.get("error") and res.get("success") is not False)
+        if not success:
+            logger.error(f"[WhatsApp Routing ERROR] Evolution audio dispatch failed (instance: {instance_name}) -> {phone}: {res}")
         return {
             "success": success,
             "data": res,

@@ -18,6 +18,8 @@ export const operationsApi = {
   updateConversation: (data) => api.patch("/operations/agent/conversations/", data),
   whatsappConnectStatus: () => api.get("/operations/whatsapp/connect/"),
   whatsappConnectGenerate: () => api.post("/operations/whatsapp/connect/"),
+  whatsappReconnect: () => api.post("/operations/whatsapp/reconnect/"),
+  whatsappDisconnect: () => api.post("/operations/whatsapp/disconnect/"),
   autoAssignRider: (orderId) => api.post(`/operations/orders/${orderId}/auto-assign-rider/`),
   ownerAssistant: (data) => api.post("/operations/owner/assistant/", data),
 };
@@ -147,4 +149,10 @@ export const suppliersApi = {
   update: (id, data) => api.patch(`/operations/suppliers/${id}/`, data),
   remove: (id) => api.delete(`/operations/suppliers/${id}/`),
 };
+
+export const restaurantDashboardApi = {
+  getSummary: (period = "today") =>
+    api.get("/operations/restaurant/dashboard-summary/", { params: { period } }),
+};
+
 

@@ -468,6 +468,14 @@ def send_status_notification(
                 to=clean_phone,
                 text=message_text,
             )
+            if isinstance(res, dict) and (res.get("error") or res.get("success") is False):
+                logger.error(
+                    "[Notification ERROR] Evolution API failed for %s #%s to %s (instance '%s'): %s. "
+                    "Verify WhatsApp session is connected or reconnect QR.",
+                    entity_type, reference_id, clean_phone, instance_name, res
+                )
+                return False
+
             logger.info(
                 "[Notification] Evolution API result for %s #%s to %s (instance '%s'): %s",
                 entity_type, reference_id, clean_phone, instance_name, res

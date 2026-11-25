@@ -5869,3 +5869,383 @@ class StaffAttendanceAndSuppliersTests(TestCase):
 
 
 
+
+
+class RestaurantDashboardSummaryTests(TestCase):
+    """Tests for GET /api/operations/restaurant/dashboard-summary/?period=today|7d|30d"""
+
+    def setUp(self):
+        self.client = APIClient()
+        self.company_a = Company.objects.create(
+            name="Biryani Palace",
+            business_type="restaurant",
+            status="active",
+            is_approved=True,
+        )
+        self.company_b = Company.objects.create(
+            name="Other Bistro",
+            business_type="restaurant",
+            status="active",
+            is_approved=True,
+        )
+        self.owner_a = User.objects.create_user(
+            username="rest_dash_owner_a",
+            email="owner_a@biryanipalace.test",
+            password="Password123!",
+            company=self.company_a,
+            role=User.ROLE_OWNER,
+            first_name="Ayesha",
+        )
+        self.owner_b = User.objects.create_user(
+            username="rest_dash_owner_b",
+            email="owner_b@otherbistro.test",
+            password="Password123!",
+            company=self.company_b,
+            role=User.ROLE_OWNER,
+            first_name="Bilal",
+        )
+
+    def test_summary_kpis_tables_alerts_trends_and_tenant_isolation(self):
+        from companies.models import CatalogItem, Inventory
+        from operations.models import (
+            AgentConversation,
+            Order,
+            OrderItem,
+            RestaurantTable,
+            SuggestedFAQ,
+        )
+
+        # --- Company A Orders ---
+        o1 = Order.objects.create(
+            company=self.company_a,
+            customer_name="Ali",
+            customer_phone="03001112222",
+            status=Order.STATUS_DELIVERED,
+            source="whatsapp",
+            subtotal=Decimal("1500.00"),
+            total=Decimal("1500.00"),
+        )
+        o2 = Order.objects.create(
+            company=self.company_a,
+            customer_name="Sara",
+            customer_phone="03001113333",
+            status=Order.STATUS_NEW,
+            source="public_web",
+            subtotal=Decimal("1000.00"),
+            total=Decimal("1000.00"),
+        )
+        o3 = Order.objects.create(
+            company=self.company_a,
+            customer_name="Usman",
+            customer_phone="03001114444",
+            status=Order.STATUS_CANCELLED,
+            source="dashboard",
+            subtotal=Decimal("800.00"),
+            total=Decimal("800.00"),
+        )
+        OrderItem.objects.create(
+            order=o1, item_name="Chicken Biryani", quantity=3, unit_price=Decimal("500.00"), line_total=Decimal("1500.00")
+        )
+        OrderItem.objects.create(
+            order=o2, item_name="Seekh Kabab", quantity=2, unit_price=Decimal("500.00"), line_total=Decimal("1000.00")
+        )
+        OrderItem.objects.create(
+            order=o3, item_name="Cancelled Item", quantity=5, unit_price=Decimal("160.00"), line_total=Decimal("800.00")
+        )
+
+        # AI Conversations for Company A
+        AgentConversation.objects.create(
+            company=self.company_a, customer_phone="03001112222", customer_name="Ali"
+        )
+        AgentConversation.objects.create(
+            company=self.company_a, customer_phone="03001113333", customer_name="Sara"
+        )
+
+        # Tables for Company A
+        RestaurantTable.objects.create(company=self.company_a, table_number="T1", capacity=4, status=RestaurantTable.STATUS_AVAILABLE)
+        RestaurantTable.objects.create(company=self.company_a, table_number="T2", capacity=4, status=RestaurantTable.STATUS_OCCUPIED)
+        RestaurantTable.objects.create(company=self.company_a, table_number="T3", capacity=6, status=RestaurantTable.STATUS_RESERVED)
+
+        # Low-stock Inventory for Company A
+        item_rice = CatalogItem.objects.create(company=self.company_a, name="Basmati Rice", price=Decimal("300.00"))
+        item_water = CatalogItem.objects.create(company=self.company_a, name="Water Bottles", price=Decimal("80.00"))
+        Inventory.objects.create(
+            company=self.company_a,
+            item=item_rice,
+            quantity=2,
+            low_stock_threshold=5,
+            is_unlimited=False,
+        )
+        Inventory.objects.create(
+            company=self.company_a,
+            item=item_water,
+            quantity=50,
+            low_stock_threshold=5,
+            is_unlimited=False,
+        )
+
+        # Pending FAQ Suggestion for Company A
+        SuggestedFAQ.objects.create(
+            company=self.company_a,
+            question="Do you offer family platters?",
+            status=SuggestedFAQ.STATUS_PENDING,
+        )
+
+        # --- Company B Noise (must NEVER leak to Company A) ---
+        ob = Order.objects.create(
+            company=self.company_b,
+            customer_name="Foreign Guest",
+            customer_phone="03009998888",
+            status=Order.STATUS_DELIVERED,
+            source="whatsapp",
+            subtotal=Decimal("9999.00"),
+            total=Decimal("9999.00"),
+        )
+        OrderItem.objects.create(
+            order=ob, item_name="Secret Dish B", quantity=10, unit_price=Decimal("999.90"), line_total=Decimal("9999.00")
+        )
+        RestaurantTable.objects.create(company=self.company_b, table_number="B1", capacity=2, status=RestaurantTable.STATUS_OCCUPIED)
+        item_b = CatalogItem.objects.create(company=self.company_b, name="B Secret Ingredient", price=Decimal("500.00"))
+        Inventory.objects.create(
+            company=self.company_b, item=item_b, quantity=0, low_stock_threshold=10, is_unlimited=False
+        )
+        SuggestedFAQ.objects.create(
+            company=self.company_b, question="Company B secret?", status=SuggestedFAQ.STATUS_PENDING
+        )
+
+        # 1. Query as Company A Owner (period=today)
+        self.client.force_authenticate(user=self.owner_a)
+        res = self.client.get("/api/operations/restaurant/dashboard-summary/?period=today")
+        self.assertEqual(res.status_code, 200)
+        body = res.data
+
+        self.assertEqual(body["period"], "today")
+        self.assertEqual(body["company_name"], "Biryani Palace")
+
+        # KPIs: revenue excludes cancelled o3 => 1500 + 1000 = 2500, AOV = 1250
+        self.assertEqual(body["kpis"]["revenue"], 2500.0)
+        self.assertEqual(body["kpis"]["avg_order_value"], 1250.0)
+        self.assertEqual(body["kpis"]["total_orders"], 3)
+        self.assertEqual(body["kpis"]["active_orders"], 1)
+        self.assertEqual(body["kpis"]["completed_orders"], 1)
+        self.assertEqual(body["kpis"]["cancelled_orders"], 1)
+        self.assertEqual(body["kpis"]["ai_conversations_count"], 2)
+        self.assertEqual(body["kpis"]["ai_orders_count"], 2)
+
+        # Tables
+        self.assertEqual(body["tables"]["tables_total"], 3)
+        self.assertEqual(body["tables"]["tables_available"], 1)
+        self.assertEqual(body["tables"]["tables_occupied"], 1)
+        self.assertEqual(body["tables"]["tables_reserved"], 1)
+
+        # Alerts
+        self.assertEqual(body["alerts"]["unassigned_orders_count"], 1)
+        self.assertEqual(body["alerts"]["low_stock_items_count"], 1)
+        self.assertEqual(body["alerts"]["pending_faq_suggestions_count"], 1)
+
+        # Trend buckets
+        self.assertEqual(len(body["trend"]), 24)
+
+        # Top items excludes cancelled and Company B
+        top_names = [i["name"] for i in body["top_items"]]
+        self.assertEqual(top_names, ["Chicken Biryani", "Seekh Kabab"])
+
+        # Channels
+        self.assertEqual(body["channel_breakdown"]["whatsapp"], 1)
+        self.assertEqual(body["channel_breakdown"]["public_web"], 1)
+        self.assertEqual(body["channel_breakdown"]["dashboard"], 1)
+
+        # Recent orders strictly Company A
+        recent_customers = [o["customer_name"] for o in body["recent_orders"]]
+        self.assertNotIn("Foreign Guest", recent_customers)
+        self.assertEqual(len(body["recent_orders"]), 3)
+
+        # 2. Verify 7d and 30d trend bucket counts
+        res_7d = self.client.get("/api/operations/restaurant/dashboard-summary/?period=7d")
+        self.assertEqual(res_7d.status_code, 200)
+        self.assertEqual(len(res_7d.data["trend"]), 7)
+
+        res_30d = self.client.get("/api/operations/restaurant/dashboard-summary/?period=30d")
+        self.assertEqual(res_30d.status_code, 200)
+        self.assertEqual(len(res_30d.data["trend"]), 30)
+
+        # 3. Verify Company B sees only its own isolated data
+        self.client.force_authenticate(user=self.owner_b)
+        res_b = self.client.get("/api/operations/restaurant/dashboard-summary/?period=today")
+        self.assertEqual(res_b.status_code, 200)
+        self.assertEqual(res_b.data["kpis"]["revenue"], 9999.0)
+        self.assertEqual(res_b.data["kpis"]["total_orders"], 1)
+        self.assertEqual(res_b.data["tables"]["tables_total"], 1)
+        self.assertEqual([i["name"] for i in res_b.data["top_items"]], ["Secret Dish B"])
+
+
+class WhatsAppSessionSyncAndReconnectTests(TestCase):
+    """Tests for live Evolution API session sync, force reconnect/disconnect, voice notes & order notification errors."""
+
+    def setUp(self):
+        self.client = APIClient()
+        self.company = Company.objects.create(
+            name="Spice Route Restaurant",
+            business_type="restaurant",
+            status="active",
+            is_approved=True,
+            whatsapp_instance_name="company_spice_route",
+            whatsapp_connection_status="connected",
+        )
+        self.owner = User.objects.create_user(
+            username="wa_sync_owner",
+            email="owner@spiceroute.test",
+            password="Password123!",
+            company=self.company,
+            role=User.ROLE_OWNER,
+        )
+        self.client.force_authenticate(user=self.owner)
+
+    @patch("operations.evolution_views.evolution_client.get_connection_status")
+    def test_status_syncs_stale_connected_flag_to_disconnected(self, mock_live_status):
+        mock_live_status.return_value = "disconnected"
+        res = self.client.get("/api/operations/whatsapp/connect/")
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.data["status"], "disconnected")
+        self.assertTrue(res.data["live_synced"])
+        self.company.refresh_from_db()
+        self.assertEqual(self.company.whatsapp_connection_status, "disconnected")
+
+    @patch("operations.evolution_views.evolution_client.reconnect_instance")
+    def test_force_reconnect_regenerates_qr_even_when_db_says_connected(self, mock_reconnect):
+        mock_reconnect.return_value = {
+            "instance_name": "company_spice_route",
+            "qrcode_base64": "data:image/png;base64,FRESHQR123",
+            "status": "disconnected",
+        }
+        res = self.client.post("/api/operations/whatsapp/reconnect/")
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.data["status"], "disconnected")
+        self.assertEqual(res.data["qrcode_base64"], "data:image/png;base64,FRESHQR123")
+        self.company.refresh_from_db()
+        self.assertEqual(self.company.whatsapp_connection_status, "disconnected")
+        mock_reconnect.assert_called_once()
+        args, kwargs = mock_reconnect.call_args
+        self.assertEqual(args[0], "company_spice_route")
+        self.assertFalse(str(kwargs.get("webhook_url", "")).endswith("/"))
+
+    @patch("operations.evolution_views.evolution_client.delete_instance")
+    @patch("operations.evolution_views.evolution_client.logout_instance")
+    def test_disconnect_logs_out_and_deletes_instance(self, mock_logout, mock_delete):
+        mock_logout.return_value = {"success": True}
+        mock_delete.return_value = {"success": True}
+        res = self.client.post("/api/operations/whatsapp/disconnect/")
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.data["status"], "disconnected")
+        self.assertTrue(res.data["disconnected"])
+        self.company.refresh_from_db()
+        self.assertEqual(self.company.whatsapp_connection_status, "disconnected")
+        mock_logout.assert_called_once_with("company_spice_route")
+        mock_delete.assert_called_once_with("company_spice_route")
+
+    @patch("operations.evolution_views.evolution_client.reconnect_instance")
+    @patch("operations.evolution_views.evolution_client.create_instance")
+    @patch("operations.evolution_views.evolution_client.get_connection_status")
+    def test_connect_falls_back_to_hard_delete_reconnect_when_401_no_qr(
+        self, mock_status, mock_create, mock_reconnect
+    ):
+        mock_status.return_value = "disconnected"
+        mock_create.return_value = {"instance_name": "company_spice_route", "qrcode_base64": None, "status": "close"}
+        mock_reconnect.return_value = {
+            "instance_name": "company_spice_route",
+            "qrcode_base64": "data:image/png;base64,HARD_DELETE_QR_OK",
+            "status": "disconnected",
+        }
+        res = self.client.post("/api/operations/whatsapp/connect/")
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.data["status"], "disconnected")
+        self.assertEqual(res.data["qrcode_base64"], "data:image/png;base64,HARD_DELETE_QR_OK")
+        mock_reconnect.assert_called_once()
+
+    @patch("operations.evolution_client.time.sleep")
+    @patch("operations.evolution_client.configure_instance_settings")
+    @patch("operations.evolution_client.requests.get")
+    @patch("operations.evolution_client.requests.post")
+    @patch("operations.evolution_client.delete_instance")
+    @patch("operations.evolution_client.logout_instance")
+    def test_reconnect_hard_deletes_strips_webhook_slash_and_polls_qr(
+        self, mock_logout, mock_delete, mock_post, mock_get, mock_cfg, mock_sleep
+    ):
+        from unittest.mock import MagicMock
+        from operations import evolution_client
+
+        # create_instance initially returns no QR; 2nd poll returns valid base64 QR
+        post_resp = MagicMock(status_code=201)
+        post_resp.json.return_value = {"instance": {"status": "connecting"}}
+        mock_post.return_value = post_resp
+
+        poll1 = MagicMock(status_code=200)
+        poll1.json.return_value = {"count": 0}
+        poll2 = MagicMock(status_code=200)
+        poll2.json.return_value = {"base64": "data:image/png;base64,POLLED_FRESH_QR_DATA"}
+        mock_get.side_effect = [poll1, poll2]
+
+        res = evolution_client.reconnect_instance(
+            "company_spice_route",
+            webhook_url="http://host.docker.internal:8000/api/operations/whatsapp/evolution-webhook/",
+        )
+        mock_logout.assert_called_once_with("company_spice_route")
+        mock_delete.assert_called_once_with("company_spice_route")
+        self.assertEqual(res["qrcode_base64"], "data:image/png;base64,POLLED_FRESH_QR_DATA")
+        # Verify webhook URL passed to Evolution API has NO trailing slash
+        _, post_kwargs = mock_post.call_args
+        registered_url = post_kwargs["json"]["webhook"]["url"]
+        self.assertEqual(
+            registered_url,
+            "http://host.docker.internal:8000/api/operations/whatsapp/evolution-webhook",
+        )
+        self.assertEqual(mock_get.call_count, 2)
+
+    @patch("operations.evolution_views.process_incoming_whatsapp_message")
+    @patch("operations.evolution_views.evolution_client.get_media_base64")
+    def test_webhook_unwraps_ephemeral_voice_note_and_resolves_lid_jid(self, mock_media, mock_process):
+        mock_media.return_value = b"OggS-fake-voice-bytes"
+        mock_process.return_value = {"success": True, "reply_text": "Order received"}
+
+        payload = {
+            "event": "messages.upsert",
+            "instance": "company_spice_route",
+            "data": {
+                "key": {
+                    "id": "MSG123",
+                    "fromMe": False,
+                    "remoteJid": "99887766@lid",
+                    "remoteJidAlt": "923001234567@s.whatsapp.net",
+                },
+                "pushName": "Hamza",
+                "message": {
+                    "ephemeralMessage": {
+                        "message": {
+                            "audioMessage": {"mimetype": "audio/ogg; codecs=opus", "ptt": True}
+                        }
+                    }
+                },
+            },
+        }
+        res = self.client.post("/api/operations/whatsapp/evolution-webhook/", payload, format="json")
+        self.assertEqual(res.status_code, 200)
+        mock_process.assert_called_once()
+        _, kwargs = mock_process.call_args
+        self.assertEqual(kwargs["sender_phone"], "923001234567")
+        self.assertEqual(kwargs["msg_type"], "audio")
+        self.assertEqual(kwargs["audio_bytes"], b"OggS-fake-voice-bytes")
+
+    @patch("operations.notifications.evolution_client.send_text_message")
+    def test_order_notification_returns_false_on_evolution_error(self, mock_send):
+        from operations.notifications import send_status_notification
+
+        mock_send.return_value = {"success": False, "error": "Evolution API HTTP 400: Connection Closed"}
+        dispatched = send_status_notification(
+            company=self.company,
+            customer_phone="03001234567",
+            entity_type="order",
+            reference_id="ORD-99",
+            new_status="confirmed",
+        )
+        self.assertFalse(dispatched)
+        mock_send.assert_called_once()

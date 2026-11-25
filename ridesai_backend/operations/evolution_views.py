@@ -14,6 +14,7 @@ Provides:
 import logging
 from typing import Dict, Any
 
+from django.conf import settings
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated, AllowAny
@@ -23,6 +24,18 @@ from operations import evolution_client
 from operations.whatsapp_agent import process_incoming_whatsapp_message
 
 logger = logging.getLogger("operations.evolution")
+
+
+def _build_evolution_webhook_url(request) -> str:
+    """
+    Returns the normalized Evolution API webhook URL with NO trailing slash,
+    preventing double slashes ('//connection-update') if webhook_by_events is enabled.
+    """
+    configured = getattr(settings, "EVOLUTION_WEBHOOK_URL", None)
+    if configured:
+        return str(configured).strip().rstrip("/")
+    base = request.build_absolute_uri("/api/operations/whatsapp/evolution-webhook")
+    return base.rstrip("/")
 
 
 class ConnectWhatsAppView(APIView):
@@ -51,15 +64,48 @@ class ConnectWhatsAppView(APIView):
             company.save(update_fields=["whatsapp_instance_name"])
 
         instance_name = company.whatsapp_instance_name
+        webhook_url = _build_evolution_webhook_url(request)
         logger.info(f"[WhatsApp QR] Generating QR code for company '{company.name}' (instance: '{instance_name}')")
 
-        result = evolution_client.create_instance(instance_name)
+        # Always sync live Evolution state instead of trusting stale DB status
+        live_status = evolution_client.get_connection_status(instance_name)
+        if live_status == "connected":
+            if company.whatsapp_connection_status != "connected":
+                company.whatsapp_connection_status = "connected"
+                company.save(update_fields=["whatsapp_connection_status"])
+            return Response(
+                {
+                    "instance_name": instance_name,
+                    "qrcode_base64": None,
+                    "status": "connected",
+                    "details": {"state": "connected"},
+                },
+                status=200,
+            )
+
+        result = evolution_client.create_instance(instance_name, webhook_url=webhook_url, qrcode=True)
+        qr_b64 = result.get("qrcode_base64")
+
+        # If create_instance / get_qr_code returned no QR (e.g. stuck on 401 LOGOUT),
+        # automatically hard-delete + recreate + poll via reconnect_instance()
+        if not qr_b64:
+            logger.warning(
+                f"[WhatsApp QR] No QR returned for '{instance_name}' (likely 401/LOGOUT state). "
+                "Falling back to hard-delete reconnect_instance()..."
+            )
+            result = evolution_client.reconnect_instance(instance_name, webhook_url=webhook_url)
+            qr_b64 = result.get("qrcode_base64")
+
+        effective_status = "disconnected"
+        if company.whatsapp_connection_status != effective_status:
+            company.whatsapp_connection_status = effective_status
+            company.save(update_fields=["whatsapp_connection_status"])
 
         return Response(
             {
                 "instance_name": instance_name,
-                "qrcode_base64": result.get("qrcode_base64"),
-                "status": company.whatsapp_connection_status,
+                "qrcode_base64": qr_b64,
+                "status": effective_status,
                 "details": result,
             },
             status=200,
@@ -67,18 +113,23 @@ class ConnectWhatsAppView(APIView):
 
     def get(self, request, *args, **kwargs):
         """
-        Lightweight status check endpoint for frontend polling while scanning QR code.
+        Live status check endpoint — queries Evolution API connectionState directly
+        and auto-syncs the PostgreSQL status if drifted.
         """
         company = self._get_company(request)
         if not company or not company.whatsapp_instance_name:
             return Response(
-                {"instance_name": None, "status": "disconnected"},
+                {"instance_name": None, "status": "disconnected", "live_synced": True},
                 status=200,
             )
 
         status = evolution_client.get_connection_status(company.whatsapp_instance_name)
 
         if status != company.whatsapp_connection_status:
+            logger.info(
+                f"[WhatsApp Sync] Synced company '{company.name}' status from "
+                f"'{company.whatsapp_connection_status}' -> '{status}'"
+            )
             company.whatsapp_connection_status = status
             company.save(update_fields=["whatsapp_connection_status"])
 
@@ -86,6 +137,79 @@ class ConnectWhatsAppView(APIView):
             {
                 "instance_name": company.whatsapp_instance_name,
                 "status": status,
+                "live_synced": True,
+            },
+            status=200,
+        )
+
+
+class ReconnectWhatsAppView(APIView):
+    """
+    POST /api/operations/whatsapp/reconnect/
+    Force-disconnects any active/stale Evolution session and returns a fresh QR code,
+    even if the DB currently believes the instance is 'connected'.
+    """
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, *args, **kwargs):
+        company = getattr(request.user, "company", None)
+        if not company:
+            return Response({"error": "No company associated with user"}, status=400)
+
+        if not company.whatsapp_instance_name:
+            company.whatsapp_instance_name = f"company_{company.id}"
+            company.save(update_fields=["whatsapp_instance_name"])
+
+        instance_name = company.whatsapp_instance_name
+        webhook_url = _build_evolution_webhook_url(request)
+        logger.info(f"[WhatsApp Reconnect] Force-reconnecting '{company.name}' (instance: '{instance_name}')")
+
+        result = evolution_client.reconnect_instance(instance_name, webhook_url=webhook_url)
+
+        company.whatsapp_connection_status = "disconnected"
+        company.save(update_fields=["whatsapp_connection_status"])
+
+        return Response(
+            {
+                "instance_name": instance_name,
+                "qrcode_base64": result.get("qrcode_base64"),
+                "status": "disconnected",
+                "details": result,
+            },
+            status=200,
+        )
+
+
+class DisconnectWhatsAppView(APIView):
+    """
+    POST /api/operations/whatsapp/disconnect/
+    Logs out AND hard-deletes the Evolution API instance so any future reconnect starts cleanly,
+    and marks the company's WhatsApp session disconnected.
+    """
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, *args, **kwargs):
+        company = getattr(request.user, "company", None)
+        if not company:
+            return Response({"error": "No company associated with user"}, status=400)
+
+        instance_name = company.whatsapp_instance_name
+        logout_res = {}
+        delete_res = {}
+        if instance_name:
+            logger.info(f"[WhatsApp Disconnect] Logging out & deleting '{company.name}' (instance: '{instance_name}')")
+            logout_res = evolution_client.logout_instance(instance_name)
+            delete_res = evolution_client.delete_instance(instance_name)
+
+        company.whatsapp_connection_status = "disconnected"
+        company.save(update_fields=["whatsapp_connection_status"])
+
+        return Response(
+            {
+                "instance_name": instance_name,
+                "status": "disconnected",
+                "disconnected": True,
+                "details": {"logout": logout_res, "delete": delete_res},
             },
             status=200,
         )
@@ -150,34 +274,61 @@ class EvolutionWebhookView(APIView):
 
             remote_jid = str(key.get("remoteJid", "")).strip()
 
-            # Ignore group messages
-            if remote_jid.endswith("@g.us"):
-                return Response({"ignored": "group_message"}, status=200)
+            # Ignore group messages and broadcast status updates
+            if remote_jid.endswith("@g.us") or remote_jid == "status@broadcast":
+                return Response({"ignored": "group_or_status_message"}, status=200)
+
+            # Resolve @lid JIDs (Evolution API v2 / Baileys Linked Devices) to actual phone JID when available
+            if remote_jid.endswith("@lid"):
+                alt_jid = str(key.get("remoteJidAlt") or key.get("participant") or "").strip()
+                if alt_jid and "@s.whatsapp.net" in alt_jid:
+                    remote_jid = alt_jid
 
             # Extract clean customer phone number
-            customer_phone = remote_jid.replace("@s.whatsapp.net", "").replace("+", "").strip()
+            customer_phone = (
+                remote_jid.replace("@s.whatsapp.net", "")
+                .replace("@c.us", "")
+                .replace("@lid", "")
+                .replace("+", "")
+                .strip()
+            )
             customer_name = data.get("pushName") or "Valued Customer"
 
-            # Parse message content
-            message_obj = data.get("message", {}) if isinstance(data.get("message"), dict) else {}
+            # Parse & unwrap nested Baileys message envelopes (ephemeral / viewOnce / etc.)
+            raw_message_obj = data.get("message", {}) if isinstance(data.get("message"), dict) else {}
+            message_obj = raw_message_obj
+            for wrapper_key in (
+                "ephemeralMessage",
+                "viewOnceMessage",
+                "viewOnceMessageV2",
+                "viewOnceMessageV2Extension",
+                "documentWithCaptionMessage",
+            ):
+                if wrapper_key in message_obj and isinstance(message_obj[wrapper_key], dict):
+                    inner = message_obj[wrapper_key].get("message")
+                    if isinstance(inner, dict):
+                        message_obj = inner
+
             msg_type = "text"
             media_id = None
             message_text = ""
             audio_bytes = None
 
-            # Check for audio / voice note
-            if "audioMessage" in message_obj:
+            # Check for audio / voice note (including PTT voice notes)
+            is_audio_payload = (
+                "audioMessage" in message_obj
+                or str(data.get("messageType", "")).lower() == "audiomessage"
+            )
+            if is_audio_payload:
                 import base64
                 msg_type = "audio"
-                audio_obj = message_obj.get("audioMessage", {})
+                audio_obj = message_obj.get("audioMessage", {}) if isinstance(message_obj.get("audioMessage"), dict) else {}
                 media_id = None
 
-                # Check all three locations for inline base64:
-                # 1. data.get("message", {}).get("base64") (Evolution API v2 with WEBHOOK_BASE64=true)
-                # 2. data.get("base64")
-                # 3. audio_obj.get("base64")
+                # Check all possible inline base64 locations
                 raw_b64 = (
-                    data.get("message", {}).get("base64")
+                    raw_message_obj.get("base64")
+                    or message_obj.get("base64")
                     or data.get("base64")
                     or audio_obj.get("base64")
                 )

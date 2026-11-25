@@ -6,6 +6,17 @@ import { useAuth } from "../../context/AuthContext";
 import { isUserOverrideOrActive } from "../../components/Guards";
 import { billingApi, roleApi, staffApi } from "../../api/staffApi";
 import ConversationsAndOrdersDashboard from "../../operations/components/ConversationsAndOrdersDashboard";
+import RestaurantExecutiveDashboard from "./RestaurantExecutiveDashboard";
+
+const RESTAURANT_VERTICAL_HINTS = ["restaurant", "cafe", "café", "food", "bakery", "fast food", "hotel"];
+
+function isRestaurantVertical(user) {
+  const rawType = String(user?.business_type || "").trim().toLowerCase();
+  const rawLabel = String(user?.business_label || "").trim().toLowerCase();
+  return RESTAURANT_VERTICAL_HINTS.some(
+    (hint) => rawType === hint || rawType.includes(hint) || rawLabel.includes(hint)
+  );
+}
 
 const PALETTE = ["#ff77ff", "#8054d9", "#3a0a3a", "#f4a6d7", "#a78bfa", "#f5b942", "#38b99a"];
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
@@ -90,6 +101,14 @@ function Donut({ slices, total }) {
 }
 
 export default function OwnerDashboard() {
+  const { user } = useAuth();
+  if (isRestaurantVertical(user)) {
+    return <RestaurantExecutiveDashboard />;
+  }
+  return <DefaultOwnerDashboard />;
+}
+
+function DefaultOwnerDashboard() {
   const { user } = useAuth();
   const [dashboardTab, setDashboardTab] = useState("conversations");
   const [staff, setStaff] = useState([]);

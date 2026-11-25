@@ -34,8 +34,9 @@ services:
       - DATABASE_CONNECTION_URI=postgresql://evolution:evolution@postgres:5432/evolution
       - CACHE_REDIS_ENABLED=true
       - CACHE_REDIS_URI=redis://redis:6379/6
-      - WEBHOOK_GLOBAL_URL=http://host.docker.internal:8000/api/operations/whatsapp/evolution-webhook/
+      - WEBHOOK_GLOBAL_URL=http://host.docker.internal:8000/api/operations/whatsapp/evolution-webhook
       - WEBHOOK_GLOBAL_ENABLED=true
+      - WEBHOOK_GLOBAL_WEBHOOK_BY_EVENTS=false
       - WEBHOOK_EVENTS_MESSAGES_UPSERT=true
       - WEBHOOK_EVENTS_CONNECTION_UPDATE=true
       - WEBHOOK_BASE64=true

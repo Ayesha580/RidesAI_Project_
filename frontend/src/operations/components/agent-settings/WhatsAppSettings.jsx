@@ -2,6 +2,7 @@ import React, { useState, useEffect } from "react";
 import OwnerLayout from "../../../owner/components/OwnerLayout";
 import { useAuth } from "../../../context/AuthContext";
 import api from "../../../api/axiosClient";
+import WhatsAppConnectCard from "../../../owner/pages/settings/WhatsAppConnectCard";
 
 const css = `
 .wa-container {
@@ -731,7 +732,10 @@ export default function WhatsAppSettings() {
           </div>
         </div>
 
-        {/* Channel 3: WhatsApp Cloud API Card */}
+        {/* Channel 3a: Live WhatsApp QR Connection (Evolution API) */}
+        <WhatsAppConnectCard />
+
+        {/* Channel 3b: WhatsApp Cloud API Card */}
         <div className="wa-card bg-white rounded-2xl border border-gray-100 shadow-sm overflow-hidden">
           {/* Card Header */}
           <div className="wa-card-header p-6 border-b border-gray-100 flex items-center justify-between">
