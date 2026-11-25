@@ -8,7 +8,10 @@ export default function WhatsAppConnectCard() {
   const [qrcodeBase64, setQrcodeBase64] = useState(null);
   const [loadingStatus, setLoadingStatus] = useState(true);
   const [generating, setGenerating] = useState(false);
+  const [reconnecting, setReconnecting] = useState(false);
+  const [disconnecting, setDisconnecting] = useState(false);
   const [error, setError] = useState("");
+  const [infoMsg, setInfoMsg] = useState("");
   const [justConnected, setJustConnected] = useState(false);
 
   const pollTimerRef = useRef(null);
@@ -73,18 +76,19 @@ export default function WhatsAppConnectCard() {
   const handleConnectWhatsApp = async () => {
     setGenerating(true);
     setError("");
+    setInfoMsg("");
     setJustConnected(false);
     try {
       const res = await operationsApi.whatsappConnectGenerate();
       if (res.data) {
         setInstanceName(res.data.instance_name || "");
-        if (res.data.status === "connected") {
+        if (res.data.qrcode_base64) {
+          setQrcodeBase64(res.data.qrcode_base64);
+          setStatus("disconnected");
+        } else if (res.data.status === "connected") {
           setStatus("connected");
           setQrcodeBase64(null);
           setJustConnected(true);
-        } else if (res.data.qrcode_base64) {
-          setQrcodeBase64(res.data.qrcode_base64);
-          setStatus("disconnected");
         } else {
           setError("Could not generate QR code. WhatsApp engine is preparing the instance. Please retry in a few seconds.");
         }
@@ -99,6 +103,77 @@ export default function WhatsAppConnectCard() {
       }
     } finally {
       setGenerating(false);
+    }
+  };
+
+  // 4. Force Reconnect / Regenerate QR (works even if DB currently thinks status is connected)
+  const handleReconnectWhatsApp = async () => {
+    setReconnecting(true);
+    setError("");
+    setInfoMsg("");
+    setJustConnected(false);
+    try {
+      const res = await operationsApi.whatsappReconnect();
+      if (res.data) {
+        setInstanceName(res.data.instance_name || "");
+        setStatus("disconnected");
+        if (res.data.qrcode_base64) {
+          setQrcodeBase64(res.data.qrcode_base64);
+          setInfoMsg("Previous session cleared. Scan the fresh QR code below to reconnect.");
+        } else {
+          setQrcodeBase64(null);
+          setError("Session reset, but QR code was not returned yet. Click 'Connect WhatsApp' to fetch the fresh QR.");
+        }
+      }
+    } catch (err) {
+      console.error("[WhatsAppConnectCard] Failed to force reconnect:", err);
+      setError(errorText(err) || "Failed to force reconnect WhatsApp session. Please try again.");
+    } finally {
+      setReconnecting(false);
+    }
+  };
+
+  // 5. Disconnect / Logout current session
+  const handleDisconnectWhatsApp = async () => {
+    setDisconnecting(true);
+    setError("");
+    setInfoMsg("");
+    setJustConnected(false);
+    try {
+      await operationsApi.whatsappDisconnect();
+      setStatus("disconnected");
+      setQrcodeBase64(null);
+      setInfoMsg("WhatsApp session disconnected cleanly. Click 'Connect WhatsApp' whenever you are ready to link again.");
+    } catch (err) {
+      console.error("[WhatsAppConnectCard] Failed to disconnect:", err);
+      setError(errorText(err) || "Failed to disconnect WhatsApp session.");
+    } finally {
+      setDisconnecting(false);
+    }
+  };
+
+  // 6. Live status sync check
+  const handleSyncStatus = async () => {
+    setLoadingStatus(true);
+    setError("");
+    setInfoMsg("");
+    try {
+      const res = await operationsApi.whatsappConnectStatus();
+      if (res.data) {
+        const liveStatus = res.data.status || "disconnected";
+        setStatus(liveStatus);
+        setInstanceName(res.data.instance_name || "");
+        if (liveStatus === "disconnected") {
+          setJustConnected(false);
+          setInfoMsg("Live check confirmed WhatsApp is currently disconnected.");
+        } else {
+          setInfoMsg("Live check confirmed WhatsApp session is actively connected.");
+        }
+      }
+    } catch (err) {
+      setError(errorText(err) || "Could not verify live WhatsApp connection state.");
+    } finally {
+      setLoadingStatus(false);
     }
   };
 
@@ -431,24 +506,62 @@ export default function WhatsAppConnectCard() {
         </div>
       )}
 
+      {/* Info Notification Banner */}
+      {infoMsg && (
+        <div
+          style={{
+            background: "#fdf4ff",
+            border: "1px solid #f0abfc",
+            borderRadius: 12,
+            padding: "11px 16px",
+            marginBottom: 16,
+            color: "#86198f",
+            fontSize: 13,
+            fontWeight: 600,
+          }}
+        >
+          {infoMsg}
+        </div>
+      )}
+
       {/* Content Area */}
       {loadingStatus ? (
         <div style={{ padding: "16px 0", color: "#64748b", fontSize: 13.5 }}>
-          Checking WhatsApp engine connection state...
+          Checking live WhatsApp engine connection state...
         </div>
       ) : isConnected ? (
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 14, paddingTop: 6 }}>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 12, paddingTop: 6 }}>
           <div style={{ fontSize: 13, color: "#475569" }}>
             Connected Instance: <strong style={{ color: "#0f172a", fontFamily: "monospace" }}>{instanceName || "Active"}</strong>
           </div>
-          <button
-            type="button"
-            className="wa-btn-secondary"
-            onClick={handleConnectWhatsApp}
-            disabled={generating}
-          >
-            {generating ? "Refreshing QR..." : "🔄 Re-link Another Number"}
-          </button>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+            <button
+              type="button"
+              className="wa-btn-secondary"
+              onClick={handleSyncStatus}
+              disabled={reconnecting || disconnecting}
+            >
+              ↻ Verify Live Status
+            </button>
+            <button
+              type="button"
+              className="wa-btn-secondary"
+              onClick={handleReconnectWhatsApp}
+              disabled={reconnecting || disconnecting}
+              style={{ borderColor: "#f0abfc", color: "#a21caf", background: "#fdf4ff" }}
+            >
+              {reconnecting ? "Resetting & Generating QR..." : "🔄 Reconnect / Regenerate QR"}
+            </button>
+            <button
+              type="button"
+              className="wa-btn-secondary"
+              onClick={handleDisconnectWhatsApp}
+              disabled={reconnecting || disconnecting}
+              style={{ borderColor: "#fecaca", color: "#b91c1c", background: "#fef2f2" }}
+            >
+              {disconnecting ? "Disconnecting..." : "🔌 Disconnect"}
+            </button>
+          </div>
         </div>
       ) : (
         <div>

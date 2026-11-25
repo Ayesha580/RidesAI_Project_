@@ -10,6 +10,7 @@ Connects to Evolution API (v1 / v2 / Baileys) for:
 
 import json
 import logging
+import time
 import requests
 from typing import Optional, Dict, Any
 
@@ -34,11 +35,168 @@ def _get_headers() -> Dict[str, str]:
 
 
 def _clean_phone(phone: str) -> str:
-    """Strips @s.whatsapp.net, +, spaces, and dashes from phone number."""
+    """Strips @s.whatsapp.net, @lid, @c.us, +, spaces, and dashes from phone number."""
     if not phone:
         return ""
-    cleaned = str(phone).replace("@s.whatsapp.net", "").replace("+", "").replace(" ", "").replace("-", "").strip()
+    cleaned = (
+        str(phone)
+        .replace("@s.whatsapp.net", "")
+        .replace("@c.us", "")
+        .replace("@lid", "")
+        .replace("+", "")
+        .replace(" ", "")
+        .replace("-", "")
+        .strip()
+    )
     return cleaned
+
+
+def _extract_qr_base64(res_data: Any) -> Optional[str]:
+    """Extracts QR code base64 from any Evolution API v1/v2 response structure."""
+    if not isinstance(res_data, dict):
+        return None
+    if isinstance(res_data.get("qrcode"), dict):
+        return res_data["qrcode"].get("base64") or res_data["qrcode"].get("code")
+    if isinstance(res_data.get("qrcode"), str):
+        return res_data["qrcode"]
+    if res_data.get("base64"):
+        return res_data["base64"]
+    if res_data.get("code"):
+        return res_data["code"]
+    if isinstance(res_data.get("instance"), dict):
+        inst = res_data["instance"]
+        if isinstance(inst.get("qrcode"), dict):
+            return inst["qrcode"].get("base64") or inst["qrcode"].get("code")
+        if inst.get("qrcode"):
+            return inst["qrcode"]
+    return None
+
+
+def logout_instance(instance_name: str) -> Dict[str, Any]:
+    """
+    Logs out / disconnects an existing WhatsApp session on Evolution API.
+    Calls DELETE /instance/logout/{instance_name}.
+    """
+    api_url = _get_api_url()
+    url = f"{api_url}/instance/logout/{instance_name}"
+    try:
+        logger.info(f"[Evolution API] Logging out instance '{instance_name}' at {url}")
+        res = requests.delete(url, headers=_get_headers(), timeout=15)
+        try:
+            body = res.json()
+        except Exception:
+            body = {"raw_text": res.text}
+        if 200 <= res.status_code < 300:
+            return {"success": True, "status_code": res.status_code, "data": body}
+        logger.warning(
+            f"[Evolution API] logout_instance '{instance_name}' returned HTTP {res.status_code}: {body}"
+        )
+        return {"success": False, "status_code": res.status_code, "error": str(body), "data": body}
+    except Exception as e:
+        logger.warning(f"[Evolution API] logout_instance failed for '{instance_name}': {e}")
+        return {"success": False, "error": str(e)}
+
+
+def delete_instance(instance_name: str) -> Dict[str, Any]:
+    """
+    Deletes an Evolution API instance so it can be recreated cleanly with a fresh QR code.
+    Calls DELETE /instance/delete/{instance_name}.
+    """
+    api_url = _get_api_url()
+    url = f"{api_url}/instance/delete/{instance_name}"
+    try:
+        logger.info(f"[Evolution API] Deleting instance '{instance_name}' at {url}")
+        res = requests.delete(url, headers=_get_headers(), timeout=15)
+        try:
+            body = res.json()
+        except Exception:
+            body = {"raw_text": res.text}
+        return {"success": 200 <= res.status_code < 300, "status_code": res.status_code, "data": body}
+    except Exception as e:
+        logger.warning(f"[Evolution API] delete_instance failed for '{instance_name}': {e}")
+        return {"success": False, "error": str(e)}
+
+
+def _normalize_webhook_url(webhook_url: Optional[str]) -> Optional[str]:
+    """Strips trailing slashes so Evolution API webhook_by_events never produces '//event'."""
+    if not webhook_url:
+        return None
+    cleaned = str(webhook_url).strip().rstrip("/")
+    return cleaned or None
+
+
+def _is_valid_qr_base64(qr: Optional[str]) -> bool:
+    if not qr or not isinstance(qr, str):
+        return False
+    val = qr.strip()
+    return val.startswith("data:image/") or len(val) > 80
+
+
+def get_qr_code(instance_name: str, retries: int = 4, delay_seconds: float = 1.5) -> Dict[str, Any]:
+    """
+    Polls GET /instance/connect/{instance_name} up to `retries` times (`delay_seconds` apart)
+    until a valid base64 QR image is returned.
+    """
+    api_url = _get_api_url()
+    connect_url = f"{api_url}/instance/connect/{instance_name}"
+    last_data: Dict[str, Any] = {}
+
+    for attempt in range(1, max(1, retries) + 1):
+        try:
+            logger.info(
+                f"[Evolution API] Fetching QR for '{instance_name}' (attempt {attempt}/{retries}) at {connect_url}"
+            )
+            c_res = requests.get(connect_url, headers=_get_headers(), timeout=15)
+            try:
+                last_data = c_res.json()
+            except Exception:
+                last_data = {"raw_text": c_res.text, "status_code": c_res.status_code}
+
+            qr = _extract_qr_base64(last_data)
+            if _is_valid_qr_base64(qr):
+                return {
+                    "instance_name": instance_name,
+                    "qrcode_base64": qr,
+                    "status": "disconnected",
+                    "raw": last_data,
+                }
+        except Exception as e:
+            logger.warning(f"[Evolution API] get_qr_code attempt {attempt} failed for '{instance_name}': {e}")
+            last_data = {"error": str(e)}
+
+        if attempt < retries and delay_seconds > 0:
+            time.sleep(delay_seconds)
+
+    return {
+        "instance_name": instance_name,
+        "qrcode_base64": None,
+        "status": "disconnected",
+        "raw": last_data,
+    }
+
+
+def reconnect_instance(instance_name: str, webhook_url: Optional[str] = None) -> Dict[str, Any]:
+    """
+    Hard-resets an Evolution API instance (handles 401/LOGOUT & stale connected sessions):
+    1. Logs out the active/stale Baileys session (ignoring errors).
+    2. Hard-deletes the instance (DELETE /instance/delete/{instance_name}).
+    3. Sleeps 1.5s for Evolution API v2 to release Baileys state.
+    4. Recreates the instance with qrcode=True and polls /instance/connect/{instance_name}
+       up to 4 times (1.5s apart) if the QR is not returned immediately.
+    """
+    logger.info(f"[Evolution API] Force-reconnecting (hard-delete + recreate) instance '{instance_name}'...")
+
+    try:
+        logout_instance(instance_name)
+    except Exception as e:
+        logger.warning(f"[Evolution API] Ignoring logout error during reconnect for '{instance_name}': {e}")
+
+    delete_instance(instance_name)
+    time.sleep(1.5)
+
+    created = create_instance(instance_name, webhook_url=webhook_url, qrcode=True)
+    created["status"] = "disconnected"
+    return created
 
 
 def configure_instance_settings(instance_name: str, msg_call: Optional[str] = None) -> Dict[str, Any]:
@@ -72,19 +230,36 @@ def configure_instance_settings(instance_name: str, msg_call: Optional[str] = No
         return {"error": str(e), "success": False}
 
 
-def create_instance(instance_name: str) -> Dict[str, Any]:
+def create_instance(
+    instance_name: str,
+    webhook_url: Optional[str] = None,
+    qrcode: bool = True,
+) -> Dict[str, Any]:
     """
     Creates or connects to an Evolution API instance and returns the QR code.
-    If the instance already exists (403/409), falls back to connect endpoint to fetch fresh QR code.
-    Also auto-configures instance settings to reject calls with an instant reply.
+    - Strips any trailing slash from `webhook_url` before registering with Evolution API.
+    - If the instance already exists (403/409), falls back to connect endpoint.
+    - If `create_instance` does not immediately return a valid base64 QR, polls
+      GET /instance/connect/{instance_name} up to 4 times (1.5s apart).
+    - Auto-configures instance settings to reject calls with an instant reply.
     """
     api_url = _get_api_url()
     create_url = f"{api_url}/instance/create"
-    payload = {
+    clean_webhook = _normalize_webhook_url(
+        webhook_url or getattr(settings, "EVOLUTION_WEBHOOK_URL", None)
+    )
+    payload: Dict[str, Any] = {
         "instanceName": instance_name,
-        "qrcode": True,
+        "qrcode": bool(qrcode),
         "integration": "WHATSAPP-BAILEYS",
     }
+    if clean_webhook:
+        payload["webhook"] = {
+            "url": clean_webhook,
+            "byEvents": False,
+            "base64": True,
+            "events": ["CONNECTION_UPDATE", "MESSAGES_UPSERT", "QRCODE_UPDATED"],
+        }
 
     try:
         logger.info(f"[Evolution API] Creating instance '{instance_name}' at {create_url}")
@@ -105,23 +280,14 @@ def create_instance(instance_name: str) -> Dict[str, Any]:
             except Exception:
                 res_data = {"raw_text": c_res.text}
 
-        # Extract QR code base64 from possible response formats
-        qrcode_base64 = None
-        if isinstance(res_data, dict):
-            if isinstance(res_data.get("qrcode"), dict):
-                qrcode_base64 = res_data["qrcode"].get("base64")
-            elif isinstance(res_data.get("qrcode"), str):
-                qrcode_base64 = res_data["qrcode"]
-            elif res_data.get("base64"):
-                qrcode_base64 = res_data["base64"]
-            elif res_data.get("code"):
-                qrcode_base64 = res_data["code"]
-            elif isinstance(res_data.get("instance"), dict):
-                inst = res_data["instance"]
-                if isinstance(inst.get("qrcode"), dict):
-                    qrcode_base64 = inst["qrcode"].get("base64")
-                elif inst.get("qrcode"):
-                    qrcode_base64 = inst["qrcode"]
+        qrcode_base64 = _extract_qr_base64(res_data)
+
+        # Poll /instance/connect/{instance_name} up to 4 times (1.5s apart) if QR not ready immediately
+        if qrcode and not _is_valid_qr_base64(qrcode_base64):
+            polled = get_qr_code(instance_name, retries=4, delay_seconds=1.5)
+            if _is_valid_qr_base64(polled.get("qrcode_base64")):
+                qrcode_base64 = polled["qrcode_base64"]
+                res_data = polled.get("raw", res_data)
 
         status = "created"
         if isinstance(res_data, dict):
@@ -195,6 +361,7 @@ def send_text_message(instance_name: str, phone: str = "", text: str = "", to: s
     """
     Sends an outbound text message via Evolution API.
     Supports either `phone` or `to` parameter for caller flexibility.
+    Strictly checks HTTP status codes and logs Evolution API errors clearly.
     """
     target_phone = phone or to or ""
     cleaned_phone = _clean_phone(target_phone)
@@ -209,9 +376,25 @@ def send_text_message(instance_name: str, phone: str = "", text: str = "", to: s
         logger.info(f"[Evolution API] Sending text message to {cleaned_phone} via '{instance_name}'")
         res = requests.post(url, headers=_get_headers(), json=payload, timeout=15)
         try:
-            return res.json()
+            body = res.json()
         except Exception:
-            return {"status_code": res.status_code, "text": res.text}
+            body = {"status_code": res.status_code, "text": res.text}
+
+        if not (200 <= res.status_code < 300):
+            logger.error(
+                f"[Evolution API ERROR] sendText failed for '{instance_name}' -> {cleaned_phone} "
+                f"(HTTP {res.status_code}): {body}"
+            )
+            return {
+                "success": False,
+                "error": f"Evolution API HTTP {res.status_code}: {body}",
+                "status_code": res.status_code,
+                "raw": body,
+            }
+
+        if isinstance(body, dict):
+            return {"success": True, **body}
+        return {"success": True, "data": body}
     except Exception as e:
         logger.error(f"[Evolution API ERROR] Failed to send text message to {cleaned_phone}: {e}", exc_info=True)
         return {"error": str(e), "success": False}
@@ -220,6 +403,7 @@ def send_text_message(instance_name: str, phone: str = "", text: str = "", to: s
 def send_audio_message(instance_name: str, phone: str, audio_base64: str) -> Dict[str, Any]:
     """
     Sends an outbound audio (voice note) via Evolution API using base64.
+    Strictly checks HTTP status codes and logs Evolution API errors clearly.
     """
     cleaned_phone = _clean_phone(phone)
     api_url = _get_api_url()
@@ -233,9 +417,25 @@ def send_audio_message(instance_name: str, phone: str, audio_base64: str) -> Dic
         logger.info(f"[Evolution API] Sending audio voice note to {cleaned_phone} via '{instance_name}'")
         res = requests.post(url, headers=_get_headers(), json=payload, timeout=15)
         try:
-            return res.json()
+            body = res.json()
         except Exception:
-            return {"status_code": res.status_code, "text": res.text}
+            body = {"status_code": res.status_code, "text": res.text}
+
+        if not (200 <= res.status_code < 300):
+            logger.error(
+                f"[Evolution API ERROR] sendWhatsAppAudio failed for '{instance_name}' -> {cleaned_phone} "
+                f"(HTTP {res.status_code}): {body}"
+            )
+            return {
+                "success": False,
+                "error": f"Evolution API HTTP {res.status_code}: {body}",
+                "status_code": res.status_code,
+                "raw": body,
+            }
+
+        if isinstance(body, dict):
+            return {"success": True, **body}
+        return {"success": True, "data": body}
     except Exception as e:
         logger.error(f"[Evolution API ERROR] Failed to send audio message to {cleaned_phone}: {e}", exc_info=True)
         return {"error": str(e), "success": False}
@@ -245,7 +445,7 @@ def get_media_base64(instance_name: str, message_data: dict) -> Optional[bytes]:
     """
     Retrieves and decodes base64 media from an Evolution API message.
     Calls POST {EVOLUTION_API_URL}/chat/getBase64FromMediaMessage/{instance_name}
-    with {"message": {"key": message_data.get("key", {})}, "convertToMp4": False}.
+    passing both `key` and `message` (when available) for Evolution API v2 compatibility.
     Returns decoded raw bytes or None.
     """
     import base64
@@ -256,10 +456,13 @@ def get_media_base64(instance_name: str, message_data: dict) -> Optional[bytes]:
     if not key and isinstance(message_data, dict) and ("id" in message_data or "remoteJid" in message_data):
         key = message_data
 
+    msg_inner = message_data.get("message") if isinstance(message_data, dict) else None
+    msg_envelope: Dict[str, Any] = {"key": key}
+    if isinstance(msg_inner, dict) and msg_inner:
+        msg_envelope["message"] = msg_inner
+
     payload = {
-        "message": {
-            "key": key
-        },
+        "message": msg_envelope,
         "convertToMp4": False,
     }
 

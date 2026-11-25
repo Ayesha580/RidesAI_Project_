@@ -210,6 +210,15 @@ class OrderListCreateAPIView(BusinessAPIView):
             return Response({"items": "One or more selected items do not belong to this business or are unavailable."}, status=400)
         except (InvalidOperation, ValueError, KeyError) as exc:
             return Response({"detail": str(exc)}, status=400)
+
+        if order.customer_phone:
+            from operations.notifications import send_order_status_notification
+            send_order_status_notification(
+                order=order,
+                previous_status="",
+                new_status=order.status,
+            )
+
         return Response(_order_payload(order), status=201)
 
 

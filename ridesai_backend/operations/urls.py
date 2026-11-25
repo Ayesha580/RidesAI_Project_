@@ -6,7 +6,12 @@ from .views import (OrderCatalogAPIView, OrderListCreateAPIView, OrderStatusAPIV
                     PublicAgentChatAPIView, PublicAgentCatalogAPIView, PublicAgentConversationAPIView,
                     PublicAgentWidgetScriptAPIView, WhatsAppWebhookAPIView, WhatsAppSettingsAPIView)
 from .calling_views import IncomingAICallWebhookView
-from .evolution_views import ConnectWhatsAppView, EvolutionWebhookView
+from .evolution_views import (
+    ConnectWhatsAppView,
+    ReconnectWhatsAppView,
+    DisconnectWhatsAppView,
+    EvolutionWebhookView,
+)
 from .analytics_views import AnalyticsOverviewAPIView, AnalyticsExportCSVAPIView
 from .notification_views import (
     NotificationTemplateListAPIView,
@@ -32,6 +37,7 @@ from .staff_supplier_views import (
     SupplierListCreateAPIView,
     SupplierDetailAPIView,
 )
+from .restaurant_dashboard_views import RestaurantDashboardSummaryAPIView
 
 urlpatterns = [
     path("orders/catalog/", OrderCatalogAPIView.as_view(), name="order-catalog"),
@@ -50,7 +56,11 @@ urlpatterns = [
     path("agent/chat/", AgentChatAPIView.as_view(), name="agent-chat"),
     path("whatsapp/webhook/", WhatsAppWebhookAPIView.as_view(), name="whatsapp-webhook"),
     path("whatsapp/connect/", ConnectWhatsAppView.as_view(), name="whatsapp-connect"),
+    path("whatsapp/reconnect/", ReconnectWhatsAppView.as_view(), name="whatsapp-reconnect"),
+    path("whatsapp/disconnect/", DisconnectWhatsAppView.as_view(), name="whatsapp-disconnect"),
     path("whatsapp/evolution-webhook/", EvolutionWebhookView.as_view(), name="evolution-webhook"),
+    path("whatsapp/evolution-webhook", EvolutionWebhookView.as_view(), name="evolution-webhook-noslash"),
+    path("whatsapp/evolution-webhook/<path:event_slug>", EvolutionWebhookView.as_view(), name="evolution-webhook-event"),
     path("calling/webhook/", IncomingAICallWebhookView.as_view(), name="incoming-call-webhook"),
     path("calls/incoming/", IncomingAICallWebhookView.as_view(), name="incoming-call-twiml"),
     path("public/agent/<uuid:public_id>/catalog/", PublicAgentCatalogAPIView.as_view(), name="public-agent-catalog"),
@@ -80,5 +90,6 @@ urlpatterns = [
     path("attendance/", StaffAttendanceAPIView.as_view(), name="staff-attendance"),
     path("suppliers/", SupplierListCreateAPIView.as_view(), name="suppliers-list-create"),
     path("suppliers/<int:pk>/", SupplierDetailAPIView.as_view(), name="suppliers-detail"),
+    path("restaurant/dashboard-summary/", RestaurantDashboardSummaryAPIView.as_view(), name="restaurant-dashboard-summary"),
     path("hospital/", include("operations.hospital_urls")),
 ]
