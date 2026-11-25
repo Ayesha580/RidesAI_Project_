@@ -19,10 +19,30 @@ const FORWARD_STATUS_MAP = {
   cancelled: [],
 };
 
-const getAvailableStatuses = (currentStatus) => {
+const DELIVERY_ONLY_STATUSES = new Set(["assigned", "picked_up", "on_the_way", "out_for_delivery"]);
+
+const getAvailableStatuses = (currentStatus, orderType = "delivery") => {
   const current = (currentStatus || "").toLowerCase();
   const nextList = FORWARD_STATUS_MAP[current] || [];
-  return Array.from(new Set([current, ...nextList]));
+  const combined = Array.from(new Set([current, ...nextList]));
+  const ot = String(orderType || "delivery").toLowerCase();
+  if (ot === "dine_in" || ot === "takeaway") {
+    return combined.filter((s) => s === current || !DELIVERY_ONLY_STATUSES.has(s));
+  }
+  return combined;
+};
+
+const getStatusLabelForOrderType = (status, orderType = "delivery") => {
+  const s = (status || "").toLowerCase();
+  const ot = String(orderType || "delivery").toLowerCase();
+  if (ot === "dine_in") {
+    if (s === "ready" || s === "prepared") return "Ready to Serve";
+    if (s === "delivered") return "Served";
+  } else if (ot === "takeaway") {
+    if (s === "ready" || s === "prepared") return "Ready for Pickup";
+    if (s === "delivered") return "Picked Up";
+  }
+  return STATUS_LABELS[s] || s.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
 };
 
 const isTerminalStatus = (status) => {
@@ -843,9 +863,9 @@ export default function OrdersView() {
                             cursor: isTerminalStatus(o.status) ? "not-allowed" : "pointer",
                           }}
                         >
-                          {getAvailableStatuses(o.status).map((s) => (
+                          {getAvailableStatuses(o.status, o.order_type).map((s) => (
                             <option key={s} value={s}>
-                              {STATUS_LABELS[s] || s.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase())}
+                              {getStatusLabelForOrderType(s, o.order_type)}
                             </option>
                           ))}
                         </select>

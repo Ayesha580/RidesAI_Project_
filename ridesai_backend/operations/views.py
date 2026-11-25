@@ -50,7 +50,7 @@ class BusinessAPIView(APIView):
         return self.request.user.company
 
 
-def _delivery_area_for_order(company, payload):
+def _delivery_area_for_order(company, payload, source="dashboard"):
     """Return matching configured delivery area or reject an out-of-zone delivery."""
     delivery = str(payload.get("fulfillment_type", "delivery" if payload.get("delivery_address") else "collection")).lower() == "delivery"
     if not delivery:
@@ -63,10 +63,17 @@ def _delivery_area_for_order(company, payload):
     latitude, longitude = payload.get("latitude"), payload.get("longitude")
     from companies.models import ServiceArea
     from math import radians, sin, cos, asin, sqrt
-    for area in ServiceArea.objects.filter(company=company, is_active=True):
-        if area.area_type == "city" and city and city == area.city.casefold() and (not area.country or country == area.country.casefold()):
+    active_areas = list(ServiceArea.objects.filter(company=company, is_active=True))
+    addr_lower = address.casefold()
+    for area in active_areas:
+        area_city = (area.city or "").strip().casefold()
+        area_country = (area.country or "").strip().casefold()
+        if area.area_type == "city" and area_city and (
+            (city and city == area_city and (not area_country or not country or country == area_country))
+            or (area_city in addr_lower)
+        ):
             return area
-        if area.area_type == "country" and country and country == area.country.casefold():
+        if area.area_type == "country" and area_country and (country == area_country or area_country in addr_lower):
             return area
         if area.area_type == "radius" and latitude is not None and longitude is not None:
             try:
@@ -75,7 +82,67 @@ def _delivery_area_for_order(company, payload):
                 if 6371*2*asin(sqrt(a)) <= float(area.radius_km): return area
             except (TypeError, ValueError):
                 continue
+    # For internal POS / Owner Dashboard orders, never block delivery if service areas aren't configured or city isn't split out
+    if source == "dashboard":
+        return active_areas[0] if active_areas else None
     raise ValueError("Delivery is unavailable at this address. Please choose collection or contact the business.")
+
+
+def resolve_delivery_fee(
+    company,
+    delivery_address: str = "",
+    order_type: str = "delivery",
+    city: str = "",
+    country: str = "",
+    latitude=None,
+    longitude=None,
+) -> Decimal:
+    """
+    Shared delivery fee resolver used by POS, WhatsApp AI, and Website Voice Agent.
+    - Returns Decimal('0.00') for dine_in / takeaway orders.
+    - For delivery orders, matches the company's active ServiceArea (by city/country/radius
+      or substring in delivery_address) and falls back to the company's first active
+      ServiceArea delivery_fee (or 0.00 if none configured).
+    """
+    if not company or str(order_type or "delivery").strip().lower() != Order.ORDER_TYPE_DELIVERY:
+        return Decimal("0.00")
+
+    from companies.models import ServiceArea
+    from math import radians, sin, cos, asin, sqrt
+
+    active_areas = list(ServiceArea.objects.filter(company=company, is_active=True))
+    if not active_areas:
+        return Decimal("0.00")
+
+    addr_lower = str(delivery_address or "").strip().casefold()
+    city_lower = str(city or "").strip().casefold()
+    country_lower = str(country or "").strip().casefold()
+
+    for area in active_areas:
+        area_city = (area.city or "").strip().casefold()
+        area_country = (area.country or "").strip().casefold()
+        if area.area_type == "city" and area_city and (
+            (city_lower and city_lower == area_city and (not area_country or not country_lower or country_lower == area_country))
+            or (addr_lower and area_city in addr_lower)
+        ):
+            return max(Decimal("0.00"), Decimal(str(area.delivery_fee or "0.00")))
+        if area.area_type == "country" and area_country and (
+            (country_lower and country_lower == area_country)
+            or (addr_lower and area_country in addr_lower)
+        ):
+            return max(Decimal("0.00"), Decimal(str(area.delivery_fee or "0.00")))
+        if area.area_type == "radius" and latitude is not None and longitude is not None:
+            try:
+                dlat = radians(float(latitude) - float(area.center_latitude))
+                dlon = radians(float(longitude) - float(area.center_longitude))
+                a = sin(dlat / 2) ** 2 + cos(radians(float(area.center_latitude))) * cos(radians(float(latitude))) * sin(dlon / 2) ** 2
+                if 6371 * 2 * asin(sqrt(a)) <= float(area.radius_km):
+                    return max(Decimal("0.00"), Decimal(str(area.delivery_fee or "0.00")))
+            except (TypeError, ValueError):
+                continue
+
+    # Default to the company's primary active ServiceArea fee
+    return max(Decimal("0.00"), Decimal(str(active_areas[0].delivery_fee or "0.00")))
 
 
 class TableOccupiedConflictError(Exception):
@@ -162,17 +229,21 @@ def _create_order(company, payload, actor=None, source="dashboard"):
             raw_order_type = Order.ORDER_TYPE_DELIVERY
 
     table_obj = None
-    table_num = str(payload.get("table_number") or "").strip()
-    raw_table_id = payload.get("table_id") or payload.get("table")
-    if raw_table_id:
-        table_obj = RestaurantTable.objects.filter(company=company, pk=raw_table_id).first()
-        if table_obj and not table_num:
-            table_num = table_obj.table_number
-    elif table_num:
-        table_obj = RestaurantTable.objects.filter(company=company, table_number__iexact=table_num).first()
+    table_num = ""
+    if raw_order_type == Order.ORDER_TYPE_DINE_IN:
+        table_num = str(payload.get("table_number") or "").strip()
+        raw_table_id = payload.get("table_id") or payload.get("table")
+        if raw_table_id:
+            table_obj = RestaurantTable.objects.filter(company=company, pk=raw_table_id).first()
+            if table_obj and not table_num:
+                table_num = table_obj.table_number
+        elif table_num:
+            table_obj = RestaurantTable.objects.filter(company=company, table_number__iexact=table_num).first()
+        if not table_obj and not table_num and payload.get("allow_waiting_area"):
+            table_num = "Waiting Area"
 
     delivery_area = (
-        _delivery_area_for_order(company, payload)
+        _delivery_area_for_order(company, payload, source=source)
         if raw_order_type == Order.ORDER_TYPE_DELIVERY
         else None
     )
@@ -390,6 +461,12 @@ class OrderStatusAPIView(BusinessAPIView):
         valid = {choice[0] for choice in Order.STATUS_CHOICES}
         if next_status not in valid:
             return Response({"status": "Invalid order status."}, status=400)
+        if (order.order_type or Order.ORDER_TYPE_DELIVERY) in (Order.ORDER_TYPE_DINE_IN, Order.ORDER_TYPE_TAKEAWAY):
+            if next_status in (Order.STATUS_OUT_FOR_DELIVERY, Order.STATUS_ON_THE_WAY, Order.STATUS_ASSIGNED, Order.STATUS_PICKED_UP):
+                return Response(
+                    {"error": f"Status '{next_status}' is not allowed for {order.order_type.replace('_', '-')} orders."},
+                    status=400,
+                )
         is_rider = DeliveryAssignment.objects.filter(company=self.company, order=order, rider=request.user).exists()
         if is_rider:
             if not request.user.has_business_permission("deliveries.update_status"):

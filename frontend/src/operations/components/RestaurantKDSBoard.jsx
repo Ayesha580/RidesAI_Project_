@@ -36,12 +36,13 @@ function getBumpAction(ticket) {
     return { label: "✅ Mark Ready", bg: "#10b981", color: "#ffffff" };
   }
   if (st === "ready") {
-    const isDineOrTake = ticket.order_type === "dine_in" || ticket.order_type === "takeaway";
-    return {
-      label: isDineOrTake ? "🍽️ Complete & Serve" : "🛵 Dispatch Rider",
-      bg: "#3b82f6",
-      color: "#ffffff",
-    };
+    if (ticket.order_type === "dine_in") {
+      return { label: "🍽️ Mark Served", bg: "#3b82f6", color: "#ffffff" };
+    }
+    if (ticket.order_type === "takeaway") {
+      return { label: "🥡 Mark Picked Up", bg: "#3b82f6", color: "#ffffff" };
+    }
+    return { label: "🛵 Dispatch Rider", bg: "#3b82f6", color: "#ffffff" };
   }
   return null;
 }

@@ -29,6 +29,7 @@ function OwnerOrdersWorkspace({ user }) {
   const [tables, setTables] = useState([]);
   const [orderType, setOrderType] = useState("dine_in");
   const [tableId, setTableId] = useState("");
+  const [allowWaitingArea, setAllowWaitingArea] = useState(false);
   const [customerName, setCustomerName] = useState("");
   const [customerPhone, setCustomerPhone] = useState("");
   const [deliveryAddress, setDeliveryAddress] = useState("");
@@ -142,9 +143,20 @@ function OwnerOrdersWorkspace({ user }) {
     return acc + (base + modSum) * Number(line.quantity || 1);
   }, 0);
 
+  const availableTables = tables.filter((t) => String(t.status || "").toLowerCase() !== "occupied");
+  const allTablesOccupied = tables.length > 0 && availableTables.length === 0;
+
   const handleCreateOrder = async (e) => {
     e.preventDefault();
     setCreateErr("");
+    if (orderType === "delivery" && !deliveryAddress.trim()) {
+      setCreateErr("Delivery address is required for delivery orders.");
+      return;
+    }
+    if (orderType === "dine_in" && tables.length > 0 && !tableId && !allowWaitingArea) {
+      setCreateErr("Please select an available table, enable Waiting Area / Counter (No Table), or switch to Takeaway.");
+      return;
+    }
     const validItems = cartLines
       .filter((l) => l.item_id)
       .map((l) => ({
@@ -160,23 +172,34 @@ function OwnerOrdersWorkspace({ user }) {
     setCreating(true);
     try {
       const selectedTable = tables.find((t) => String(t.id) === String(tableId));
-      await operationsApi.createOrder({
+      const payload = {
         order_type: orderType,
-        table_id: orderType === "dine_in" && tableId ? Number(tableId) : undefined,
-        table_number: orderType === "dine_in" && selectedTable ? selectedTable.table_number : "",
-        customer_name: customerName.trim() || (orderType === "dine_in" && selectedTable ? `Table ${selectedTable.table_number}` : "Walk-in Guest"),
+        customer_name:
+          customerName.trim() ||
+          (orderType === "dine_in" && selectedTable ? `Table ${selectedTable.table_number}` : "Walk-in Guest"),
         customer_phone: customerPhone.trim(),
         delivery_address: orderType === "delivery" ? deliveryAddress.trim() : "",
         fulfillment_type: orderType === "delivery" ? "delivery" : "collection",
         notes: orderNotes.trim(),
         items: validItems,
-      });
+      };
+      if (orderType === "dine_in") {
+        if (tableId) {
+          payload.table_id = Number(tableId);
+          payload.table_number = selectedTable ? selectedTable.table_number : "";
+        } else if (allowWaitingArea) {
+          payload.allow_waiting_area = true;
+          payload.table_number = "Waiting Area";
+        }
+      }
+      await operationsApi.createOrder(payload);
       setShowNewModal(false);
       setCustomerName("");
       setCustomerPhone("");
       setDeliveryAddress("");
       setOrderNotes("");
       setTableId("");
+      setAllowWaitingArea(false);
       setSelectedReturningCustomer(null);
       setCustomerMatches([]);
       setShowCustomerDropdown(false);
@@ -449,13 +472,17 @@ function OwnerOrdersWorkspace({ user }) {
 
                 {orderType === "dine_in" && (
                   <label style={{ display: "flex", flexDirection: "column", gap: 4, fontSize: 12.5, fontWeight: 600, color: "#4b5563" }}>
-                    Select Table
+                    Select Table {tables.length > 0 && !allowWaitingArea ? "*" : ""}
                     <select
                       value={tableId}
-                      onChange={(e) => setTableId(e.target.value)}
+                      disabled={allowWaitingArea}
+                      onChange={(e) => {
+                        setTableId(e.target.value);
+                        if (e.target.value) setAllowWaitingArea(false);
+                      }}
                       style={{ padding: "9px 12px", borderRadius: 9, border: "1px solid #d1d5db", fontSize: 13 }}
                     >
-                      <option value="">— Choose Table —</option>
+                      <option value="">— Choose Available Table —</option>
                       {tables.map((t) => {
                         const isOcc = String(t.status || "").toLowerCase() === "occupied";
                         const statusLabel = t.status
@@ -471,6 +498,68 @@ function OwnerOrdersWorkspace({ user }) {
                   </label>
                 )}
               </div>
+
+              {/* Full-House / Waiting Area Fallback Banner for Dine-In */}
+              {orderType === "dine_in" && tables.length > 0 && (
+                <div
+                  style={{
+                    marginTop: 10,
+                    background: allTablesOccupied ? "#fffbeb" : "#faf7fb",
+                    border: allTablesOccupied ? "1px solid #fcd34d" : "1px solid #efe4f2",
+                    borderRadius: 11,
+                    padding: "10px 12px",
+                    display: "flex",
+                    flexWrap: "wrap",
+                    alignItems: "center",
+                    justifyContent: "space-between",
+                    gap: 10,
+                  }}
+                >
+                  <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                    {allTablesOccupied && (
+                      <div style={{ fontSize: 12.5, fontWeight: 800, color: "#b45309" }}>
+                        ⚠️ All tables are currently occupied
+                      </div>
+                    )}
+                    <label style={{ display: "inline-flex", alignItems: "center", gap: 7, fontSize: 12.5, fontWeight: 600, color: "#4b5563", cursor: "pointer" }}>
+                      <input
+                        type="checkbox"
+                        checked={allowWaitingArea}
+                        onChange={(e) => {
+                          setAllowWaitingArea(e.target.checked);
+                          if (e.target.checked) setTableId("");
+                        }}
+                        style={{ accentColor: "#d946ef" }}
+                      />
+                      <span>Allow Waiting Area / Counter (No Table)</span>
+                    </label>
+                  </div>
+
+                  {allTablesOccupied && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setOrderType("takeaway");
+                        setTableId("");
+                        setAllowWaitingArea(false);
+                        setCreateErr("");
+                      }}
+                      style={{
+                        border: "1px solid #f59e0b",
+                        background: "#ffffff",
+                        color: "#b45309",
+                        borderRadius: 8,
+                        padding: "6px 12px",
+                        fontSize: 12,
+                        fontWeight: 800,
+                        cursor: "pointer",
+                      }}
+                    >
+                      🥡 Switch to Takeaway
+                    </button>
+                  )}
+                </div>
+              )}
 
               {/* Debounced Customer Auto-Recall Typeahead Dropdown */}
               {showCustomerDropdown && (customerMatches.length > 0 || searchingCustomers) && (

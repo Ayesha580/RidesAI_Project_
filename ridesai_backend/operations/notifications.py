@@ -521,14 +521,37 @@ def send_order_status_notification(
 ) -> bool:
     """
     Convenience wrapper for dispatching an order status notification from an Order model instance.
+
+    Smart Order-Type Notification Policy:
+    - dine_in: Do NOT spam intermediate statuses (new/confirmed/preparing/ready).
+      Only send a single polite thank-you message when marked 'delivered' (Served).
+    - takeaway: Only send WhatsApp notification when status becomes 'ready' / 'prepared'
+      ("Your takeaway order #... is ready for pickup!").
+    - delivery: Full WhatsApp lifecycle notifications.
     """
     if not order:
         return False
 
-    status_to_notify = new_status or order.status
+    status_to_notify = (new_status or order.status or "").strip().lower()
+    order_type = (getattr(order, "order_type", None) or "delivery").strip().lower()
     ref_id = getattr(order, "order_number", None) or str(order.id)
     cust_phone = getattr(order, "customer_phone", None)
     company = getattr(order, "company", None)
+
+    if order_type == "dine_in":
+        if status_to_notify != "delivered":
+            logger.info(
+                "[Notification] Suppressing intermediate dine_in status '%s' for order #%s.",
+                status_to_notify, ref_id
+            )
+            return False
+    elif order_type == "takeaway":
+        if status_to_notify not in ("ready", "prepared"):
+            logger.info(
+                "[Notification] Suppressing non-ready takeaway status '%s' for order #%s.",
+                status_to_notify, ref_id
+            )
+            return False
 
     rider_obj = getattr(order, "assigned_rider", None)
     rider_name = ""
