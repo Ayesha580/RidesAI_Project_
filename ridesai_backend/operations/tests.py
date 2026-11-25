@@ -6603,3 +6603,310 @@ class POSCustomerAutoRecallTests(TestCase):
         lookup_b = self.client.get("/api/operations/customers/lookup/?q=0300555")
         self.assertEqual(lookup_b.status_code, 200)
         self.assertEqual(lookup_b.data, [])
+
+
+class RestaurantTablesAndReservationsTests(TestCase):
+    """Tests for Interactive Floor Plan, Conflict-Free Reservations, Seat/Complete, and AI Table Booking."""
+
+    def setUp(self):
+        self.client = APIClient()
+        self.company_a = Company.objects.create(
+            name="Saffron Lounge A",
+            business_type="restaurant",
+            status="active",
+            is_approved=True,
+            subscription_status="active",
+        )
+        self.company_b = Company.objects.create(
+            name="Other Rooftop B",
+            business_type="restaurant",
+            status="active",
+            is_approved=True,
+            subscription_status="active",
+        )
+        self.owner_a = User.objects.create_user(
+            username="floor_owner_a",
+            email="owner_a@saffron.test",
+            password="Password123!",
+            company=self.company_a,
+            role=User.ROLE_OWNER,
+        )
+        self.owner_b = User.objects.create_user(
+            username="floor_owner_b",
+            email="owner_b@otherrooftop.test",
+            password="Password123!",
+            company=self.company_b,
+            role=User.ROLE_OWNER,
+        )
+
+    def test_floor_plan_conflicts_seat_complete_ai_booking_and_tenant_isolation(self):
+        from datetime import timedelta
+        from django.utils import timezone
+        from operations.models import Customer, Order, RestaurantTable, TableReservation
+        from operations.whatsapp_agent import execute_book_table_reservation
+
+        self.client.force_authenticate(user=self.owner_a)
+
+        t1 = RestaurantTable.objects.create(
+            company=self.company_a,
+            table_number="T1",
+            capacity=4,
+            section="indoor",
+            status=RestaurantTable.STATUS_OCCUPIED,
+        )
+        t2 = RestaurantTable.objects.create(
+            company=self.company_a,
+            table_number="VIP-1",
+            capacity=6,
+            section="vip",
+            status=RestaurantTable.STATUS_AVAILABLE,
+        )
+
+        # Active dine-in order on T1
+        active_ord = Order.objects.create(
+            company=self.company_a,
+            order_type=Order.ORDER_TYPE_DINE_IN,
+            table=t1,
+            table_number="T1",
+            customer_name="Dine In Guest",
+            status=Order.STATUS_PREPARING,
+            subtotal=Decimal("2400.00"),
+            total=Decimal("2400.00"),
+        )
+
+        today_str = timezone.localdate().isoformat()
+        upcoming_time = (timezone.localtime() + timedelta(hours=1)).strftime("%H:%M")
+
+        # 1. Create reservation on VIP-1 (auto-upserts Customer)
+        res_create = self.client.post(
+            "/api/operations/restaurant/reservations/",
+            {
+                "customer_name": "Nadia Malik",
+                "customer_phone": "03007778899",
+                "party_size": 4,
+                "reservation_date": today_str,
+                "reservation_time": upcoming_time,
+                "table_id": t2.id,
+                "special_requests": "Window seat",
+            },
+            format="json",
+        )
+        self.assertEqual(res_create.status_code, 201)
+        res_id = res_create.data["id"]
+        self.assertEqual(res_create.data["table_number"], "VIP-1")
+        self.assertTrue(Customer.objects.filter(company=self.company_a, phone="03007778899").exists())
+
+        # 2. Double-booking conflict prevention within 90-minute window -> 409 Conflict
+        conflict_time = (timezone.localtime() + timedelta(hours=1, minutes=30)).strftime("%H:%M")
+        res_conflict = self.client.post(
+            "/api/operations/restaurant/reservations/",
+            {
+                "customer_name": "Double Booked Guest",
+                "customer_phone": "03001112233",
+                "party_size": 4,
+                "reservation_date": today_str,
+                "reservation_time": conflict_time,
+                "table_id": t2.id,
+            },
+            format="json",
+        )
+        self.assertEqual(res_conflict.status_code, 409)
+
+        # 3. Floor Plan endpoint includes active dine-in order on T1 & upcoming reservation on VIP-1
+        fp_res = self.client.get("/api/operations/restaurant/floor-plan/")
+        self.assertEqual(fp_res.status_code, 200)
+        self.assertEqual(fp_res.data["summary"]["total"], 2)
+        self.assertEqual(fp_res.data["summary"]["by_section"]["indoor"], 1)
+        self.assertEqual(fp_res.data["summary"]["by_section"]["vip"], 1)
+
+        tables_by_num = {row["table_number"]: row for row in fp_res.data["tables"]}
+        self.assertIsNotNone(tables_by_num["T1"]["active_order"])
+        self.assertEqual(tables_by_num["T1"]["active_order"]["order_id"], active_ord.id)
+        self.assertEqual(tables_by_num["T1"]["active_order"]["total"], 2400.0)
+        self.assertIsNotNone(tables_by_num["VIP-1"]["next_reservation"])
+        self.assertEqual(tables_by_num["VIP-1"]["next_reservation"]["customer_name"], "Nadia Malik")
+
+        # 4. 1-Click Seat Guest -> reservation 'seated' & table 'occupied'
+        seat_res = self.client.post(f"/api/operations/restaurant/reservations/{res_id}/seat/")
+        self.assertEqual(seat_res.status_code, 200)
+        self.assertEqual(seat_res.data["status"], TableReservation.STATUS_SEATED)
+        t2.refresh_from_db()
+        self.assertEqual(t2.status, RestaurantTable.STATUS_OCCUPIED)
+
+        # 5. 1-Click Complete -> reservation 'completed' & table 'available'
+        comp_res = self.client.post(f"/api/operations/restaurant/reservations/{res_id}/complete/")
+        self.assertEqual(comp_res.status_code, 200)
+        self.assertEqual(comp_res.data["status"], TableReservation.STATUS_COMPLETED)
+        t2.refresh_from_db()
+        self.assertEqual(t2.status, RestaurantTable.STATUS_AVAILABLE)
+
+        # 6. 1-Click Table Status transition to 'cleaning'
+        clean_res = self.client.post(
+            f"/api/operations/restaurant/tables/{t1.id}/status/",
+            {"status": "cleaning"},
+            format="json",
+        )
+        self.assertEqual(clean_res.status_code, 200)
+        t1.refresh_from_db()
+        self.assertEqual(t1.status, RestaurantTable.STATUS_CLEANING)
+
+        # 7. AI Agent Table Reservation Tool (books best-fit available table)
+        tomorrow_str = (timezone.localdate() + timedelta(days=1)).isoformat()
+        ai_res = execute_book_table_reservation(
+            company=self.company_a,
+            customer_name="Hamza Raza",
+            customer_phone="03009997766",
+            party_size=5,
+            reservation_date=tomorrow_str,
+            reservation_time="20:00",
+            special_requests="Anniversary",
+        )
+        self.assertTrue(ai_res["success"])
+        self.assertEqual(ai_res["table_number"], "VIP-1")  # Only table with capacity >= 5
+        self.assertEqual(ai_res["status"], TableReservation.STATUS_CONFIRMED)
+
+        # AI double-booking on same slot for party of 5 fails cleanly
+        ai_dup = execute_book_table_reservation(
+            company=self.company_a,
+            customer_name="Another Party",
+            customer_phone="03008887766",
+            party_size=5,
+            reservation_date=tomorrow_str,
+            reservation_time="20:30",
+        )
+        self.assertFalse(ai_dup["success"])
+
+        # 8. Strict Multi-Tenant Isolation: Company B sees 0 tables/reservations and gets 404
+        self.client.force_authenticate(user=self.owner_b)
+        fp_b = self.client.get("/api/operations/restaurant/floor-plan/")
+        self.assertEqual(fp_b.status_code, 200)
+        self.assertEqual(fp_b.data["tables"], [])
+
+        res_b = self.client.get("/api/operations/restaurant/reservations/?date=all")
+        self.assertEqual(res_b.status_code, 200)
+        self.assertEqual(res_b.data, [])
+
+        cross_seat = self.client.post(f"/api/operations/restaurant/reservations/{res_id}/seat/")
+        self.assertEqual(cross_seat.status_code, 404)
+
+    def test_dine_in_auto_occupies_blocks_double_booking_and_frees_table_on_completion(self):
+        from companies.models import CatalogItem
+        from operations.models import Order, RestaurantTable
+
+        self.client.force_authenticate(user=self.owner_a)
+
+        dish = CatalogItem.objects.create(
+            company=self.company_a,
+            name="Mutton Karahi",
+            price=Decimal("1800.00"),
+        )
+        t1 = RestaurantTable.objects.create(
+            company=self.company_a,
+            table_number="T1",
+            capacity=4,
+            section="indoor",
+            status=RestaurantTable.STATUS_AVAILABLE,
+        )
+
+        # 1. Creating a Dine-In order on T1 automatically sets T1.status = 'occupied'
+        res1 = self.client.post(
+            "/api/operations/orders/",
+            {
+                "order_type": "dine_in",
+                "table_id": t1.id,
+                "customer_name": "Salman Khan",
+                "customer_phone": "03001112233",
+                "items": [{"item_id": dish.id, "quantity": 1}],
+            },
+            format="json",
+        )
+        self.assertEqual(res1.status_code, 201)
+        order_id = res1.data["id"]
+        t1.refresh_from_db()
+        self.assertEqual(t1.status, RestaurantTable.STATUS_OCCUPIED)
+
+        # 2. Creating a second Dine-In order on T1 for a DIFFERENT customer returns 409 Conflict
+        res_conflict = self.client.post(
+            "/api/operations/orders/",
+            {
+                "order_type": "dine_in",
+                "table_id": t1.id,
+                "customer_name": "Different Guest",
+                "customer_phone": "03009998877",
+                "items": [{"item_id": dish.id, "quantity": 1}],
+            },
+            format="json",
+        )
+        self.assertEqual(res_conflict.status_code, 409)
+        self.assertIn("currently occupied by Salman Khan", res_conflict.data["detail"])
+
+        # 3. Completing the Dine-In order (via KDS bump: new -> preparing -> ready -> delivered) frees T1 back to 'available'
+        self.client.post(f"/api/operations/restaurant/kds/{order_id}/bump/")
+        self.client.post(f"/api/operations/restaurant/kds/{order_id}/bump/")
+        bump_done = self.client.post(f"/api/operations/restaurant/kds/{order_id}/bump/")
+        self.assertEqual(bump_done.status_code, 200)
+        self.assertEqual(bump_done.data["status"], Order.STATUS_DELIVERED)
+
+        t1.refresh_from_db()
+        self.assertEqual(t1.status, RestaurantTable.STATUS_AVAILABLE)
+
+    def test_ai_table_booking_normalizes_missing_or_past_date_to_today_and_appears_in_today_filter(self):
+        """
+        Verifies execute_book_table_reservation normalizes missing, relative ('aaj'),
+        or outdated past dates (e.g., 2023-05-01) to today's local date so the created
+        TableReservation immediately appears under GET /api/operations/restaurant/reservations/?date=today.
+        """
+        from django.utils import timezone
+        from operations.models import RestaurantTable
+        from operations.whatsapp_agent import execute_book_table_reservation
+
+        self.client.force_authenticate(user=self.owner_a)
+
+        RestaurantTable.objects.create(
+            company=self.company_a,
+            table_number="T5",
+            capacity=4,
+            section="indoor",
+            status=RestaurantTable.STATUS_AVAILABLE,
+        )
+        RestaurantTable.objects.create(
+            company=self.company_a,
+            table_number="T6",
+            capacity=6,
+            section="outdoor",
+            status=RestaurantTable.STATUS_AVAILABLE,
+        )
+
+        today_iso = timezone.localdate().isoformat()
+
+        # Case 1: Relative date ('aaj')
+        r1 = execute_book_table_reservation(
+            company=self.company_a,
+            customer_name="Ayesha Siddiqui",
+            customer_phone="03001239876",
+            party_size=4,
+            reservation_date="aaj",
+            reservation_time="20:00",
+        )
+        self.assertTrue(r1["success"])
+        self.assertEqual(r1["reservation_date"], today_iso)
+        self.assertIn("reserved_at", r1)
+
+        # Case 2: LLM guesses an outdated past year (2023-10-15)
+        r2 = execute_book_table_reservation(
+            company=self.company_a,
+            customer_name="Zeeshan Ali",
+            customer_phone="03009871234",
+            party_size=4,
+            reservation_date="2023-10-15",
+            reservation_time="21:00",
+        )
+        self.assertTrue(r2["success"])
+        self.assertEqual(r2["reservation_date"], today_iso)
+
+        # Both must appear in GET /api/operations/restaurant/reservations/?date=today
+        today_list = self.client.get("/api/operations/restaurant/reservations/?date=today")
+        self.assertEqual(today_list.status_code, 200)
+        names = [row["customer_name"] for row in today_list.data]
+        self.assertIn("Ayesha Siddiqui", names)
+        self.assertIn("Zeeshan Ali", names)

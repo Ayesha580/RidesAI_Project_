@@ -453,6 +453,11 @@ class DashboardOrderStatusAPIView(APIView):
             from operations.retail_views import complete_linked_exchanges_on_delivery
             complete_linked_exchanges_on_delivery(order, company=company)
 
+        # Auto-free dine-in table when order is delivered or cancelled
+        if new_status in (Order.STATUS_DELIVERED, Order.STATUS_CANCELLED):
+            from operations.views import release_table_if_idle
+            release_table_if_idle(order)
+
         return Response({
             "success": True,
             "id": order.id,

@@ -57,6 +57,7 @@ import HospitalDashboard from "./operations/HospitalDashboard";
 import AnalyticsReports from "./operations/AnalyticsReports";
 import NotificationSettings from "./operations/NotificationSettings";
 import TablesFloorPlan from "./operations/TablesFloorPlan";
+import RestaurantReservations from "./operations/RestaurantReservations";
 import PrivacyComplianceSettings from "./operations/PrivacyComplianceSettings";
 import StaffAttendance from "./operations/StaffAttendance";
 import SuppliersManagement from "./operations/SuppliersManagement";
@@ -78,7 +79,8 @@ function OwnerModulePage() {
   if (moduleKey === "departments") return <HospitalDashboard defaultTab="departments" />;
   if (moduleKey === "lab_tests") return <HospitalDashboard defaultTab="lab_tests" />;
   if (moduleKey === "reports") return <AnalyticsReports />;
-  if (moduleKey === "tables" || moduleKey === "reservations") return <TablesFloorPlan />;
+  if (moduleKey === "tables") return <TablesFloorPlan />;
+  if (moduleKey === "reservations") return <RestaurantReservations />;
   if (moduleKey === "attendance") return <StaffAttendance />;
   if (moduleKey === "suppliers") return <SuppliersManagement />;
   if (moduleKey === "appointments") return <ClinicAppointments />;
@@ -115,7 +117,8 @@ function StaffModulePage() {
   if (moduleKey === "departments") return <HospitalDashboard staff defaultTab="departments" />;
   if (moduleKey === "lab_tests") return <HospitalDashboard staff defaultTab="lab_tests" />;
   if (moduleKey === "reports") return <AnalyticsReports staff />;
-  if (moduleKey === "tables" || moduleKey === "reservations") return <TablesFloorPlan staff />;
+  if (moduleKey === "tables") return <TablesFloorPlan staff />;
+  if (moduleKey === "reservations") return <RestaurantReservations staff />;
   if (moduleKey === "attendance") return <StaffAttendance staff />;
   if (moduleKey === "suppliers") return <SuppliersManagement staff />;
   if (moduleKey === "appointments") return <ClinicAppointments staff />;

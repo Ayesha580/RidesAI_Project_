@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { useSearchParams } from "react-router-dom";
 import OwnerLayout from "../owner/components/OwnerLayout";
 import StaffLayout from "../staff/components/StaffLayout";
 import { useAuth } from "../context/AuthContext";
@@ -18,6 +19,7 @@ function isRestaurantOwner(user) {
 
 function OwnerOrdersWorkspace({ user }) {
   const isRestaurant = isRestaurantOwner(user);
+  const [searchParams, setSearchParams] = useSearchParams();
   const [activeView, setActiveView] = useState("list");
   const [refreshTick, setRefreshTick] = useState(0);
 
@@ -34,6 +36,18 @@ function OwnerOrdersWorkspace({ user }) {
   const [cartLines, setCartLines] = useState([
     { item_id: "", quantity: 1, selected_modifiers: [], item_notes: "" },
   ]);
+
+  // Support deep-link from Interactive Floor Plan: /owner/m/orders?newOrder=1&orderType=dine_in&tableId=5
+  useEffect(() => {
+    if (searchParams.get("newOrder") === "1") {
+      const ot = searchParams.get("orderType");
+      const tid = searchParams.get("tableId");
+      if (ot && ["dine_in", "takeaway", "delivery"].includes(ot)) setOrderType(ot);
+      if (tid) setTableId(String(tid));
+      setShowNewModal(true);
+      setSearchParams({}, { replace: true });
+    }
+  }, [searchParams, setSearchParams]);
   const [creating, setCreating] = useState(false);
   const [createErr, setCreateErr] = useState("");
 
@@ -442,11 +456,17 @@ function OwnerOrdersWorkspace({ user }) {
                       style={{ padding: "9px 12px", borderRadius: 9, border: "1px solid #d1d5db", fontSize: 13 }}
                     >
                       <option value="">— Choose Table —</option>
-                      {tables.map((t) => (
-                        <option key={t.id} value={t.id}>
-                          {t.table_number} ({t.zone || "Main"} · {t.capacity} seats · {t.status})
-                        </option>
-                      ))}
+                      {tables.map((t) => {
+                        const isOcc = String(t.status || "").toLowerCase() === "occupied";
+                        const statusLabel = t.status
+                          ? t.status.charAt(0).toUpperCase() + t.status.slice(1)
+                          : "Available";
+                        return (
+                          <option key={t.id} value={t.id} disabled={isOcc}>
+                            {t.table_number} ({t.capacity} seats • {statusLabel})
+                          </option>
+                        );
+                      })}
                     </select>
                   </label>
                 )}

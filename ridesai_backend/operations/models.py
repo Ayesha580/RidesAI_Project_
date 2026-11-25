@@ -895,10 +895,23 @@ class RestaurantTable(models.Model):
     STATUS_AVAILABLE = "available"
     STATUS_OCCUPIED = "occupied"
     STATUS_RESERVED = "reserved"
+    STATUS_CLEANING = "cleaning"
     STATUS_CHOICES = [
         (STATUS_AVAILABLE, "Available"),
         (STATUS_OCCUPIED, "Occupied"),
         (STATUS_RESERVED, "Reserved"),
+        (STATUS_CLEANING, "Cleaning"),
+    ]
+
+    SECTION_INDOOR = "indoor"
+    SECTION_OUTDOOR = "outdoor"
+    SECTION_VIP = "vip"
+    SECTION_ROOFTOP = "rooftop"
+    SECTION_CHOICES = [
+        (SECTION_INDOOR, "Indoor"),
+        (SECTION_OUTDOOR, "Outdoor"),
+        (SECTION_VIP, "VIP"),
+        (SECTION_ROOFTOP, "Rooftop"),
     ]
 
     SHAPE_ROUND = "round"
@@ -919,6 +932,7 @@ class RestaurantTable(models.Model):
     table_number = models.CharField(max_length=40)
     capacity = models.PositiveIntegerField(default=4)
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default=STATUS_AVAILABLE, db_index=True)
+    section = models.CharField(max_length=32, choices=SECTION_CHOICES, default=SECTION_INDOOR, db_index=True)
     zone = models.CharField(max_length=60, default="Main Hall", db_index=True)
     shape = models.CharField(max_length=16, choices=SHAPE_CHOICES, default=SHAPE_SQUARE)
     pos_x = models.IntegerField(default=60)
@@ -948,6 +962,68 @@ class RestaurantTable(models.Model):
 
     def __str__(self):
         return f"{self.table_number} ({self.zone}) - {self.status}"
+
+
+class TableReservation(models.Model):
+    STATUS_PENDING = "pending"
+    STATUS_CONFIRMED = "confirmed"
+    STATUS_SEATED = "seated"
+    STATUS_COMPLETED = "completed"
+    STATUS_CANCELLED = "cancelled"
+    STATUS_NO_SHOW = "no_show"
+    STATUS_CHOICES = [
+        (STATUS_PENDING, "Pending"),
+        (STATUS_CONFIRMED, "Confirmed"),
+        (STATUS_SEATED, "Seated"),
+        (STATUS_COMPLETED, "Completed"),
+        (STATUS_CANCELLED, "Cancelled"),
+        (STATUS_NO_SHOW, "No Show"),
+    ]
+
+    company = models.ForeignKey(
+        "companies.Company",
+        on_delete=models.CASCADE,
+        related_name="table_reservations",
+        db_index=True,
+    )
+    table = models.ForeignKey(
+        RestaurantTable,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="reservations",
+    )
+    customer_name = models.CharField(max_length=160)
+    customer_phone = models.CharField(max_length=40, blank=True, default="")
+    party_size = models.PositiveIntegerField(default=2)
+    reservation_date = models.DateField(db_index=True)
+    reservation_time = models.TimeField()
+    reserved_at = models.DateTimeField(db_index=True)
+    status = models.CharField(
+        max_length=20,
+        choices=STATUS_CHOICES,
+        default=STATUS_CONFIRMED,
+        db_index=True,
+    )
+    special_requests = models.TextField(blank=True, default="")
+    source = models.CharField(
+        max_length=20,
+        default="dashboard",
+        choices=[("dashboard", "Dashboard"), ("agent", "AI Agent"), ("web", "Web")],
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ("reserved_at", "id")
+        indexes = [
+            models.Index(fields=["company", "reservation_date", "status"], name="op_res_comp_date_st_idx"),
+            models.Index(fields=["company", "table", "reserved_at"], name="op_res_comp_tbl_dt_idx"),
+        ]
+
+    def __str__(self):
+        tbl = self.table.table_number if self.table else "Unassigned"
+        return f"{self.customer_name} ({self.party_size}p) @ {self.reservation_date} {self.reservation_time} [{tbl}]"
 
 
 # ============================================================================

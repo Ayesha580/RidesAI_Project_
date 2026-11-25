@@ -11,6 +11,7 @@ import json
 import logging
 import os
 import re
+from datetime import timedelta
 from decimal import Decimal
 from typing import Optional, Dict, Any, List
 
@@ -370,11 +371,40 @@ TOOL_LOG_UNANSWERED_QUESTION = {
     },
 }
 
+TOOL_BOOK_TABLE_RESERVATION = {
+    "type": "function",
+    "function": {
+        "name": "book_table_reservation",
+        "description": (
+            "Checks table availability for the requested party size, date, and time (preventing 90-minute double-bookings) "
+            "and books a confirmed dine-in table reservation for the customer."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "customer_name": {"type": "string", "description": "Guest's full name."},
+                "customer_phone": {"type": "string", "description": "Guest's contact phone number."},
+                "party_size": {"type": "integer", "description": "Number of guests (e.g. 2, 4, 6)."},
+                "reservation_date": {"type": "string", "description": "Reservation date in YYYY-MM-DD format."},
+                "reservation_time": {"type": "string", "description": "Reservation time in HH:MM (24h) or '7:30 PM' format."},
+                "preferred_section": {
+                    "type": "string",
+                    "enum": ["indoor", "outdoor", "vip", "rooftop"],
+                    "description": "Optional preferred seating section.",
+                },
+                "special_requests": {"type": "string", "description": "Optional special requests (e.g. birthday, window seat)."},
+            },
+            "required": ["customer_name", "party_size", "reservation_date", "reservation_time"],
+        },
+    },
+}
+
 AGENT_TOOLS = [
     TOOL_GET_CATALOG_ITEMS,
     TOOL_GET_UPSELL_SUGGESTIONS,
     TOOL_CREATE_ORDER,
     TOOL_CHECK_ORDER_STATUS,
+    TOOL_BOOK_TABLE_RESERVATION,
     TOOL_SUBMIT_PRESCRIPTION_REQUEST,
     TOOL_GET_CLINIC_DOCTORS,
     TOOL_BOOK_APPOINTMENT,
@@ -392,13 +422,20 @@ AGENT_TOOLS = [
 CATEGORY_AGENT_PROFILES = {
     "restaurant": {
         "key": "restaurant",
-        "role_desc": "food ordering and customer service",
+        "role_desc": "food ordering, table reservations, and customer service",
         "catalog_header": "FOOD MENU & AVAILABLE DISHES",
         "instructions": (
-            "- Primary duty is presenting delicious food options, taking takeaway/delivery food orders, "
-            "and confirming customer delivery addresses."
+            "- Primary duty is presenting delicious food options, taking takeaway/delivery/dine-in food orders, "
+            "confirming customer delivery addresses, and booking dine-in table reservations via `book_table_reservation`."
         ),
-        "tools": [TOOL_GET_CATALOG_ITEMS, TOOL_GET_UPSELL_SUGGESTIONS, TOOL_CREATE_ORDER, TOOL_CHECK_ORDER_STATUS, TOOL_LOG_UNANSWERED_QUESTION],
+        "tools": [
+            TOOL_GET_CATALOG_ITEMS,
+            TOOL_GET_UPSELL_SUGGESTIONS,
+            TOOL_CREATE_ORDER,
+            TOOL_CHECK_ORDER_STATUS,
+            TOOL_BOOK_TABLE_RESERVATION,
+            TOOL_LOG_UNANSWERED_QUESTION,
+        ],
     },
     "pharmacy": {
         "key": "pharmacy",
@@ -811,6 +848,146 @@ def execute_book_lab_test(
     except Exception as e:
         logger.error(f"[Hospital Agent] book_lab_test error: {e}", exc_info=True)
         return {"success": False, "error": "Could not complete the lab test booking right now."}
+
+
+def execute_book_table_reservation(
+    company: Company,
+    customer_name: str,
+    customer_phone: str,
+    party_size: int,
+    reservation_date: Optional[str] = None,
+    reservation_time: str = "20:00",
+    preferred_section: Optional[str] = None,
+    special_requests: Optional[str] = None,
+) -> Dict[str, Any]:
+    """
+    Multi-tenant AI Agent tool: checks available tables matching party_size for the
+    requested date/time (90-minute conflict guard), creates a confirmed TableReservation,
+    links the best-fit table, and auto-remembers the guest.
+
+    Date safety: if `reservation_date` is omitted, relative ('today'/'aaj'/'tonight'/
+    'tomorrow'/'kal'), or an outdated past date/year guessed by the LLM, it is
+    automatically normalized to the current local date (or tomorrow) so bookings
+    always appear under Today / All Upcoming in the owner dashboard.
+    """
+    from datetime import timedelta
+    from operations.customer_recall_views import upsert_guest_customer
+    from operations.models import RestaurantTable, TableReservation
+    from operations.restaurant_floor_views import (
+        find_available_table_for_party,
+        parse_reservation_datetime,
+    )
+
+    clean_name = (customer_name or "").strip()
+    clean_phone = (customer_phone or "").strip()
+    if not clean_name or clean_name.lower() in ("valued customer", "customer", "guest"):
+        return {
+            "success": False,
+            "error": "Please provide the guest's name before confirming the table reservation.",
+        }
+
+    try:
+        size = max(1, int(party_size or 2))
+    except (TypeError, ValueError):
+        return {"success": False, "error": "Party size must be a valid number of guests."}
+
+    today_local = timezone.localdate()
+    raw_date_str = str(reservation_date or "").strip().lower()
+    if not raw_date_str or raw_date_str in ("today", "aaj", "tonight", "now"):
+        normalized_date_input = today_local
+    elif raw_date_str in ("tomorrow", "kal"):
+        normalized_date_input = today_local + timedelta(days=1)
+    else:
+        normalized_date_input = reservation_date
+
+    try:
+        res_date, res_time, reserved_at = parse_reservation_datetime(normalized_date_input, reservation_time)
+    except ValueError:
+        # Fallback to today if LLM passed an unparseable relative string
+        try:
+            res_date, res_time, reserved_at = parse_reservation_datetime(today_local, reservation_time)
+        except ValueError as exc:
+            return {"success": False, "error": str(exc)}
+
+    # Guard against LLM guessing an outdated year/past date (e.g. 2023/2024)
+    if res_date < today_local:
+        logger.warning(
+            "[AI TABLE BOOKING] LLM passed past date '%s' (< today %s); normalizing to today.",
+            res_date.isoformat(),
+            today_local.isoformat(),
+        )
+        res_date, res_time, reserved_at = parse_reservation_datetime(today_local, res_time)
+
+    logger.info(
+        "[AI TABLE BOOKING] Company='%s' (id=%s) | Guest='%s' (%s) | Party=%s | Date=%s %s | Section=%s",
+        company.name,
+        company.id,
+        clean_name,
+        clean_phone,
+        size,
+        res_date.isoformat(),
+        res_time.strftime("%H:%M"),
+        preferred_section or "any",
+    )
+    print(
+        f"[AI TABLE BOOKING] Company='{company.name}' Guest='{clean_name}' "
+        f"Party={size} Date={res_date.isoformat()} Time={res_time.strftime('%H:%M')}"
+    )
+
+    has_any_tables = RestaurantTable.objects.filter(company=company).exists()
+    assigned_table = find_available_table_for_party(
+        company=company,
+        party_size=size,
+        reserved_at=reserved_at,
+        preferred_section=preferred_section,
+    )
+    if has_any_tables and not assigned_table:
+        return {
+            "success": False,
+            "error": (
+                f"Sorry, all tables accommodating {size} guests are already booked within 90 minutes "
+                f"of {res_time.strftime('%H:%M')} on {res_date.isoformat()}. Please suggest an alternate time."
+            ),
+        }
+
+    reservation = TableReservation.objects.create(
+        company=company,
+        table=assigned_table,
+        customer_name=clean_name,
+        customer_phone=clean_phone,
+        party_size=size,
+        reservation_date=res_date,
+        reservation_time=res_time,
+        reserved_at=reserved_at,
+        status=TableReservation.STATUS_CONFIRMED,
+        special_requests=(special_requests or "").strip(),
+        source="agent",
+    )
+
+    upsert_guest_customer(company=company, name=clean_name, phone=clean_phone)
+
+    tbl_label = assigned_table.table_number if assigned_table else "Best Available"
+    logger.info(
+        "[AI TABLE BOOKING] CONFIRMED reservation_id=%s | table=%s | reserved_at=%s",
+        reservation.id,
+        tbl_label,
+        reservation.reserved_at.isoformat(),
+    )
+    return {
+        "success": True,
+        "reservation_id": reservation.id,
+        "customer_name": clean_name,
+        "party_size": size,
+        "reservation_date": res_date.isoformat(),
+        "reservation_time": res_time.strftime("%H:%M"),
+        "reserved_at": reservation.reserved_at.isoformat(),
+        "table_number": tbl_label,
+        "status": reservation.status,
+        "confirmation_message": (
+            f"Reservation #{reservation.id} confirmed for {clean_name} (Party of {size}) on {res_date.isoformat()} "
+            f"at {res_time.strftime('%H:%M')} — Table {tbl_label}."
+        ),
+    }
 
 
 def execute_get_catalog_items(company: Company, search_query: Optional[str] = None) -> Dict[str, Any]:
@@ -1678,8 +1855,32 @@ def _build_system_prompt(
             dept_lines.append(f"• {d['name']} ({d.get('ward_type', 'opd').upper()}){tag}{beds}")
         hospital_dept_section = "\nHOSPITAL DEPARTMENTS, WARDS & BED AVAILABILITY:\n" + "\n".join(dept_lines) + "\n"
 
+    now_local = timezone.localtime()
+    current_date_str = now_local.strftime("%Y-%m-%d")
+    tomorrow_date_str = (now_local + timedelta(days=1)).strftime("%Y-%m-%d")
+    current_datetime_banner = (
+        f"Today is {now_local.strftime('%A, %Y-%m-%d')}, current local time {now_local.strftime('%H:%M')} "
+        f"(Tomorrow is {tomorrow_date_str})."
+    )
+
+    restaurant_reservation_rules = ""
+    if cat_cfg.get("key") == "restaurant":
+        restaurant_reservation_rules = (
+            "\nMANDATORY TABLE RESERVATION RULES (STRICT — NEVER HALLUCINATE BOOKINGS):\n"
+            f"- {current_datetime_banner}\n"
+            "- Whenever a customer asks to book/reserve a table (e.g. 'aaj raat 8 baje 4 logon ke liye table book kar dein'), "
+            "you MUST call the `book_table_reservation` tool (NEVER a generic appointment tool).\n"
+            "- NEVER confirm a table reservation unless `book_table_reservation` has been executed in this conversation and returned `\"success\": true`.\n"
+            f"- For 'today'/'aaj'/'tonight', ALWAYS pass `reservation_date: \"{current_date_str}\"`. "
+            f"For 'tomorrow'/'kal', ALWAYS pass `reservation_date: \"{tomorrow_date_str}\"`.\n"
+            "- Once `book_table_reservation` returns `\"success\": true`, quote the exact `table_number`, `reservation_date`, `reservation_time`, and `party_size` from the tool response.\n"
+        )
+
     return f"""You are the official AI Assistant for {biz_name} on WhatsApp.
 Your primary role is {role_desc}.
+
+CURRENT DATE & TIME:
+- {current_datetime_banner}
 
 BUSINESS DETAILS:
 - Business Name: {biz_name}
@@ -1702,6 +1903,7 @@ FREQUENTLY ASKED QUESTIONS & POLICIES:
 
 VERTICAL-SPECIFIC INSTRUCTIONS:
 {category_instructions}
+{restaurant_reservation_rules}
 
 GLOBAL HEALTH & DIETARY GUARDRAILS (PRD MANDATORY):
 - Never diagnose medical conditions, prescribe prescription medications, or claim that any food, supplement, or product treats or cures any illness.
@@ -2029,6 +2231,19 @@ def _generate_agent_reply(
                             company=company,
                             customer_phone=fn_args.get("customer_phone") or sender_phone,
                             order_number=fn_args.get("order_number"),
+                        )
+                    elif fn_name == "book_table_reservation":
+                        res_name = (fn_args.get("customer_name") or "").strip() or customer_name
+                        res_phone = (fn_args.get("customer_phone") or "").strip() or sender_phone
+                        tool_result = execute_book_table_reservation(
+                            company=company,
+                            customer_name=res_name,
+                            customer_phone=res_phone,
+                            party_size=fn_args.get("party_size", 2),
+                            reservation_date=fn_args.get("reservation_date", ""),
+                            reservation_time=fn_args.get("reservation_time", ""),
+                            preferred_section=fn_args.get("preferred_section"),
+                            special_requests=fn_args.get("special_requests", ""),
                         )
                     elif fn_name == "submit_prescription_request":
                         tool_result = execute_submit_prescription_request(
