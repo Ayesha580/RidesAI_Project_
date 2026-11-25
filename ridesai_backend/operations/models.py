@@ -121,6 +121,7 @@ class Customer(models.Model):
     company = models.ForeignKey("companies.Company", on_delete=models.CASCADE, related_name="customers")
     phone = models.CharField(max_length=40, db_index=True)
     name = models.CharField(max_length=160, blank=True)
+    delivery_address = models.TextField(blank=True, default="")
     daily_voice_count = models.IntegerField(default=0)
     last_voice_date = models.DateField(null=True, blank=True)
     daily_text_count = models.IntegerField(default=0)

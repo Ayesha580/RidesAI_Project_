@@ -179,6 +179,14 @@ def _create_order(company, payload, actor=None, source="dashboard"):
         order.save(update_fields=["subtotal", "delivery_fee", "total", "updated_at"])
         OrderEvent.objects.create(company=company, order=order, actor=actor,
             event_type=f"{source}_order_created", to_status=order.status)
+
+    from operations.customer_recall_views import upsert_guest_customer
+    upsert_guest_customer(
+        company=company,
+        name=order.customer_name,
+        phone=order.customer_phone,
+        delivery_address=order.delivery_address,
+    )
     return order
 
 

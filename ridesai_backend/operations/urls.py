@@ -39,6 +39,7 @@ from .staff_supplier_views import (
 )
 from .restaurant_dashboard_views import RestaurantDashboardSummaryAPIView
 from .restaurant_kds_views import RestaurantKDSListAPIView, RestaurantKDSBumpAPIView
+from .customer_recall_views import CustomerLookupAPIView
 
 urlpatterns = [
     path("orders/catalog/", OrderCatalogAPIView.as_view(), name="order-catalog"),
@@ -94,5 +95,6 @@ urlpatterns = [
     path("restaurant/dashboard-summary/", RestaurantDashboardSummaryAPIView.as_view(), name="restaurant-dashboard-summary"),
     path("restaurant/kds/", RestaurantKDSListAPIView.as_view(), name="restaurant-kds-list"),
     path("restaurant/kds/<int:order_id>/bump/", RestaurantKDSBumpAPIView.as_view(), name="restaurant-kds-bump"),
+    path("customers/lookup/", CustomerLookupAPIView.as_view(), name="customers-lookup"),
     path("hospital/", include("operations.hospital_urls")),
 ]

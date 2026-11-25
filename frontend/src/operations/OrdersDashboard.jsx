@@ -1,8 +1,8 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import OwnerLayout from "../owner/components/OwnerLayout";
 import StaffLayout from "../staff/components/StaffLayout";
 import { useAuth } from "../context/AuthContext";
-import { operationsApi, tablesApi } from "../api/operationsApi";
+import { customersApi, operationsApi, tablesApi } from "../api/operationsApi";
 import { errorText } from "../api/axiosClient";
 import { staffApi } from "../api/StaffApi";
 import OrdersView from "./components/OrdersView";
@@ -36,6 +36,64 @@ function OwnerOrdersWorkspace({ user }) {
   ]);
   const [creating, setCreating] = useState(false);
   const [createErr, setCreateErr] = useState("");
+
+  // Returning Customer Auto-Recall state
+  const [customerMatches, setCustomerMatches] = useState([]);
+  const [showCustomerDropdown, setShowCustomerDropdown] = useState(false);
+  const [searchingCustomers, setSearchingCustomers] = useState(false);
+  const [selectedReturningCustomer, setSelectedReturningCustomer] = useState(null);
+  const lookupTimerRef = useRef(null);
+
+  const triggerCustomerLookup = (query) => {
+    if (lookupTimerRef.current) clearTimeout(lookupTimerRef.current);
+    const trimmed = (query || "").trim();
+    if (trimmed.length < 2) {
+      setCustomerMatches([]);
+      setShowCustomerDropdown(false);
+      setSearchingCustomers(false);
+      return;
+    }
+    setSearchingCustomers(true);
+    lookupTimerRef.current = setTimeout(async () => {
+      try {
+        const { data } = await customersApi.lookup(trimmed);
+        const list = Array.isArray(data) ? data : [];
+        setCustomerMatches(list);
+        setShowCustomerDropdown(list.length > 0);
+      } catch {
+        setCustomerMatches([]);
+        setShowCustomerDropdown(false);
+      } finally {
+        setSearchingCustomers(false);
+      }
+    }, 250);
+  };
+
+  useEffect(() => {
+    return () => {
+      if (lookupTimerRef.current) clearTimeout(lookupTimerRef.current);
+    };
+  }, []);
+
+  const handleSelectReturningCustomer = (cust) => {
+    setCustomerName(cust.name || "");
+    setCustomerPhone(cust.phone || "");
+    if (cust.delivery_address) {
+      setDeliveryAddress(cust.delivery_address);
+    }
+    setSelectedReturningCustomer(cust);
+    setShowCustomerDropdown(false);
+    setCustomerMatches([]);
+  };
+
+  const handleClearReturningCustomer = () => {
+    setSelectedReturningCustomer(null);
+    setCustomerName("");
+    setCustomerPhone("");
+    setDeliveryAddress("");
+    setCustomerMatches([]);
+    setShowCustomerDropdown(false);
+  };
 
   useEffect(() => {
     if (!showNewModal) return;
@@ -105,6 +163,9 @@ function OwnerOrdersWorkspace({ user }) {
       setDeliveryAddress("");
       setOrderNotes("");
       setTableId("");
+      setSelectedReturningCustomer(null);
+      setCustomerMatches([]);
+      setShowCustomerDropdown(false);
       setCartLines([{ item_id: "", quantity: 1, selected_modifiers: [], item_notes: "" }]);
       setRefreshTick((t) => t + 1);
     } catch (err) {
@@ -284,44 +345,217 @@ function OwnerOrdersWorkspace({ user }) {
               })}
             </div>
 
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 10 }}>
-              <label style={{ display: "flex", flexDirection: "column", gap: 4, fontSize: 12.5, fontWeight: 600, color: "#4b5563" }}>
-                Customer Name *
-                <input
-                  required
-                  value={customerName}
-                  onChange={(e) => setCustomerName(e.target.value)}
-                  placeholder="e.g. Ali / Walk-in"
-                  style={{ padding: "9px 12px", borderRadius: 9, border: "1px solid #d1d5db", fontSize: 13 }}
-                />
-              </label>
-
-              <label style={{ display: "flex", flexDirection: "column", gap: 4, fontSize: 12.5, fontWeight: 600, color: "#4b5563" }}>
-                Phone Number
-                <input
-                  value={customerPhone}
-                  onChange={(e) => setCustomerPhone(e.target.value)}
-                  placeholder="03xx-xxxxxxx"
-                  style={{ padding: "9px 12px", borderRadius: 9, border: "1px solid #d1d5db", fontSize: 13 }}
-                />
-              </label>
-
-              {orderType === "dine_in" && (
-                <label style={{ display: "flex", flexDirection: "column", gap: 4, fontSize: 12.5, fontWeight: 600, color: "#4b5563" }}>
-                  Select Table
-                  <select
-                    value={tableId}
-                    onChange={(e) => setTableId(e.target.value)}
-                    style={{ padding: "9px 12px", borderRadius: 9, border: "1px solid #d1d5db", fontSize: 13 }}
+            {/* Returning Customer Badge */}
+            {selectedReturningCustomer && (
+              <div
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "space-between",
+                  gap: 10,
+                  background: "#fdf2ff",
+                  border: "1px solid #f0abfc",
+                  borderRadius: 10,
+                  padding: "8px 12px",
+                  fontSize: 12.5,
+                }}
+              >
+                <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                  <span
+                    style={{
+                      background: "#ff77ff",
+                      color: "#240729",
+                      fontWeight: 800,
+                      padding: "2px 8px",
+                      borderRadius: 999,
+                      fontSize: 11.5,
+                    }}
                   >
-                    <option value="">— Choose Table —</option>
-                    {tables.map((t) => (
-                      <option key={t.id} value={t.id}>
-                        {t.table_number} ({t.zone || "Main"} · {t.capacity} seats · {t.status})
-                      </option>
-                    ))}
-                  </select>
+                    ★ Returning Customer
+                  </span>
+                  <strong style={{ color: "#211426" }}>{selectedReturningCustomer.name || selectedReturningCustomer.phone}</strong>
+                  <span style={{ color: "#7a3b82" }}>
+                    · {selectedReturningCustomer.total_orders || 0}{" "}
+                    {selectedReturningCustomer.total_orders === 1 ? "past order" : "past orders"}
+                  </span>
+                </div>
+                <button
+                  type="button"
+                  onClick={handleClearReturningCustomer}
+                  style={{
+                    border: "1px solid #e9d5ff",
+                    background: "#ffffff",
+                    color: "#7e22ce",
+                    borderRadius: 7,
+                    padding: "3px 9px",
+                    fontSize: 11.5,
+                    fontWeight: 700,
+                    cursor: "pointer",
+                  }}
+                >
+                  Clear
+                </button>
+              </div>
+            )}
+
+            <div style={{ position: "relative" }}>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 10 }}>
+                <label style={{ display: "flex", flexDirection: "column", gap: 4, fontSize: 12.5, fontWeight: 600, color: "#4b5563" }}>
+                  Customer Name *
+                  <input
+                    required
+                    value={customerName}
+                    onChange={(e) => {
+                      setCustomerName(e.target.value);
+                      setSelectedReturningCustomer(null);
+                      triggerCustomerLookup(e.target.value);
+                    }}
+                    onFocus={() => customerMatches.length > 0 && setShowCustomerDropdown(true)}
+                    placeholder="Type name or search guest..."
+                    autoComplete="off"
+                    style={{ padding: "9px 12px", borderRadius: 9, border: "1px solid #d1d5db", fontSize: 13 }}
+                  />
                 </label>
+
+                <label style={{ display: "flex", flexDirection: "column", gap: 4, fontSize: 12.5, fontWeight: 600, color: "#4b5563" }}>
+                  Phone Number
+                  <input
+                    value={customerPhone}
+                    onChange={(e) => {
+                      setCustomerPhone(e.target.value);
+                      setSelectedReturningCustomer(null);
+                      triggerCustomerLookup(e.target.value);
+                    }}
+                    onFocus={() => customerMatches.length > 0 && setShowCustomerDropdown(true)}
+                    placeholder="03xx-xxxxxxx (auto-recall)"
+                    autoComplete="off"
+                    style={{ padding: "9px 12px", borderRadius: 9, border: "1px solid #d1d5db", fontSize: 13 }}
+                  />
+                </label>
+
+                {orderType === "dine_in" && (
+                  <label style={{ display: "flex", flexDirection: "column", gap: 4, fontSize: 12.5, fontWeight: 600, color: "#4b5563" }}>
+                    Select Table
+                    <select
+                      value={tableId}
+                      onChange={(e) => setTableId(e.target.value)}
+                      style={{ padding: "9px 12px", borderRadius: 9, border: "1px solid #d1d5db", fontSize: 13 }}
+                    >
+                      <option value="">— Choose Table —</option>
+                      {tables.map((t) => (
+                        <option key={t.id} value={t.id}>
+                          {t.table_number} ({t.zone || "Main"} · {t.capacity} seats · {t.status})
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                )}
+              </div>
+
+              {/* Debounced Customer Auto-Recall Typeahead Dropdown */}
+              {showCustomerDropdown && (customerMatches.length > 0 || searchingCustomers) && (
+                <div
+                  style={{
+                    position: "absolute",
+                    left: 0,
+                    right: 0,
+                    top: "100%",
+                    marginTop: 6,
+                    background: "#ffffff",
+                    border: "1px solid #f0abfc",
+                    borderRadius: 12,
+                    boxShadow: "0 14px 32px rgba(42, 16, 48, 0.16)",
+                    zIndex: 50,
+                    overflow: "hidden",
+                  }}
+                >
+                  <div
+                    style={{
+                      display: "flex",
+                      justifyContent: "space-between",
+                      alignItems: "center",
+                      padding: "7px 12px",
+                      background: "#fdf4ff",
+                      borderBottom: "1px solid #f5d0fe",
+                      fontSize: 11.5,
+                      fontWeight: 700,
+                      color: "#86198f",
+                    }}
+                  >
+                    <span>
+                      {searchingCustomers ? "Searching guests..." : "★ Matching Returning Guests — Click to Auto-Fill"}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => setShowCustomerDropdown(false)}
+                      style={{ border: "none", background: "transparent", color: "#86198f", cursor: "pointer", fontSize: 12 }}
+                    >
+                      ✕
+                    </button>
+                  </div>
+                  <div style={{ maxHeight: 210, overflowY: "auto" }}>
+                    {customerMatches.map((cust, idx) => (
+                      <button
+                        key={`${cust.phone || cust.name}-${idx}`}
+                        type="button"
+                        onClick={() => handleSelectReturningCustomer(cust)}
+                        style={{
+                          width: "100%",
+                          border: "none",
+                          borderBottom: "1px solid #f6eff8",
+                          background: "#ffffff",
+                          padding: "10px 12px",
+                          textAlign: "left",
+                          cursor: "pointer",
+                          display: "flex",
+                          alignItems: "center",
+                          justifyContent: "space-between",
+                          gap: 10,
+                        }}
+                      >
+                        <div style={{ minWidth: 0 }}>
+                          <div style={{ fontSize: 13, fontWeight: 750, color: "#211426" }}>
+                            {cust.name || "Unnamed Guest"}{" "}
+                            {cust.phone && (
+                              <span style={{ fontWeight: 500, color: "#6b7280", fontFamily: "monospace", fontSize: 12 }}>
+                                · {cust.phone}
+                              </span>
+                            )}
+                          </div>
+                          {cust.delivery_address && (
+                            <div
+                              style={{
+                                fontSize: 11.5,
+                                color: "#7f7288",
+                                marginTop: 2,
+                                whiteSpace: "nowrap",
+                                overflow: "hidden",
+                                textOverflow: "ellipsis",
+                                maxWidth: 360,
+                              }}
+                            >
+                              📍 {cust.delivery_address}
+                            </div>
+                          )}
+                        </div>
+                        <span
+                          style={{
+                            flexShrink: 0,
+                            fontSize: 11,
+                            fontWeight: 800,
+                            background: "#fdf2ff",
+                            color: "#9c1e9c",
+                            border: "1px solid #f5b8f5",
+                            borderRadius: 999,
+                            padding: "3px 9px",
+                          }}
+                        >
+                          ★ Returning · {cust.total_orders || 0} {cust.total_orders === 1 ? "order" : "orders"}
+                        </span>
+                      </button>
+                    ))}
+                  </div>
+                </div>
               )}
             </div>
 
