@@ -162,4 +162,8 @@ export const restaurantKdsApi = {
     api.post(`/operations/restaurant/kds/${orderId}/bump/`),
 };
 
+export const customersApi = {
+  lookup: (q) => api.get("/operations/customers/lookup/", { params: { q } }),
+};
+
 

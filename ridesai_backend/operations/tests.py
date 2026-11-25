@@ -6492,3 +6492,114 @@ class RestaurantModifiersAndKDSTests(TestCase):
         self.assertEqual(len(oi.selected_modifiers), 1)
         self.assertEqual(oi.selected_modifiers[0]["name"], "Extra Cheese")
         self.assertEqual(oi.selected_modifiers[0]["price"], 100.0)
+
+
+class POSCustomerAutoRecallTests(TestCase):
+    """Tests for Guest Auto-Upsert on Order Creation & Fast Multi-Tenant Customer Lookup API."""
+
+    def setUp(self):
+        self.client = APIClient()
+        self.company_a = Company.objects.create(
+            name="Royal Karahi A",
+            business_type="restaurant",
+            status="active",
+            is_approved=True,
+            subscription_status="active",
+        )
+        self.company_b = Company.objects.create(
+            name="Other Cafe B",
+            business_type="restaurant",
+            status="active",
+            is_approved=True,
+            subscription_status="active",
+        )
+        self.owner_a = User.objects.create_user(
+            username="pos_recall_owner_a",
+            email="owner_a@royalkarahi.test",
+            password="Password123!",
+            company=self.company_a,
+            role=User.ROLE_OWNER,
+        )
+        self.owner_b = User.objects.create_user(
+            username="pos_recall_owner_b",
+            email="owner_b@othercafe.test",
+            password="Password123!",
+            company=self.company_b,
+            role=User.ROLE_OWNER,
+        )
+
+    def test_pos_order_auto_saves_customer_and_lookup_is_tenant_isolated(self):
+        from companies.models import CatalogItem, ServiceArea
+        from operations.models import Customer
+
+        item_a = CatalogItem.objects.create(
+            company=self.company_a,
+            name="Chicken Karahi",
+            price=Decimal("1200.00"),
+        )
+        ServiceArea.objects.create(
+            company=self.company_a,
+            area_type="city",
+            city="Lahore",
+            delivery_fee=Decimal("100.00"),
+            is_active=True,
+        )
+
+        self.client.force_authenticate(user=self.owner_a)
+
+        # 1. Create a POS Delivery order — should auto-upsert Customer record
+        res1 = self.client.post(
+            "/api/operations/orders/",
+            {
+                "order_type": "delivery",
+                "customer_name": "Usman Tariq",
+                "customer_phone": "03005554433",
+                "delivery_address": "House 22, Block C, Gulberg",
+                "city": "Lahore",
+                "items": [{"item_id": item_a.id, "quantity": 1}],
+            },
+            format="json",
+        )
+        self.assertEqual(res1.status_code, 201)
+
+        # Verify Customer auto-created with latest name & delivery_address
+        cust = Customer.objects.filter(company=self.company_a, phone="03005554433").first()
+        self.assertIsNotNone(cust)
+        self.assertEqual(cust.name, "Usman Tariq")
+        self.assertEqual(cust.delivery_address, "House 22, Block C, Gulberg")
+
+        # 2. Place a second Takeaway order for the same guest to increment total_orders
+        res2 = self.client.post(
+            "/api/operations/orders/",
+            {
+                "order_type": "takeaway",
+                "customer_name": "Usman Tariq",
+                "customer_phone": "03005554433",
+                "items": [{"item_id": item_a.id, "quantity": 2}],
+            },
+            format="json",
+        )
+        self.assertEqual(res2.status_code, 201)
+
+        # 3. Lookup by partial phone
+        lookup_phone = self.client.get("/api/operations/customers/lookup/?q=0300555")
+        self.assertEqual(lookup_phone.status_code, 200)
+        self.assertEqual(len(lookup_phone.data), 1)
+        match = lookup_phone.data[0]
+        self.assertEqual(match["name"], "Usman Tariq")
+        self.assertEqual(match["phone"], "03005554433")
+        self.assertEqual(match["delivery_address"], "House 22, Block C, Gulberg")
+        self.assertEqual(match["total_orders"], 2)
+        self.assertIsNotNone(match["last_order_at"])
+
+        # 4. Lookup by partial name (case-insensitive)
+        lookup_name = self.client.get("/api/operations/customers/lookup/?q=usman")
+        self.assertEqual(lookup_name.status_code, 200)
+        self.assertEqual(len(lookup_name.data), 1)
+        self.assertEqual(lookup_name.data[0]["phone"], "03005554433")
+
+        # 5. Strict multi-tenant isolation: Company B gets 0 matches for Company A's guest
+        self.client.force_authenticate(user=self.owner_b)
+        lookup_b = self.client.get("/api/operations/customers/lookup/?q=0300555")
+        self.assertEqual(lookup_b.status_code, 200)
+        self.assertEqual(lookup_b.data, [])

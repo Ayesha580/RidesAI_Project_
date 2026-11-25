@@ -1075,6 +1075,14 @@ def execute_create_order(
                 note=f"Order auto-created by WhatsApp Voice/Chat Agent from {clean_phone or 'customer'}.",
             )
 
+        from operations.customer_recall_views import upsert_guest_customer
+        upsert_guest_customer(
+            company=company,
+            name=clean_name,
+            phone=clean_phone,
+            delivery_address=delivery_address.strip(),
+        )
+
         logger.info(f"[Tool: create_order] Order {order.order_number} created successfully for {company.name}.")
         return {
             "success": True,
