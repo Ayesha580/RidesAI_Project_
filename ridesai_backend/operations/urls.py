@@ -48,6 +48,13 @@ from .restaurant_floor_views import (
     RestaurantReservationSeatAPIView,
     RestaurantReservationCompleteAPIView,
 )
+from .restaurant_inventory_views import (
+    RestaurantIngredientListCreateAPIView,
+    RestaurantIngredientDetailAPIView,
+    RestaurantIngredientAdjustAPIView,
+    RestaurantIngredientMovementsAPIView,
+    MenuItemRecipeAPIView,
+)
 
 urlpatterns = [
     path("orders/catalog/", OrderCatalogAPIView.as_view(), name="order-catalog"),
@@ -109,6 +116,11 @@ urlpatterns = [
     path("restaurant/reservations/<int:pk>/", RestaurantReservationDetailAPIView.as_view(), name="restaurant-reservations-detail"),
     path("restaurant/reservations/<int:pk>/seat/", RestaurantReservationSeatAPIView.as_view(), name="restaurant-reservations-seat"),
     path("restaurant/reservations/<int:pk>/complete/", RestaurantReservationCompleteAPIView.as_view(), name="restaurant-reservations-complete"),
+    path("restaurant/inventory/", RestaurantIngredientListCreateAPIView.as_view(), name="restaurant-inventory-list"),
+    path("restaurant/inventory/<int:pk>/", RestaurantIngredientDetailAPIView.as_view(), name="restaurant-inventory-detail"),
+    path("restaurant/inventory/<int:pk>/adjust/", RestaurantIngredientAdjustAPIView.as_view(), name="restaurant-inventory-adjust"),
+    path("restaurant/inventory/<int:pk>/movements/", RestaurantIngredientMovementsAPIView.as_view(), name="restaurant-inventory-movements"),
+    path("restaurant/recipes/<int:catalog_item_id>/", MenuItemRecipeAPIView.as_view(), name="restaurant-recipes-detail"),
     path("customers/lookup/", CustomerLookupAPIView.as_view(), name="customers-lookup"),
     path("hospital/", include("operations.hospital_urls")),
 ]

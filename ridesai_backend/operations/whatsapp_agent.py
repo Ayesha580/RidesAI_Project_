@@ -1000,25 +1000,32 @@ def execute_get_catalog_items(company: Company, search_query: Optional[str] = No
             q = search_query.strip()
             qs = qs.filter(name__icontains=q) | qs.filter(description__icontains=q)
 
+        from operations.restaurant_inventory_views import get_out_of_stock_dish_ids
+        oos_dish_ids = get_out_of_stock_dish_ids(company)
+
         items_list = []
         for item in qs[:40]:
             stock_info = "in stock"
-            try:
-                inv = getattr(item, "inventory", None)
-                if inv and not inv.is_unlimited:
-                    if inv.quantity <= 0:
-                        # Exclude out of stock items
-                        continue
-                    stock_info = f"{inv.quantity} available"
-            except Exception:
-                pass
+            is_oos_recipe = item.id in oos_dish_ids
+            if is_oos_recipe:
+                stock_info = "OUT OF STOCK (ingredient depleted)"
+            else:
+                try:
+                    inv = getattr(item, "inventory", None)
+                    if inv and not inv.is_unlimited:
+                        if inv.quantity <= 0:
+                            # Exclude out of stock items
+                            continue
+                        stock_info = f"{inv.quantity} available"
+                except Exception:
+                    pass
 
             rx_required = bool(getattr(item, "requires_prescription", False))
             generic = getattr(item, "generic_name", "") or ""
 
             items_list.append({
                 "id": item.id,
-                "name": item.name,
+                "name": f"{item.name} [OUT OF STOCK]" if is_oos_recipe else item.name,
                 "generic_name": generic,
                 "price": str(item.price),
                 "category": item.category.name if item.category else "General",
@@ -1027,6 +1034,7 @@ def execute_get_catalog_items(company: Company, search_query: Optional[str] = No
                 "kitchen_station": getattr(item, "kitchen_station", "general") or "general",
                 "prep_time_minutes": getattr(item, "prep_time_minutes", 15) or 15,
                 "requires_prescription": rx_required,
+                "in_stock": not is_oos_recipe,
                 "stock": stock_info,
             })
 
@@ -1259,6 +1267,9 @@ def execute_create_order(
             phone=clean_phone,
             delivery_address=delivery_address.strip(),
         )
+
+        from operations.restaurant_inventory_views import deduct_recipe_ingredients_for_order
+        deduct_recipe_ingredients_for_order(order)
 
         logger.info(f"[Tool: create_order] Order {order.order_number} created successfully for {company.name}.")
         return {
@@ -1639,11 +1650,15 @@ def get_business_context_for_company(company: Optional[Company]) -> Dict[str, An
         return context
 
     try:
-        # Fetch active catalog items (up to 40)
+        # Fetch active catalog items (up to 40) & flag recipe out-of-stock dishes
+        from operations.restaurant_inventory_views import get_out_of_stock_dish_ids
+        oos_dish_ids = get_out_of_stock_dish_ids(company)
         items = list(
             CatalogItem.objects.filter(company=company, is_available=True)
             .values("id", "name", "price", "description", "modifiers_schema")[:40]
         )
+        for it in items:
+            it["is_out_of_stock"] = it["id"] in oos_dish_ids
         context["catalog"] = items
         if context["enable_upselling"]:
             context["upsell_candidates"] = get_upsell_suggestions(company, ordered_item_names=[], max_suggestions=3)
@@ -1758,12 +1773,15 @@ def _build_system_prompt(
             if opts:
                 mod_parts.append(f"{grp_name}: {', '.join(opts)}")
         mod_str = f" [Modifiers: {' | '.join(mod_parts)}]" if mod_parts else ""
-        catalog_lines.append(f"• {item['name']}: {price}{desc}{mod_str}")
+        oos_tag = " [OUT OF STOCK]" if item.get("is_out_of_stock") else ""
+        catalog_lines.append(f"• {item['name']}{oos_tag}: {price}{desc}{mod_str}")
     
     if catalog_lines:
         catalog_str = (
             "\n".join(catalog_lines)
-            + "\n\n[MODIFIER PRICING RULE]: Whenever a customer requests ANY add-on, size, or option listed in [Modifiers: ...] "
+            + "\n\n[OUT-OF-STOCK RULE]: NEVER confirm or place an order for any dish marked [OUT OF STOCK]. "
+            "Politely inform the customer it is currently unavailable and suggest available alternatives from the menu.\n"
+            "[MODIFIER PRICING RULE]: Whenever a customer requests ANY add-on, size, or option listed in [Modifiers: ...] "
             "(e.g. Extra Cheese +Rs. 100, Large +Rs. 150), you MUST pass it inside `selected_modifiers` when calling `create_order` "
             "(NEVER only inside `special_instructions`) and quote the updated total including all modifier prices."
         )

@@ -10,6 +10,7 @@ from django.conf import settings
 from django.db import transaction
 from django.http import HttpResponse, HttpResponseForbidden, JsonResponse
 from django.shortcuts import get_object_or_404
+from django.utils import timezone
 from django.utils.decorators import method_decorator
 from django.views.decorators.clickjacking import xframe_options_exempt
 from django.views.decorators.csrf import csrf_exempt
@@ -280,6 +281,9 @@ def _create_order(company, payload, actor=None, source="dashboard"):
         phone=order.customer_phone,
         delivery_address=order.delivery_address,
     )
+
+    from operations.restaurant_inventory_views import deduct_recipe_ingredients_for_order
+    deduct_recipe_ingredients_for_order(order)
     return order
 
 
@@ -437,6 +441,11 @@ class OrderStatusAPIView(BusinessAPIView):
         # Auto-free dine-in table when order is delivered or cancelled
         if next_status in (Order.STATUS_DELIVERED, Order.STATUS_CANCELLED):
             release_table_if_idle(order)
+
+        # Auto-restore recipe ingredients on order cancellation
+        if next_status == Order.STATUS_CANCELLED:
+            from operations.restaurant_inventory_views import restore_recipe_ingredients_for_order
+            restore_recipe_ingredients_for_order(order)
 
         return Response(_order_payload(order))
 

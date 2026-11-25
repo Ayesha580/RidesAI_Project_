@@ -58,6 +58,7 @@ import AnalyticsReports from "./operations/AnalyticsReports";
 import NotificationSettings from "./operations/NotificationSettings";
 import TablesFloorPlan from "./operations/TablesFloorPlan";
 import RestaurantReservations from "./operations/RestaurantReservations";
+import RestaurantInventoryRecipes from "./operations/RestaurantInventoryRecipes";
 import PrivacyComplianceSettings from "./operations/PrivacyComplianceSettings";
 import StaffAttendance from "./operations/StaffAttendance";
 import SuppliersManagement from "./operations/SuppliersManagement";
@@ -70,9 +71,19 @@ function Home() {
   if (!user) return <Landing />;
   return <Navigate to={homeFor(user)} replace />;
 }
+function isRestaurantUser(user) {
+  const t = String(user?.business_type || "").toLowerCase();
+  const l = String(user?.business_label || "").toLowerCase();
+  return ["restaurant", "cafe", "café", "food", "bakery", "fast food", "hotel"].some(
+    (h) => t.includes(h) || l.includes(h)
+  );
+}
+
 function OwnerModulePage() {
+  const { user } = useAuth();
   const { moduleKey } = useParams();
   if (moduleKey === "orders" || moduleKey === "deliveries") return <OrdersDashboard />;
+  if (moduleKey === "inventory" && isRestaurantUser(user)) return <RestaurantInventoryRecipes />;
   if (moduleKey === "calls") return <CallsDashboard />;
   if (moduleKey === "prescriptions") return <PharmacyPrescriptions />;
   if (moduleKey === "expiry_tracking") return <PharmacyBatches />;
@@ -108,8 +119,10 @@ function ModuleGuard({ children }) {
 }
 
 function StaffModulePage() {
+  const { user } = useAuth();
   const { moduleKey } = useParams();
   if (moduleKey === "orders") return <OrdersDashboard staff />;
+  if (moduleKey === "inventory" && isRestaurantUser(user)) return <RestaurantInventoryRecipes staff />;
   if (moduleKey === "deliveries") return <DeliveriesDashboard />;
   if (moduleKey === "my_deliveries") return <RiderDeliveries />;
   if (moduleKey === "prescriptions") return <PharmacyPrescriptions staff />;

@@ -458,6 +458,11 @@ class DashboardOrderStatusAPIView(APIView):
             from operations.views import release_table_if_idle
             release_table_if_idle(order)
 
+        # Auto-restore recipe ingredients on order cancellation
+        if new_status == Order.STATUS_CANCELLED:
+            from operations.restaurant_inventory_views import restore_recipe_ingredients_for_order
+            restore_recipe_ingredients_for_order(order)
+
         return Response({
             "success": True,
             "id": order.id,
