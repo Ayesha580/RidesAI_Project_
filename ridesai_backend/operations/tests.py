@@ -6911,6 +6911,141 @@ class RestaurantTablesAndReservationsTests(TestCase):
         self.assertIn("Ayesha Siddiqui", names)
         self.assertIn("Zeeshan Ali", names)
 
+    @patch("operations.notifications.send_status_notification")
+    def test_pos_delivery_creation_order_type_status_guards_notifications_and_waiting_area(self, mock_notify):
+        from companies.models import CatalogItem
+        from operations.models import Order
+
+        mock_notify.return_value = True
+        self.client.force_authenticate(user=self.owner_a)
+
+        dish = CatalogItem.objects.create(
+            company=self.company_a,
+            name="Club Sandwich",
+            price=Decimal("450.00"),
+        )
+
+        # 1. POS Delivery order succeeds with delivery_address even without ServiceArea / city
+        deliv_res = self.client.post(
+            "/api/operations/orders/",
+            {
+                "order_type": "delivery",
+                "fulfillment_type": "delivery",
+                "customer_name": "Delivery Guest",
+                "customer_phone": "03001112244",
+                "delivery_address": "House 9, Street 4, DHA Phase 5",
+                "items": [{"item_id": dish.id, "quantity": 2}],
+            },
+            format="json",
+        )
+        self.assertEqual(deliv_res.status_code, 201)
+        self.assertEqual(deliv_res.data["order_type"], "delivery")
+        self.assertEqual(deliv_res.data["delivery_address"], "House 9, Street 4, DHA Phase 5")
+        self.assertIsNone(deliv_res.data["table_id"])
+
+        # 2. Dine-In order with Waiting Area (No Table) succeeds cleanly
+        mock_notify.reset_mock()
+        dine_res = self.client.post(
+            "/api/operations/orders/",
+            {
+                "order_type": "dine_in",
+                "allow_waiting_area": True,
+                "customer_name": "Waiting Guest",
+                "customer_phone": "03001119988",
+                "items": [{"item_id": dish.id, "quantity": 1}],
+            },
+            format="json",
+        )
+        self.assertEqual(dine_res.status_code, 201)
+        self.assertEqual(dine_res.data["order_type"], "dine_in")
+        self.assertEqual(dine_res.data["table_number"], "Waiting Area")
+        dine_order_id = dine_res.data["id"]
+
+        # Intermediate dine_in notifications ('new', 'preparing', 'ready') MUST be suppressed
+        mock_notify.assert_not_called()
+
+        # 3. Dine-In order rejects 'out_for_delivery' with 400 Bad Request
+        bad_status = self.client.patch(
+            f"/api/operations/orders/{dine_order_id}/status/",
+            {"status": Order.STATUS_OUT_FOR_DELIVERY},
+            format="json",
+        )
+        self.assertEqual(bad_status.status_code, 400)
+
+        # Advance dine_in: new -> preparing -> ready (still no WhatsApp spam) -> delivered (fires 1 thank-you!)
+        self.client.patch(f"/api/operations/orders/{dine_order_id}/status/", {"status": "preparing"}, format="json")
+        self.client.patch(f"/api/operations/orders/{dine_order_id}/status/", {"status": "ready"}, format="json")
+        mock_notify.assert_not_called()
+
+        done_res = self.client.patch(
+            f"/api/operations/orders/{dine_order_id}/status/",
+            {"status": "delivered"},
+            format="json",
+        )
+        self.assertEqual(done_res.status_code, 200)
+        self.assertEqual(mock_notify.call_count, 1)
+
+    def test_ai_delivery_order_applies_service_area_delivery_fee_and_zero_for_takeaway(self):
+        from companies.models import CatalogItem, ServiceArea
+        from operations.models import Order
+        from operations.whatsapp_agent import (
+            _build_system_prompt,
+            execute_create_order,
+            get_business_context_for_company,
+        )
+
+        ServiceArea.objects.create(
+            company=self.company_a,
+            area_type="city",
+            city="Lahore",
+            delivery_fee=Decimal("150.00"),
+            is_active=True,
+        )
+        CatalogItem.objects.create(
+            company=self.company_a,
+            name="Zinger Burger",
+            price=Decimal("650.00"),
+            is_available=True,
+        )
+
+        # 1. System prompt includes the configured Rs. 150 delivery fee
+        ctx = get_business_context_for_company(self.company_a)
+        self.assertEqual(ctx["delivery_fee"], 150.0)
+        prompt = _build_system_prompt("Ali", ctx)
+        self.assertIn("Rs. 150", prompt)
+
+        # 2. AI delivery order adds Rs. 150 delivery_fee -> 650 + 150 = 800
+        deliv_res = execute_create_order(
+            company=self.company_a,
+            customer_name="Farhan Ali",
+            customer_phone="03017778899",
+            delivery_address="Model Town, Lahore",
+            items=[{"item_name": "Zinger Burger", "quantity": 1}],
+            order_type="delivery",
+        )
+        self.assertTrue(deliv_res["success"])
+        self.assertEqual(deliv_res["delivery_fee"], "Rs. 150.00")
+        self.assertEqual(deliv_res["total"], "Rs. 800.00")
+        deliv_order = Order.objects.get(order_number=deliv_res["order_number"])
+        self.assertEqual(deliv_order.delivery_fee, Decimal("150.00"))
+        self.assertEqual(deliv_order.total, Decimal("800.00"))
+
+        # 3. AI takeaway order keeps delivery_fee = 0 -> total = 650
+        take_res = execute_create_order(
+            company=self.company_a,
+            customer_name="Farhan Ali",
+            customer_phone="03017778899",
+            delivery_address="Counter Pickup",
+            items=[{"item_name": "Zinger Burger", "quantity": 1}],
+            order_type="takeaway",
+        )
+        self.assertTrue(take_res["success"])
+        self.assertEqual(take_res["delivery_fee"], "Rs. 0.00")
+        self.assertEqual(take_res["total"], "Rs. 650.00")
+        take_order = Order.objects.get(order_number=take_res["order_number"])
+        self.assertEqual(take_order.delivery_fee, Decimal("0.00"))
+        self.assertEqual(take_order.total, Decimal("650.00"))
+
 
 class RestaurantInventoryAndRecipesTests(TestCase):
     """Tests for Restaurant Ingredient Inventory, Dish Recipes, Auto-Deduction, Restore & AI Out-of-Stock."""

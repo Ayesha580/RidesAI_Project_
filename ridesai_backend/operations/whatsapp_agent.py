@@ -1198,11 +1198,19 @@ def execute_create_order(
                     combined_notes_parts.append(f"{r['item_name']}: {item_instr}")
             consolidated_notes = " | ".join(combined_notes_parts)
 
-            # Create Order
+            # Create Order (apply shared delivery fee for delivery orders; Rs. 0 for dine_in / takeaway)
             clean_order_type = (order_type or Order.ORDER_TYPE_DELIVERY).strip().lower()
             if clean_order_type not in (Order.ORDER_TYPE_DELIVERY, Order.ORDER_TYPE_DINE_IN, Order.ORDER_TYPE_TAKEAWAY):
                 clean_order_type = Order.ORDER_TYPE_DELIVERY
             clean_table_num = (table_number or "").strip()
+
+            from operations.views import resolve_delivery_fee
+            delivery_fee = resolve_delivery_fee(
+                company=company,
+                delivery_address=delivery_address.strip(),
+                order_type=clean_order_type,
+            )
+            grand_total = subtotal + delivery_fee
 
             order = Order.objects.create(
                 company=company,
@@ -1210,11 +1218,11 @@ def execute_create_order(
                 table_number=clean_table_num,
                 customer_name=clean_name,
                 customer_phone=clean_phone,
-                delivery_address=delivery_address.strip(),
+                delivery_address=delivery_address.strip() if clean_order_type == Order.ORDER_TYPE_DELIVERY else "",
                 status=Order.STATUS_NEW,
                 subtotal=subtotal,
-                delivery_fee=Decimal("0.00"),
-                total=subtotal,
+                delivery_fee=delivery_fee,
+                total=grand_total,
                 notes=consolidated_notes,
                 source="agent",
             )
@@ -1276,10 +1284,12 @@ def execute_create_order(
             "success": True,
             "order_number": order.order_number,
             "status": order.status,
+            "order_type": order.order_type,
             "customer_name": order.customer_name,
             "delivery_address": order.delivery_address,
             "items": created_items_summary,
             "subtotal": f"Rs. {subtotal:.2f}",
+            "delivery_fee": f"Rs. {order.delivery_fee:.2f}",
             "total": f"Rs. {order.total:.2f}",
             "estimated_delivery_time": "30-45 minutes",
         }
@@ -1677,8 +1687,13 @@ def get_business_context_for_company(company: Optional[Company]) -> Dict[str, An
         )
         context["hours"] = hours
 
-        # Fetch active delivery service areas / zones with automatic fallback
+        # Fetch active delivery service areas / zones & standard delivery fee
         context["delivery_zones"] = get_effective_service_areas(company)
+        try:
+            from operations.views import resolve_delivery_fee
+            context["delivery_fee"] = float(resolve_delivery_fee(company=company, order_type="delivery"))
+        except Exception:
+            context["delivery_fee"] = 0.0
 
         # Fetch hospital departments/wards if this is a hospital vertical
         if get_category_agent_config(context["business_type"]).get("key") == "hospital":
@@ -1747,6 +1762,12 @@ def _build_system_prompt(
     address = context.get("address") or "our store location"
     delivery_zones_list = context.get("delivery_zones", [])
     delivery_zones_str = ", ".join(delivery_zones_list) if delivery_zones_list else (address or "our local delivery area")
+    std_delivery_fee = float(context.get("delivery_fee") or 0)
+    delivery_fee_line = (
+        f"Rs. {std_delivery_fee:.0f} (applies to Delivery orders — ALWAYS include this Rs. {std_delivery_fee:.0f} delivery charge when quoting delivery totals; Rs. 0 for Dine-In / Takeaway)"
+        if std_delivery_fee > 0
+        else "Free delivery (Rs. 0)"
+    )
 
     # Category profile resolution
     biz_type = context.get("business_type") or "restaurant"
@@ -1907,6 +1928,7 @@ BUSINESS DETAILS:
 - Default Greeting: {greeting}
 - Store Address: {address}
 - Delivery Zones / Service Areas: {delivery_zones_str}
+- Standard Delivery Fee: {delivery_fee_line}
 - Support Phone: {phone}
 - Customer Name: {customer_name}
 

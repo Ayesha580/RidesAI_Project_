@@ -418,6 +418,12 @@ class DashboardOrderStatusAPIView(APIView):
             return Response({"error": f"Invalid status '{new_status}'."}, status=400)
 
         old_status = order.status
+        if (order.order_type or Order.ORDER_TYPE_DELIVERY) in (Order.ORDER_TYPE_DINE_IN, Order.ORDER_TYPE_TAKEAWAY):
+            if new_status in (Order.STATUS_OUT_FOR_DELIVERY, Order.STATUS_ON_THE_WAY, Order.STATUS_ASSIGNED, Order.STATUS_PICKED_UP):
+                return Response(
+                    {"error": f"Status '{new_status}' is not allowed for {order.order_type.replace('_', '-')} orders."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
         from operations.order_state import is_valid_order_transition
         if not is_valid_order_transition(old_status, new_status):
             return Response(
