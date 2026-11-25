@@ -356,6 +356,8 @@ class DashboardOrdersAPIView(APIView):
                     "quantity": str(item.quantity),
                     "unit_price": str(item.unit_price),
                     "line_total": str(item.line_total),
+                    "selected_modifiers": item.selected_modifiers or [],
+                    "item_notes": item.item_notes or "",
                 }
                 for item in o.items.all()
             ]
@@ -363,6 +365,8 @@ class DashboardOrdersAPIView(APIView):
             results.append({
                 "id": o.id,
                 "order_number": o.order_number,
+                "order_type": o.order_type or Order.ORDER_TYPE_DELIVERY,
+                "table_number": o.table_number or (o.table.table_number if getattr(o, "table", None) else ""),
                 "customer_name": o.customer_name or "Customer",
                 "customer_phone": o.customer_phone or "N/A",
                 "customer_email": o.customer_email or "",

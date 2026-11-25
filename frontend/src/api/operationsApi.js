@@ -155,4 +155,11 @@ export const restaurantDashboardApi = {
     api.get("/operations/restaurant/dashboard-summary/", { params: { period } }),
 };
 
+export const restaurantKdsApi = {
+  getTickets: (station = "all") =>
+    api.get("/operations/restaurant/kds/", { params: { station } }),
+  bumpOrder: (orderId) =>
+    api.post(`/operations/restaurant/kds/${orderId}/bump/`),
+};
+
 

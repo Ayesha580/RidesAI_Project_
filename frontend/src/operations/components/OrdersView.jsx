@@ -686,8 +686,36 @@ export default function OrdersView() {
                     <tr key={o.id}>
                       <td>
                         <span className="ov-order-num">{o.order_number}</span>
-                        <div className="ov-source-badge">
-                          {o.source === "agent" ? "🤖 WhatsApp AI" : "💻 Dashboard"}
+                        <div style={{ display: "flex", flexWrap: "wrap", gap: 4, marginTop: 4 }}>
+                          <div className="ov-source-badge">
+                            {o.source === "agent" ? "🤖 WhatsApp AI" : "💻 Dashboard"}
+                          </div>
+                          {o.order_type && (
+                            <span
+                              style={{
+                                fontSize: 10.5,
+                                fontWeight: 800,
+                                textTransform: "uppercase",
+                                padding: "2px 7px",
+                                borderRadius: 6,
+                                background:
+                                  o.order_type === "dine_in"
+                                    ? "#fdf2ff"
+                                    : o.order_type === "takeaway"
+                                    ? "#fff7ed"
+                                    : "#eff6ff",
+                                color:
+                                  o.order_type === "dine_in"
+                                    ? "#9c1e9c"
+                                    : o.order_type === "takeaway"
+                                    ? "#c2410c"
+                                    : "#1d4ed8",
+                              }}
+                            >
+                              {o.order_type.replace("_", "-")}
+                              {o.order_type === "dine_in" && o.table_number ? ` · ${o.table_number}` : ""}
+                            </span>
+                          )}
                         </div>
                       </td>
                       <td>
@@ -697,11 +725,39 @@ export default function OrdersView() {
                         </div>
                       </td>
                       <td>
-                        <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
+                        <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
                           {(o.items || []).map((it, idx) => (
-                            <span key={idx} style={{ fontSize: 12.5 }}>
-                              <strong>{parseInt(it.quantity)}x</strong> {it.item_name}
-                            </span>
+                            <div key={idx} style={{ fontSize: 12.5 }}>
+                              <div>
+                                <strong>{parseInt(it.quantity)}x</strong> {it.item_name}
+                              </div>
+                              {Array.isArray(it.selected_modifiers) && it.selected_modifiers.length > 0 && (
+                                <div style={{ display: "flex", flexWrap: "wrap", gap: 4, marginTop: 3, paddingLeft: 14 }}>
+                                  {it.selected_modifiers.map((mod, mIdx) => (
+                                    <span
+                                      key={`${mod.name}-${mIdx}`}
+                                      style={{
+                                        fontSize: 11,
+                                        fontWeight: 700,
+                                        background: "#fdf2ff",
+                                        color: "#9c1e9c",
+                                        border: "1px solid #f5b8f5",
+                                        borderRadius: 6,
+                                        padding: "1px 7px",
+                                      }}
+                                    >
+                                      + {mod.name}
+                                      {Number(mod.price || 0) > 0 ? ` (Rs. ${mod.price})` : ""}
+                                    </span>
+                                  ))}
+                                </div>
+                              )}
+                              {it.item_notes && (
+                                <div style={{ fontSize: 11, color: "#b45309", paddingLeft: 14, marginTop: 2 }}>
+                                  📝 {it.item_notes}
+                                </div>
+                              )}
+                            </div>
                           ))}
                         </div>
                         {o.notes && (

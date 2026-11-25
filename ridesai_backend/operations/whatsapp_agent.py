@@ -93,11 +93,25 @@ TOOL_CREATE_ORDER = {
                             },
                             "special_instructions": {
                                 "type": "string",
-                                "description": "Optional preparation notes (e.g. 'no onions', 'extra spicy').",
+                                "description": "Optional non-priced preparation notes ONLY (e.g. 'no onions', 'less salt'). NEVER put menu modifiers/add-ons like 'Extra Cheese' or 'Large' here — put those in `selected_modifiers`.",
+                            },
+                            "selected_modifiers": {
+                                "type": "array",
+                                "description": "REQUIRED whenever the customer asks for ANY add-on, size, or option listed in the item's `modifiers_schema` / `[Modifiers: ...]` (e.g. ['Large', 'Extra Cheese']). Always include modifier prices when quoting the order total.",
+                                "items": {"type": "string"},
                             },
                         },
                         "required": ["item_name", "quantity"],
                     },
+                },
+                "order_type": {
+                    "type": "string",
+                    "enum": ["delivery", "dine_in", "takeaway"],
+                    "description": "Order fulfillment type: delivery (default), dine_in, or takeaway.",
+                },
+                "table_number": {
+                    "type": "string",
+                    "description": "Optional table number if order_type is dine_in (e.g. 'T1').",
                 },
                 "customer_name": {
                     "type": "string",
@@ -832,6 +846,9 @@ def execute_get_catalog_items(company: Company, search_query: Optional[str] = No
                 "price": str(item.price),
                 "category": item.category.name if item.category else "General",
                 "description": item.description or "",
+                "modifiers_schema": getattr(item, "modifiers_schema", None) or [],
+                "kitchen_station": getattr(item, "kitchen_station", "general") or "general",
+                "prep_time_minutes": getattr(item, "prep_time_minutes", 15) or 15,
                 "requires_prescription": rx_required,
                 "stock": stock_info,
             })
@@ -854,6 +871,8 @@ def execute_create_order(
     items: List[Dict[str, Any]],
     delivery_address: str,
     notes: Optional[str] = None,
+    order_type: Optional[str] = None,
+    table_number: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Executes a multi-tenant isolated database transaction creating Order, OrderItem,
@@ -960,16 +979,28 @@ def execute_create_order(
                             "error": f"Insufficient stock for '{catalog_item.name}'. Only {inv.quantity} left in stock.",
                         }
 
-                line_total = qty * catalog_item.price
+                from operations.restaurant_kds_views import normalize_selected_modifiers
+                item_note_text = str(raw_item.get("special_instructions") or raw_item.get("item_notes") or "").strip()
+                fallback_mod_text = " ".join(
+                    part for part in [name_req, item_note_text, clean_notes] if part
+                )
+                norm_mods, mod_delta = normalize_selected_modifiers(
+                    catalog_item,
+                    raw_item.get("selected_modifiers"),
+                    fallback_text=fallback_mod_text,
+                )
+                effective_unit_price = catalog_item.price + mod_delta
+                line_total = qty * effective_unit_price
                 subtotal += line_total
                 resolved_items.append({
                     "catalog_item": catalog_item,
                     "item_name": catalog_item.name,
                     "quantity": qty,
-                    "unit_price": catalog_item.price,
+                    "unit_price": effective_unit_price,
                     "line_total": line_total,
+                    "selected_modifiers": norm_mods,
                     "inventory": inv,
-                    "notes": raw_item.get("special_instructions", ""),
+                    "notes": item_note_text,
                 })
 
             # Consolidate general notes and item-specific special instructions into order.notes
@@ -983,8 +1014,15 @@ def execute_create_order(
             consolidated_notes = " | ".join(combined_notes_parts)
 
             # Create Order
+            clean_order_type = (order_type or Order.ORDER_TYPE_DELIVERY).strip().lower()
+            if clean_order_type not in (Order.ORDER_TYPE_DELIVERY, Order.ORDER_TYPE_DINE_IN, Order.ORDER_TYPE_TAKEAWAY):
+                clean_order_type = Order.ORDER_TYPE_DELIVERY
+            clean_table_num = (table_number or "").strip()
+
             order = Order.objects.create(
                 company=company,
+                order_type=clean_order_type,
+                table_number=clean_table_num,
                 customer_name=clean_name,
                 customer_phone=clean_phone,
                 delivery_address=delivery_address.strip(),
@@ -1006,6 +1044,8 @@ def execute_create_order(
                     quantity=r["quantity"],
                     unit_price=r["unit_price"],
                     line_total=r["line_total"],
+                    selected_modifiers=r.get("selected_modifiers") or [],
+                    item_notes=str(r.get("notes") or "").strip(),
                 )
                 if r["inventory"] and not r["inventory"].is_unlimited:
                     r["inventory"].quantity -= r["quantity"]
@@ -1023,6 +1063,7 @@ def execute_create_order(
                     "quantity": str(r["quantity"]),
                     "price": str(r["unit_price"]),
                     "line_total": str(r["line_total"]),
+                    "selected_modifiers": r.get("selected_modifiers") or [],
                 })
 
             # Audit Trail
@@ -1416,7 +1457,7 @@ def get_business_context_for_company(company: Optional[Company]) -> Dict[str, An
         # Fetch active catalog items (up to 40)
         items = list(
             CatalogItem.objects.filter(company=company, is_available=True)
-            .values("id", "name", "price", "description")[:40]
+            .values("id", "name", "price", "description", "modifiers_schema")[:40]
         )
         context["catalog"] = items
         if context["enable_upselling"]:
@@ -1514,15 +1555,33 @@ def _build_system_prompt(
     catalog_header = cat_cfg["catalog_header"]
     category_instructions = cat_cfg["instructions"]
 
-    # Format catalog items
+    # Format catalog items (including available restaurant modifiers/add-ons with extra prices)
     catalog_lines = []
     for item in context.get("catalog", []):
         price = f"Rs. {float(item['price']):.2f}" if item.get("price") else "Price on request"
         desc = f" - {item['description']}" if item.get("description") else ""
-        catalog_lines.append(f"• {item['name']}: {price}{desc}")
+        mod_parts = []
+        for grp in (item.get("modifiers_schema") or []):
+            if not isinstance(grp, dict):
+                continue
+            grp_name = grp.get("group") or grp.get("name") or "Options"
+            opts = []
+            for opt in (grp.get("options") or []):
+                if isinstance(opt, dict) and opt.get("name"):
+                    op_price = float(opt.get("price") or 0)
+                    opts.append(f"{opt['name']} (+Rs. {op_price:.0f})" if op_price > 0 else f"{opt['name']}")
+            if opts:
+                mod_parts.append(f"{grp_name}: {', '.join(opts)}")
+        mod_str = f" [Modifiers: {' | '.join(mod_parts)}]" if mod_parts else ""
+        catalog_lines.append(f"• {item['name']}: {price}{desc}{mod_str}")
     
     if catalog_lines:
-        catalog_str = "\n".join(catalog_lines)
+        catalog_str = (
+            "\n".join(catalog_lines)
+            + "\n\n[MODIFIER PRICING RULE]: Whenever a customer requests ANY add-on, size, or option listed in [Modifiers: ...] "
+            "(e.g. Extra Cheese +Rs. 100, Large +Rs. 150), you MUST pass it inside `selected_modifiers` when calling `create_order` "
+            "(NEVER only inside `special_instructions`) and quote the updated total including all modifier prices."
+        )
     else:
         catalog_str = (
             f"No catalog items are currently active. If a customer asks to view items or order, "
@@ -1929,6 +1988,8 @@ def _generate_agent_reply(
                             items=fn_args.get("items", []),
                             delivery_address=fn_args.get("delivery_address", ""),
                             notes=fn_args.get("notes", ""),
+                            order_type=fn_args.get("order_type"),
+                            table_number=fn_args.get("table_number"),
                         )
                         if tool_result.get("success"):
                             context["order_summary"] = {

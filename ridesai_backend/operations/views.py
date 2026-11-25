@@ -78,13 +78,41 @@ def _delivery_area_for_order(company, payload):
 
 
 def _create_order(company, payload, actor=None, source="dashboard"):
+    from operations.models import RestaurantTable
+    from operations.restaurant_kds_views import normalize_selected_modifiers
+
     rows = payload.get("items") or []
     if not rows:
         raise ValueError("At least one catalogue item is required.")
     customer_name = str(payload.get("customer_name") or "").strip()
     if not customer_name:
         raise ValueError("Customer name is required.")
-    delivery_area = _delivery_area_for_order(company, payload)
+
+    raw_order_type = str(payload.get("order_type") or "").strip().lower()
+    if raw_order_type not in (Order.ORDER_TYPE_DELIVERY, Order.ORDER_TYPE_DINE_IN, Order.ORDER_TYPE_TAKEAWAY):
+        ft = str(payload.get("fulfillment_type") or "").strip().lower()
+        if ft in ("collection", "pickup", "takeaway"):
+            raw_order_type = Order.ORDER_TYPE_TAKEAWAY
+        elif ft == "dine_in":
+            raw_order_type = Order.ORDER_TYPE_DINE_IN
+        else:
+            raw_order_type = Order.ORDER_TYPE_DELIVERY
+
+    table_obj = None
+    table_num = str(payload.get("table_number") or "").strip()
+    raw_table_id = payload.get("table_id") or payload.get("table")
+    if raw_table_id:
+        table_obj = RestaurantTable.objects.filter(company=company, pk=raw_table_id).first()
+        if table_obj and not table_num:
+            table_num = table_obj.table_number
+    elif table_num:
+        table_obj = RestaurantTable.objects.filter(company=company, table_number__iexact=table_num).first()
+
+    delivery_area = (
+        _delivery_area_for_order(company, payload)
+        if raw_order_type == Order.ORDER_TYPE_DELIVERY
+        else None
+    )
     raw_lat = payload.get("delivery_lat", payload.get("latitude"))
     raw_lng = payload.get("delivery_lng", payload.get("longitude"))
     parsed_lat = None
@@ -100,9 +128,12 @@ def _create_order(company, payload, actor=None, source="dashboard"):
 
     with transaction.atomic():
         order = Order.objects.create(company=company, customer_name=customer_name,
+            order_type=raw_order_type,
+            table=table_obj,
+            table_number=table_num,
             customer_email=payload.get("customer_email", ""),
             customer_phone=payload.get("customer_phone", ""),
-            delivery_address=payload.get("delivery_address", ""),
+            delivery_address=payload.get("delivery_address", "") if raw_order_type == Order.ORDER_TYPE_DELIVERY else "",
             delivery_lat=parsed_lat,
             delivery_lng=parsed_lng,
             notes=payload.get("notes", ""), source=source, created_by=actor)
@@ -124,9 +155,20 @@ def _create_order(company, payload, actor=None, source="dashboard"):
                 inventory.save(update_fields=["quantity", "updated_at"])
                 StockMovement.objects.create(company=company, item=item, movement_type="remove",
                     quantity=quantity, note=f"Order {order.order_number}")
-            line_total = quantity * item.price
-            OrderItem.objects.create(order=order, item=item, item_name=item.name,
-                quantity=quantity, unit_price=item.price, line_total=line_total)
+            norm_mods, mod_delta = normalize_selected_modifiers(item, row.get("selected_modifiers"))
+            effective_unit_price = item.price + mod_delta
+            line_total = quantity * effective_unit_price
+            item_notes = str(row.get("item_notes") or row.get("notes") or "").strip()
+            OrderItem.objects.create(
+                order=order,
+                item=item,
+                item_name=item.name,
+                quantity=quantity,
+                unit_price=effective_unit_price,
+                line_total=line_total,
+                selected_modifiers=norm_mods,
+                item_notes=item_notes,
+            )
             subtotal += line_total
         # Delivery fees are always derived from the matched business service area.
         # Collection orders have no delivery fee; never trust a customer-supplied fee.
@@ -144,6 +186,11 @@ def _order_payload(order):
     delivery = getattr(order, "delivery", None)
     return {
         "id": order.id, "order_number": order.order_number,
+        "order_type": order.order_type or Order.ORDER_TYPE_DELIVERY,
+        "table_number": order.table_number or (order.table.table_number if getattr(order, "table", None) else ""),
+        "table_id": order.table_id,
+        "prep_started_at": order.prep_started_at.isoformat() if order.prep_started_at else None,
+        "ready_at": order.ready_at.isoformat() if order.ready_at else None,
         "customer_name": order.customer_name, "customer_email": order.customer_email,
         "customer_phone": order.customer_phone, "delivery_address": order.delivery_address,
         "delivery_lat": float(order.delivery_lat) if order.delivery_lat is not None else None,
@@ -155,7 +202,11 @@ def _order_payload(order):
         "created_at": order.created_at.isoformat(),
         "items": [{"id": i.id, "item_id": i.item_id, "name": i.item_name,
                    "quantity": str(i.quantity), "unit_price": str(i.unit_price),
-                   "line_total": str(i.line_total)} for i in order.items.all()],
+                   "line_total": str(i.line_total),
+                   "selected_modifiers": i.selected_modifiers or [],
+                   "item_notes": i.item_notes or "",
+                   "kitchen_station": getattr(i.item, "kitchen_station", "general") if i.item_id else "general",
+                   } for i in order.items.all()],
         "delivery": ({"id": delivery.id, "rider_id": delivery.rider_id,
                       "rider_name": delivery.rider.get_full_name() or delivery.rider.username,
                       "status": delivery.status} if delivery else None),
@@ -177,6 +228,9 @@ class OrderCatalogAPIView(BusinessAPIView):
             inventory = getattr(item, "inventory", None)
             result.append({
                 "id": item.id, "name": item.name, "price": str(item.price), "unit": item.unit,
+                "modifiers_schema": item.modifiers_schema or [],
+                "kitchen_station": item.kitchen_station or "general",
+                "prep_time_minutes": item.prep_time_minutes or 15,
                 "in_stock": (inventory.is_unlimited or inventory.quantity > 0) if inventory else True,
                 "quantity": None if not inventory or inventory.is_unlimited else str(inventory.quantity),
             })
@@ -250,7 +304,15 @@ class OrderStatusAPIView(BusinessAPIView):
                 }, status=409)
         previous = order.status
         order.status = next_status
-        order.save(update_fields=["status", "updated_at"])
+        update_fields = ["status", "updated_at"]
+        now_ts = timezone.now()
+        if next_status == Order.STATUS_PREPARING and not order.prep_started_at:
+            order.prep_started_at = now_ts
+            update_fields.append("prep_started_at")
+        if next_status in (Order.STATUS_READY, Order.STATUS_PREPARED) and not order.ready_at:
+            order.ready_at = now_ts
+            update_fields.append("ready_at")
+        order.save(update_fields=update_fields)
         DeliveryAssignment.objects.filter(order=order).update(status=next_status)
         OrderEvent.objects.create(company=self.company, order=order, actor=request.user,
             event_type="status_changed", from_status=previous, to_status=next_status,

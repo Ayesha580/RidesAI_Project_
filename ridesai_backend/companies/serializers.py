@@ -92,12 +92,14 @@ class CatalogItemSerializer(serializers.ModelSerializer):
             "id", "category", "category_name", "name", "item_type",
             "description", "sku", "barcode", "brand", "price",
             "cost_price", "unit", "image", "attributes",
+            "modifiers_schema", "kitchen_station", "prep_time_minutes",
             "requires_prescription", "generic_name", "is_available",
             "variants", "inventory", "batches", "created_at", "updated_at"
         ]
         read_only_fields = ["id", "created_at", "updated_at"]
 
     def to_internal_value(self, data):
+        import json
         if hasattr(data, "copy"):
             data = data.copy()
         else:
@@ -111,6 +113,16 @@ class CatalogItemSerializer(serializers.ModelSerializer):
 
         if data.get("price") == "":
             data["price"] = 0
+
+        if data.get("prep_time_minutes") == "":
+            data["prep_time_minutes"] = 15
+
+        raw_mods = data.get("modifiers_schema")
+        if isinstance(raw_mods, str):
+            try:
+                data["modifiers_schema"] = json.loads(raw_mods) if raw_mods.strip() else []
+            except Exception:
+                data["modifiers_schema"] = []
 
         return super().to_internal_value(data)
 
