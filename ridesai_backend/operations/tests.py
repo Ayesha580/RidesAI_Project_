@@ -6249,3 +6249,246 @@ class WhatsAppSessionSyncAndReconnectTests(TestCase):
         )
         self.assertFalse(dispatched)
         mock_send.assert_called_once()
+
+
+class RestaurantModifiersAndKDSTests(TestCase):
+    """Tests for Menu Modifiers/Add-ons, Order Types, AI Modifier Awareness, and Live KDS."""
+
+    def setUp(self):
+        self.client = APIClient()
+        self.company_a = Company.objects.create(
+            name="Grill House A",
+            business_type="restaurant",
+            status="active",
+            is_approved=True,
+            subscription_status="active",
+        )
+        self.company_b = Company.objects.create(
+            name="Burger Spot B",
+            business_type="restaurant",
+            status="active",
+            is_approved=True,
+            subscription_status="active",
+        )
+        self.owner_a = User.objects.create_user(
+            username="kds_owner_a",
+            email="owner_a@grillhouse.test",
+            password="Password123!",
+            company=self.company_a,
+            role=User.ROLE_OWNER,
+        )
+        self.owner_b = User.objects.create_user(
+            username="kds_owner_b",
+            email="owner_b@burgerspot.test",
+            password="Password123!",
+            company=self.company_b,
+            role=User.ROLE_OWNER,
+        )
+
+    def test_modifiers_persistence_order_totals_kds_bump_and_tenant_isolation(self):
+        from companies.models import CatalogItem
+        from operations.models import Order, RestaurantTable
+        from operations.whatsapp_agent import execute_create_order, execute_get_catalog_items
+
+        self.client.force_authenticate(user=self.owner_a)
+
+        # 1. Create menu item with modifiers_schema, kitchen_station, prep_time_minutes
+        modifiers_payload = [
+            {
+                "group": "Size",
+                "required": False,
+                "options": [
+                    {"name": "Regular", "price": 0},
+                    {"name": "Large", "price": 150},
+                ],
+            },
+            {
+                "group": "Add-ons",
+                "required": False,
+                "options": [
+                    {"name": "Extra Cheese", "price": 100},
+                ],
+            },
+        ]
+        burger = CatalogItem.objects.create(
+            company=self.company_a,
+            name="Zinger Burger",
+            price=Decimal("500.00"),
+            kitchen_station="grill",
+            prep_time_minutes=12,
+            modifiers_schema=modifiers_payload,
+        )
+        cola = CatalogItem.objects.create(
+            company=self.company_a,
+            name="Mint Margarita",
+            price=Decimal("250.00"),
+            kitchen_station="drinks",
+            prep_time_minutes=5,
+        )
+        table_t1 = RestaurantTable.objects.create(
+            company=self.company_a,
+            table_number="T1",
+            capacity=4,
+            status=RestaurantTable.STATUS_OCCUPIED,
+        )
+
+        # Verify modifiers_schema persisted cleanly
+        burger.refresh_from_db()
+        self.assertEqual(burger.kitchen_station, "grill")
+        self.assertEqual(burger.prep_time_minutes, 12)
+        self.assertEqual(len(burger.modifiers_schema), 2)
+
+        # 2. Create Dine-In order with modifiers via API:
+        # Base 500 + Large (150) + Extra Cheese (100) = 750 * 2 = 1500
+        create_res = self.client.post(
+            "/api/operations/orders/",
+            {
+                "order_type": "dine_in",
+                "table_id": table_t1.id,
+                "customer_name": "Table T1 Guest",
+                "items": [
+                    {
+                        "item_id": burger.id,
+                        "quantity": 2,
+                        "selected_modifiers": [
+                            {"group": "Size", "name": "Large", "price": 150},
+                            {"group": "Add-ons", "name": "Extra Cheese", "price": 100},
+                        ],
+                        "item_notes": "Extra spicy, no mayo",
+                    }
+                ],
+            },
+            format="json",
+        )
+        self.assertEqual(create_res.status_code, 201)
+        self.assertEqual(create_res.data["order_type"], "dine_in")
+        self.assertEqual(create_res.data["table_number"], "T1")
+        self.assertEqual(Decimal(create_res.data["total"]), Decimal("1500.00"))
+        self.assertEqual(len(create_res.data["items"][0]["selected_modifiers"]), 2)
+        self.assertEqual(create_res.data["items"][0]["item_notes"], "Extra spicy, no mayo")
+        dine_in_order_id = create_res.data["id"]
+
+        # 3. Create Takeaway Drinks order
+        drink_res = self.client.post(
+            "/api/operations/orders/",
+            {
+                "order_type": "takeaway",
+                "customer_name": "Zain",
+                "items": [{"item_id": cola.id, "quantity": 1}],
+            },
+            format="json",
+        )
+        self.assertEqual(drink_res.status_code, 201)
+
+        # 4. Verify AI Agent catalog & create_order modifier awareness
+        ai_cat = execute_get_catalog_items(self.company_a, search_query="Zinger")
+        self.assertTrue(ai_cat["success"])
+        self.assertEqual(len(ai_cat["items"][0]["modifiers_schema"]), 2)
+
+        ai_order_res = execute_create_order(
+            company=self.company_a,
+            customer_name="Hassan Ali",
+            customer_phone="03015556677",
+            delivery_address="Model Town, Lahore",
+            items=[
+                {
+                    "item_name": "Zinger Burger",
+                    "quantity": 1,
+                    "selected_modifiers": ["Extra Cheese"],
+                    "special_instructions": "Less salt",
+                }
+            ],
+        )
+        self.assertTrue(ai_order_res["success"])
+        # Base 500 + Extra Cheese 100 = 600
+        ai_order_obj = Order.objects.get(order_number=ai_order_res["order_number"])
+        self.assertEqual(ai_order_obj.total, Decimal("600.00"))
+        self.assertEqual(ai_order_obj.items.first().selected_modifiers[0]["name"], "Extra Cheese")
+
+        # 5. KDS Listing & Station Filtering
+        kds_all = self.client.get("/api/operations/restaurant/kds/?station=all")
+        self.assertEqual(kds_all.status_code, 200)
+        self.assertEqual(kds_all.data["station_counts"]["all"], 3)
+        self.assertEqual(kds_all.data["station_counts"]["grill"], 2)
+        self.assertEqual(kds_all.data["station_counts"]["drinks"], 1)
+        # Oldest-first ordering: dine_in_order_id should be first
+        self.assertEqual(kds_all.data["tickets"][0]["id"], dine_in_order_id)
+
+        kds_drinks = self.client.get("/api/operations/restaurant/kds/?station=drinks")
+        self.assertEqual(kds_drinks.status_code, 200)
+        self.assertEqual(len(kds_drinks.data["tickets"]), 1)
+        self.assertEqual(kds_drinks.data["tickets"][0]["items"][0]["name"], "Mint Margarita")
+
+        # 6. 1-Click KDS Bump Progression (new -> preparing -> ready -> delivered for dine_in)
+        bump1 = self.client.post(f"/api/operations/restaurant/kds/{dine_in_order_id}/bump/")
+        self.assertEqual(bump1.status_code, 200)
+        self.assertEqual(bump1.data["status"], Order.STATUS_PREPARING)
+        self.assertIsNotNone(bump1.data["prep_started_at"])
+        self.assertIsNone(bump1.data["ready_at"])
+
+        bump2 = self.client.post(f"/api/operations/restaurant/kds/{dine_in_order_id}/bump/")
+        self.assertEqual(bump2.status_code, 200)
+        self.assertEqual(bump2.data["status"], Order.STATUS_READY)
+        self.assertIsNotNone(bump2.data["ready_at"])
+
+        bump3 = self.client.post(f"/api/operations/restaurant/kds/{dine_in_order_id}/bump/")
+        self.assertEqual(bump3.status_code, 200)
+        self.assertEqual(bump3.data["status"], Order.STATUS_DELIVERED)
+
+        # 7. Strict Multi-Tenant Isolation: Company B sees 0 tickets and gets 404 on bump
+        self.client.force_authenticate(user=self.owner_b)
+        kds_b = self.client.get("/api/operations/restaurant/kds/?station=all")
+        self.assertEqual(kds_b.status_code, 200)
+        self.assertEqual(kds_b.data["tickets"], [])
+        self.assertEqual(kds_b.data["station_counts"]["all"], 0)
+
+        cross_bump = self.client.post(f"/api/operations/restaurant/kds/{drink_res.data['id']}/bump/")
+        self.assertEqual(cross_bump.status_code, 404)
+
+    def test_ai_create_order_auto_detects_modifiers_from_special_notes(self):
+        """
+        Verifies deterministic backend fallback: even if the LLM passes 'extra cheese'
+        inside special_instructions or order notes instead of selected_modifiers,
+        execute_create_order attaches the structured modifier and adds +Rs. 100 to total.
+        """
+        from companies.models import CatalogItem
+        from operations.models import Order
+        from operations.whatsapp_agent import execute_create_order
+
+        CatalogItem.objects.create(
+            company=self.company_a,
+            name="Zinger Burger",
+            price=Decimal("650.00"),
+            kitchen_station="grill",
+            modifiers_schema=[
+                {
+                    "group": "Add-ons",
+                    "required": False,
+                    "options": [{"name": "Extra Cheese", "price": 100}],
+                }
+            ],
+        )
+
+        res = execute_create_order(
+            company=self.company_a,
+            customer_name="Bilal Ahmed",
+            customer_phone="03029998877",
+            delivery_address="Gulberg, Lahore",
+            items=[
+                {
+                    "item_name": "Zinger Burger",
+                    "quantity": 1,
+                    "special_instructions": "with extra cheese please",
+                }
+            ],
+            notes="make it fresh",
+        )
+        self.assertTrue(res["success"])
+        order = Order.objects.get(order_number=res["order_number"])
+        # Base 650 + Extra Cheese 100 = 750
+        self.assertEqual(order.total, Decimal("750.00"))
+        oi = order.items.first()
+        self.assertEqual(oi.unit_price, Decimal("750.00"))
+        self.assertEqual(len(oi.selected_modifiers), 1)
+        self.assertEqual(oi.selected_modifiers[0]["name"], "Extra Cheese")
+        self.assertEqual(oi.selected_modifiers[0]["price"], 100.0)

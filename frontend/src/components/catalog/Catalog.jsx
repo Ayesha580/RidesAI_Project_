@@ -47,6 +47,9 @@ const emptyForm = {
   unit: "",
   requires_prescription: false,
   generic_name: "",
+  kitchen_station: "general",
+  prep_time_minutes: 15,
+  modifiers_schema: [],
   is_available: true,
   attributes: {},
   inventory: { is_unlimited: true, quantity: 0, low_stock_threshold: 5 },
@@ -146,7 +149,10 @@ export default function Catalog({ moduleKey }) {
       inventory: item.inventory || emptyForm.inventory,
       variants: item.variants || [],
       batches: item.batches || [],
-      attributes: item.attributes || {}
+      attributes: item.attributes || {},
+      kitchen_station: item.kitchen_station || "general",
+      prep_time_minutes: item.prep_time_minutes ?? 15,
+      modifiers_schema: Array.isArray(item.modifiers_schema) ? item.modifiers_schema : [],
     });
     setError("");
     setModal(true);
@@ -162,6 +168,17 @@ export default function Catalog({ moduleKey }) {
         category: form.category || null,
         price: form.price === "" ? "0" : form.price,
         cost_price: form.cost_price === "" ? null : form.cost_price,
+        kitchen_station: form.kitchen_station || "general",
+        prep_time_minutes: Number(form.prep_time_minutes || 15),
+        modifiers_schema: (Array.isArray(form.modifiers_schema) ? form.modifiers_schema : [])
+          .filter(g => (g.group || "").trim())
+          .map(g => ({
+            group: (g.group || "").trim(),
+            required: Boolean(g.required),
+            options: (Array.isArray(g.options) ? g.options : [])
+              .filter(o => (o.name || "").trim())
+              .map(o => ({ name: (o.name || "").trim(), price: Number(o.price || 0) })),
+          })),
         inventory: {
           ...form.inventory,
           quantity: form.inventory.is_unlimited ? 0 : Number(form.inventory.quantity || 0)
@@ -462,7 +479,172 @@ export default function Catalog({ moduleKey }) {
             <label>Brand<input value={form.brand} onChange={e => updateForm("brand", e.target.value)} /></label>
             <label>Unit<input value={form.unit} onChange={e => updateForm("unit", e.target.value)} placeholder="piece, kg, pack, hour..." /></label>
             <label className="full">Description<textarea value={form.description} onChange={e => updateForm("description", e.target.value)} rows="3" /></label>
+            {(business === "restaurant" || moduleKey === "menu") && (
+              <>
+                <label>
+                  Kitchen Station
+                  <select value={form.kitchen_station || "general"} onChange={e => updateForm("kitchen_station", e.target.value)}>
+                    <option value="general">General Kitchen</option>
+                    <option value="grill">🔥 Grill</option>
+                    <option value="fryer">🍟 Fryer</option>
+                    <option value="drinks">🥤 Drinks / Bar</option>
+                    <option value="dessert">🍰 Dessert</option>
+                  </select>
+                </label>
+                <label>
+                  Prep Time (mins)
+                  <input
+                    type="number"
+                    min="1"
+                    max="180"
+                    value={form.prep_time_minutes ?? 15}
+                    onChange={e => updateForm("prep_time_minutes", e.target.value)}
+                  />
+                </label>
+              </>
+            )}
           </div>
+
+          {(business === "restaurant" || moduleKey === "menu") && (
+            <div className="catalog-form-section">
+              <div className="catalog-section-heading">
+                <div>
+                  <h3>Modifiers & Add-ons</h3>
+                  <p>Configure sizes, spice levels, or paid extras (e.g. Extra Cheese +Rs. 100). Shown on POS, KDS, and AI Agent.</p>
+                </div>
+                <button
+                  type="button"
+                  className="catalog-btn secondary"
+                  onClick={() =>
+                    updateForm("modifiers_schema", [
+                      ...(form.modifiers_schema || []),
+                      { group: "", required: false, options: [{ name: "", price: 0 }] },
+                    ])
+                  }
+                >
+                  <FiPlus /> Add Group
+                </button>
+              </div>
+
+              {(form.modifiers_schema || []).map((grp, gIdx) => (
+                <div
+                  key={gIdx}
+                  style={{
+                    border: "1px solid #f0e2f4",
+                    background: "#fcf9fd",
+                    borderRadius: 12,
+                    padding: 12,
+                    marginTop: 10,
+                    display: "flex",
+                    flexDirection: "column",
+                    gap: 8,
+                  }}
+                >
+                  <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+                    <input
+                      placeholder="Group name (e.g. Size, Add-ons, Spice Level)"
+                      value={grp.group || ""}
+                      onChange={e => {
+                        const next = [...(form.modifiers_schema || [])];
+                        next[gIdx] = { ...next[gIdx], group: e.target.value };
+                        updateForm("modifiers_schema", next);
+                      }}
+                      style={{ flex: 1, minWidth: 180 }}
+                    />
+                    <label style={{ display: "inline-flex", alignItems: "center", gap: 5, fontSize: 12, margin: 0 }}>
+                      <input
+                        type="checkbox"
+                        checked={Boolean(grp.required)}
+                        onChange={e => {
+                          const next = [...(form.modifiers_schema || [])];
+                          next[gIdx] = { ...next[gIdx], required: e.target.checked };
+                          updateForm("modifiers_schema", next);
+                        }}
+                      />
+                      Required
+                    </label>
+                    <button
+                      type="button"
+                      onClick={() =>
+                        updateForm(
+                          "modifiers_schema",
+                          (form.modifiers_schema || []).filter((_, i) => i !== gIdx)
+                        )
+                      }
+                      title="Remove modifier group"
+                      style={{ border: "1px solid #fecaca", background: "#fef2f2", color: "#b91c1c", borderRadius: 8, padding: "6px 8px", cursor: "pointer" }}
+                    >
+                      <FiTrash2 />
+                    </button>
+                  </div>
+
+                  {(grp.options || []).map((opt, oIdx) => (
+                    <div key={oIdx} style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                      <input
+                        placeholder="Option (e.g. Extra Cheese / Large)"
+                        value={opt.name || ""}
+                        onChange={e => {
+                          const next = [...(form.modifiers_schema || [])];
+                          const opts = [...(next[gIdx].options || [])];
+                          opts[oIdx] = { ...opts[oIdx], name: e.target.value };
+                          next[gIdx] = { ...next[gIdx], options: opts };
+                          updateForm("modifiers_schema", next);
+                        }}
+                        style={{ flex: 2 }}
+                      />
+                      <input
+                        type="number"
+                        min="0"
+                        step="1"
+                        placeholder="+Rs. Price"
+                        value={opt.price ?? 0}
+                        onChange={e => {
+                          const next = [...(form.modifiers_schema || [])];
+                          const opts = [...(next[gIdx].options || [])];
+                          opts[oIdx] = { ...opts[oIdx], price: e.target.value };
+                          next[gIdx] = { ...next[gIdx], options: opts };
+                          updateForm("modifiers_schema", next);
+                        }}
+                        style={{ width: 110 }}
+                      />
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const next = [...(form.modifiers_schema || [])];
+                          next[gIdx] = {
+                            ...next[gIdx],
+                            options: (next[gIdx].options || []).filter((_, i) => i !== oIdx),
+                          };
+                          updateForm("modifiers_schema", next);
+                        }}
+                        style={{ border: "none", background: "transparent", color: "#9ca3af", cursor: "pointer" }}
+                      >
+                        <FiX />
+                      </button>
+                    </div>
+                  ))}
+
+                  <div>
+                    <button
+                      type="button"
+                      className="catalog-btn secondary"
+                      style={{ fontSize: 12, padding: "5px 10px" }}
+                      onClick={() => {
+                        const next = [...(form.modifiers_schema || [])];
+                        next[gIdx] = {
+                          ...next[gIdx],
+                          options: [...(next[gIdx].options || []), { name: "", price: 0 }],
+                        };
+                        updateForm("modifiers_schema", next);
+                      }}
+                    >
+                      <FiPlus /> Add Option
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
 
           <div className="catalog-form-section"><h3>Custom Attributes</h3><p>Add business-specific information such as size, color, strength, ingredients or duration.</p>
             <div className="catalog-attribute-add"><input placeholder="Attribute name" value={attributeKey} onChange={e => setAttributeKey(e.target.value)} /><input placeholder="Value" value={attributeValue} onChange={e => setAttributeValue(e.target.value)} /><button type="button" onClick={addAttribute}><FiPlus /></button></div>

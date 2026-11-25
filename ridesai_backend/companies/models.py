@@ -215,6 +215,13 @@ class CatalogItem(models.Model):
         ("product", "Product"),
         ("service", "Service"),
     ]
+    KITCHEN_STATION_CHOICES = [
+        ("general", "General"),
+        ("grill", "Grill"),
+        ("fryer", "Fryer"),
+        ("drinks", "Drinks"),
+        ("dessert", "Dessert"),
+    ]
 
     company = models.ForeignKey(Company, on_delete=models.CASCADE, related_name="catalog_items")
     category = models.ForeignKey(CatalogCategory, on_delete=models.SET_NULL, null=True, blank=True, related_name="items")
@@ -229,6 +236,9 @@ class CatalogItem(models.Model):
     unit = models.CharField(max_length=50, blank=True)
     image = models.ImageField(upload_to="catalog/", null=True, blank=True)
     attributes = models.JSONField(default=dict, blank=True)
+    modifiers_schema = models.JSONField(default=list, blank=True)
+    kitchen_station = models.CharField(max_length=24, choices=KITCHEN_STATION_CHOICES, default="general", db_index=True)
+    prep_time_minutes = models.PositiveIntegerField(default=15)
     requires_prescription = models.BooleanField(default=False)
     generic_name = models.CharField(max_length=255, blank=True, default="")
     is_available = models.BooleanField(default=True)

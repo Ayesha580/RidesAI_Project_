@@ -24,8 +24,26 @@ class Order(models.Model):
         STATUS_ON_THE_WAY, STATUS_OUT_FOR_DELIVERY, STATUS_DELIVERED, STATUS_CANCELLED,
     )]
 
+    ORDER_TYPE_DELIVERY = "delivery"
+    ORDER_TYPE_DINE_IN = "dine_in"
+    ORDER_TYPE_TAKEAWAY = "takeaway"
+    ORDER_TYPE_CHOICES = [
+        (ORDER_TYPE_DELIVERY, "Delivery"),
+        (ORDER_TYPE_DINE_IN, "Dine-In"),
+        (ORDER_TYPE_TAKEAWAY, "Takeaway"),
+    ]
+
     company = models.ForeignKey("companies.Company", on_delete=models.CASCADE, related_name="orders")
     order_number = models.CharField(max_length=24, unique=True, editable=False)
+    order_type = models.CharField(max_length=20, choices=ORDER_TYPE_CHOICES, default=ORDER_TYPE_DELIVERY, db_index=True)
+    table_number = models.CharField(max_length=40, blank=True, default="")
+    table = models.ForeignKey(
+        "operations.RestaurantTable",
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="orders",
+    )
     customer_name = models.CharField(max_length=160)
     customer_email = models.EmailField(blank=True)
     customer_phone = models.CharField(max_length=40, blank=True)
@@ -38,6 +56,8 @@ class Order(models.Model):
     total = models.DecimalField(max_digits=12, decimal_places=2, default=0)
     notes = models.TextField(blank=True)
     source = models.CharField(max_length=20, default="dashboard", choices=[("dashboard", "Dashboard"), ("agent", "AI Agent"), ("api", "API")])
+    prep_started_at = models.DateTimeField(null=True, blank=True)
+    ready_at = models.DateTimeField(null=True, blank=True)
     created_by = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL, related_name="created_orders")
     assigned_to = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL, related_name="assigned_business_orders")
     assigned_rider = models.ForeignKey(
@@ -71,6 +91,8 @@ class OrderItem(models.Model):
     quantity = models.DecimalField(max_digits=12, decimal_places=3, default=1)
     unit_price = models.DecimalField(max_digits=12, decimal_places=2)
     line_total = models.DecimalField(max_digits=12, decimal_places=2)
+    selected_modifiers = models.JSONField(default=list, blank=True)
+    item_notes = models.TextField(blank=True, default="")
 
 
 class DeliveryAssignment(models.Model):
