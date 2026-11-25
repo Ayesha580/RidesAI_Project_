@@ -6910,3 +6910,188 @@ class RestaurantTablesAndReservationsTests(TestCase):
         names = [row["customer_name"] for row in today_list.data]
         self.assertIn("Ayesha Siddiqui", names)
         self.assertIn("Zeeshan Ali", names)
+
+
+class RestaurantInventoryAndRecipesTests(TestCase):
+    """Tests for Restaurant Ingredient Inventory, Dish Recipes, Auto-Deduction, Restore & AI Out-of-Stock."""
+
+    def setUp(self):
+        self.client = APIClient()
+        self.company_a = Company.objects.create(
+            name="Burger Lab A",
+            business_type="restaurant",
+            status="active",
+            is_approved=True,
+            subscription_status="active",
+        )
+        self.company_b = Company.objects.create(
+            name="Other Kitchen B",
+            business_type="restaurant",
+            status="active",
+            is_approved=True,
+            subscription_status="active",
+        )
+        self.owner_a = User.objects.create_user(
+            username="inv_owner_a",
+            email="owner_a@burgerlab.test",
+            password="Password123!",
+            company=self.company_a,
+            role=User.ROLE_OWNER,
+        )
+        self.owner_b = User.objects.create_user(
+            username="inv_owner_b",
+            email="owner_b@otherkitchen.test",
+            password="Password123!",
+            company=self.company_b,
+            role=User.ROLE_OWNER,
+        )
+
+    def test_ingredients_recipes_auto_deduction_cancel_restore_ai_oos_and_tenant_isolation(self):
+        from companies.models import CatalogItem
+        from operations.models import IngredientStockMovement, RestaurantIngredient
+        from operations.whatsapp_agent import (
+            _build_system_prompt,
+            execute_get_catalog_items,
+            get_business_context_for_company,
+        )
+
+        self.client.force_authenticate(user=self.owner_a)
+
+        dish = CatalogItem.objects.create(
+            company=self.company_a,
+            name="Zinger Burger",
+            price=Decimal("650.00"),
+            is_available=True,
+        )
+
+        # 1. Create ingredients
+        ing_res1 = self.client.post(
+            "/api/operations/restaurant/inventory/",
+            {
+                "name": "Chicken Fillet",
+                "unit": "pcs",
+                "current_stock": 10,
+                "low_stock_threshold": 5,
+                "cost_per_unit": 180,
+                "supplier_name": "Fresh Poultry",
+            },
+            format="json",
+        )
+        self.assertEqual(ing_res1.status_code, 201)
+        fillet_id = ing_res1.data["id"]
+
+        ing_res2 = self.client.post(
+            "/api/operations/restaurant/inventory/",
+            {
+                "name": "Burger Bun",
+                "unit": "pcs",
+                "current_stock": 2,
+                "low_stock_threshold": 5,
+                "cost_per_unit": 40,
+            },
+            format="json",
+        )
+        self.assertEqual(ing_res2.status_code, 201)
+        bun_id = ing_res2.data["id"]
+
+        # 2. Map dish recipe: 1 Zinger Burger requires 1 Chicken Fillet + 1 Burger Bun
+        rec_res = self.client.put(
+            f"/api/operations/restaurant/recipes/{dish.id}/",
+            {
+                "ingredients": [
+                    {"ingredient_id": fillet_id, "quantity_required": 1},
+                    {"ingredient_id": bun_id, "quantity_required": 1},
+                ]
+            },
+            format="json",
+        )
+        self.assertEqual(rec_res.status_code, 200)
+        self.assertEqual(len(rec_res.data["ingredients"]), 2)
+
+        # 3. Place an order for 2 Zinger Burgers -> auto-deducts 2 Fillets (10->8) and 2 Buns (2->0)
+        ord_res = self.client.post(
+            "/api/operations/orders/",
+            {
+                "order_type": "takeaway",
+                "customer_name": "Bilal",
+                "items": [{"item_id": dish.id, "quantity": 2}],
+            },
+            format="json",
+        )
+        self.assertEqual(ord_res.status_code, 201)
+        order_id = ord_res.data["id"]
+
+        fillet = RestaurantIngredient.objects.get(pk=fillet_id)
+        bun = RestaurantIngredient.objects.get(pk=bun_id)
+        self.assertEqual(fillet.current_stock, Decimal("8.000"))
+        self.assertEqual(bun.current_stock, Decimal("0.000"))
+        self.assertEqual(bun.stock_status, "out_of_stock")
+
+        # 4. AI Agent Out-of-Stock awareness: Bun is at 0 -> Zinger Burger marked [OUT OF STOCK]
+        ctx = get_business_context_for_company(self.company_a)
+        prompt = _build_system_prompt("Guest", ctx)
+        self.assertIn("Zinger Burger [OUT OF STOCK]", prompt)
+
+        ai_cat = execute_get_catalog_items(self.company_a, search_query="Zinger")
+        self.assertTrue(ai_cat["success"])
+        self.assertFalse(ai_cat["items"][0]["in_stock"])
+        self.assertIn("[OUT OF STOCK]", ai_cat["items"][0]["name"])
+
+        # Executive dashboard low_stock_items_count picks up out-of-stock Bun
+        dash_res = self.client.get("/api/operations/restaurant/dashboard-summary/?period=today")
+        self.assertEqual(dash_res.status_code, 200)
+        self.assertGreaterEqual(dash_res.data["alerts"]["low_stock_items_count"], 1)
+
+        # 5. Cancel the order -> restores 2 Fillets (8->10) and 2 Buns (0->2)
+        cancel_res = self.client.patch(
+            f"/api/operations/orders/{order_id}/status/",
+            {"status": "cancelled"},
+            format="json",
+        )
+        self.assertEqual(cancel_res.status_code, 200)
+
+        fillet.refresh_from_db()
+        bun.refresh_from_db()
+        self.assertEqual(fillet.current_stock, Decimal("10.000"))
+        self.assertEqual(bun.current_stock, Decimal("2.000"))
+        self.assertTrue(
+            IngredientStockMovement.objects.filter(
+                company=self.company_a,
+                order_id=order_id,
+                movement_type=IngredientStockMovement.MOVEMENT_ORDER_CANCEL_RESTORE,
+            ).exists()
+        )
+
+        # 6. Manual restock & waste adjustments + movement history
+        restock_res = self.client.post(
+            f"/api/operations/restaurant/inventory/{bun_id}/adjust/",
+            {"movement_type": "restock", "quantity": 10, "reason": "Morning bakery delivery"},
+            format="json",
+        )
+        self.assertEqual(restock_res.status_code, 200)
+        self.assertEqual(restock_res.data["ingredient"]["current_stock"], 12.0)
+
+        waste_res = self.client.post(
+            f"/api/operations/restaurant/inventory/{bun_id}/adjust/",
+            {"movement_type": "waste", "quantity": 2, "reason": "Crushed buns"},
+            format="json",
+        )
+        self.assertEqual(waste_res.status_code, 200)
+        self.assertEqual(waste_res.data["ingredient"]["current_stock"], 10.0)
+
+        mov_res = self.client.get(f"/api/operations/restaurant/inventory/{bun_id}/movements/")
+        self.assertEqual(mov_res.status_code, 200)
+        self.assertGreaterEqual(len(mov_res.data), 4)
+
+        # 7. Strict Multi-Tenant Isolation
+        self.client.force_authenticate(user=self.owner_b)
+        list_b = self.client.get("/api/operations/restaurant/inventory/")
+        self.assertEqual(list_b.status_code, 200)
+        self.assertEqual(list_b.data["ingredients"], [])
+
+        cross_adj = self.client.post(
+            f"/api/operations/restaurant/inventory/{bun_id}/adjust/",
+            {"movement_type": "waste", "quantity": 5},
+            format="json",
+        )
+        self.assertEqual(cross_adj.status_code, 404)

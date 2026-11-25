@@ -20,6 +20,7 @@ from operations.models import (
     AgentConversation,
     Order,
     OrderItem,
+    RestaurantIngredient,
     RestaurantTable,
     SuggestedFAQ,
 )
@@ -111,11 +112,16 @@ class RestaurantDashboardSummaryAPIView(APIView):
             | Q(status__in=[Order.STATUS_PREPARED, Order.STATUS_READY], assigned_rider__isnull=True)
         ).count()
 
-        low_stock_items_count = Inventory.objects.filter(
+        catalog_low_stock = Inventory.objects.filter(
             company=company,
             is_unlimited=False,
             quantity__lte=F("low_stock_threshold"),
         ).count()
+        ingredient_low_stock = RestaurantIngredient.objects.filter(
+            company=company,
+            current_stock__lte=F("low_stock_threshold"),
+        ).count()
+        low_stock_items_count = catalog_low_stock + ingredient_low_stock
 
         pending_faq_suggestions_count = SuggestedFAQ.objects.filter(
             company=company,

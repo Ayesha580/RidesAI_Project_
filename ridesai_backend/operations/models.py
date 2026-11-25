@@ -1027,6 +1027,137 @@ class TableReservation(models.Model):
 
 
 # ============================================================================
+# Restaurant Ingredient Inventory, Dish Recipes & Stock Movement Logs
+# ============================================================================
+
+class RestaurantIngredient(models.Model):
+    UNIT_CHOICES = [
+        ("pcs", "Pieces (pcs)"),
+        ("kg", "Kilograms (kg)"),
+        ("g", "Grams (g)"),
+        ("l", "Liters (l)"),
+        ("ml", "Milliliters (ml)"),
+        ("packs", "Packs"),
+    ]
+
+    company = models.ForeignKey(
+        "companies.Company",
+        on_delete=models.CASCADE,
+        related_name="restaurant_ingredients",
+        db_index=True,
+    )
+    name = models.CharField(max_length=160)
+    sku = models.CharField(max_length=80, blank=True, default="")
+    unit = models.CharField(max_length=16, choices=UNIT_CHOICES, default="pcs")
+    current_stock = models.DecimalField(max_digits=12, decimal_places=3, default=Decimal("0"))
+    low_stock_threshold = models.DecimalField(max_digits=12, decimal_places=3, default=Decimal("5"))
+    cost_per_unit = models.DecimalField(max_digits=12, decimal_places=2, default=Decimal("0"))
+    supplier_name = models.CharField(max_length=160, blank=True, default="")
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ("name",)
+        constraints = [
+            models.UniqueConstraint(
+                fields=["company", "name"],
+                name="unique_rest_ingredient_per_company",
+            )
+        ]
+
+    @property
+    def stock_status(self) -> str:
+        if self.current_stock <= 0:
+            return "out_of_stock"
+        if self.current_stock <= self.low_stock_threshold:
+            return "low_stock"
+        return "in_stock"
+
+    def __str__(self):
+        return f"{self.name} ({self.current_stock} {self.unit})"
+
+
+class MenuItemRecipe(models.Model):
+    company = models.ForeignKey(
+        "companies.Company",
+        on_delete=models.CASCADE,
+        related_name="menu_item_recipes",
+        db_index=True,
+    )
+    catalog_item = models.ForeignKey(
+        "companies.CatalogItem",
+        on_delete=models.CASCADE,
+        related_name="recipe_ingredients",
+    )
+    ingredient = models.ForeignKey(
+        RestaurantIngredient,
+        on_delete=models.CASCADE,
+        related_name="used_in_recipes",
+    )
+    quantity_required = models.DecimalField(max_digits=12, decimal_places=3, default=Decimal("1"))
+
+    class Meta:
+        ordering = ("ingredient__name",)
+        constraints = [
+            models.UniqueConstraint(
+                fields=["catalog_item", "ingredient"],
+                name="unique_recipe_ingredient_per_dish",
+            )
+        ]
+
+    def __str__(self):
+        return f"{self.catalog_item.name} -> {self.ingredient.name} ({self.quantity_required})"
+
+
+class IngredientStockMovement(models.Model):
+    MOVEMENT_ORDER_DEDUCTION = "order_deduction"
+    MOVEMENT_ORDER_CANCEL_RESTORE = "order_cancellation_restore"
+    MOVEMENT_RESTOCK = "restock"
+    MOVEMENT_WASTE = "waste"
+    MOVEMENT_MANUAL_ADJUSTMENT = "manual_adjustment"
+    MOVEMENT_CHOICES = [
+        (MOVEMENT_ORDER_DEDUCTION, "Order Deduction"),
+        (MOVEMENT_ORDER_CANCEL_RESTORE, "Order Cancellation Restore"),
+        (MOVEMENT_RESTOCK, "Restock"),
+        (MOVEMENT_WASTE, "Waste / Spoilage"),
+        (MOVEMENT_MANUAL_ADJUSTMENT, "Manual Adjustment"),
+    ]
+
+    company = models.ForeignKey(
+        "companies.Company",
+        on_delete=models.CASCADE,
+        related_name="ingredient_stock_movements",
+        db_index=True,
+    )
+    ingredient = models.ForeignKey(
+        RestaurantIngredient,
+        on_delete=models.CASCADE,
+        related_name="movements",
+    )
+    movement_type = models.CharField(max_length=32, choices=MOVEMENT_CHOICES, db_index=True)
+    quantity_delta = models.DecimalField(max_digits=12, decimal_places=3)
+    stock_after = models.DecimalField(max_digits=12, decimal_places=3, default=Decimal("0"))
+    reason = models.CharField(max_length=255, blank=True, default="")
+    order = models.ForeignKey(
+        Order,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="ingredient_movements",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ("-created_at", "-id")
+        indexes = [
+            models.Index(fields=["company", "ingredient", "-created_at"], name="op_ing_mov_comp_ing_idx"),
+        ]
+
+    def __str__(self):
+        return f"{self.ingredient.name} {self.quantity_delta:+} ({self.movement_type})"
+
+
+# ============================================================================
 # Privacy, Data Retention & Customer Consent Ledger (PRD §12 — Multi-Tenant)
 # ============================================================================
 

@@ -184,4 +184,16 @@ export const restaurantFloorApi = {
     api.post(`/operations/restaurant/reservations/${id}/complete/`, { table_status }),
 };
 
+export const restaurantInventoryApi = {
+  list: (params = {}) => api.get("/operations/restaurant/inventory/", { params }),
+  create: (data) => api.post("/operations/restaurant/inventory/", data),
+  update: (id, data) => api.patch(`/operations/restaurant/inventory/${id}/`, data),
+  remove: (id) => api.delete(`/operations/restaurant/inventory/${id}/`),
+  adjust: (id, data) => api.post(`/operations/restaurant/inventory/${id}/adjust/`, data),
+  movements: (id) => api.get(`/operations/restaurant/inventory/${id}/movements/`),
+  getRecipe: (catalogItemId) => api.get(`/operations/restaurant/recipes/${catalogItemId}/`),
+  saveRecipe: (catalogItemId, ingredients) =>
+    api.put(`/operations/restaurant/recipes/${catalogItemId}/`, { ingredients }),
+};
+
 
