@@ -61,6 +61,7 @@ import RestaurantReservations from "./operations/RestaurantReservations";
 import RestaurantInventoryRecipes from "./operations/RestaurantInventoryRecipes";
 import RestaurantDeliveriesDispatch from "./operations/RestaurantDeliveriesDispatch";
 import RestaurantCustomersCRM from "./operations/RestaurantCustomersCRM";
+import RestaurantReportsAnalytics from "./operations/RestaurantReportsAnalytics";
 import PrivacyComplianceSettings from "./operations/PrivacyComplianceSettings";
 import StaffAttendance from "./operations/StaffAttendance";
 import SuppliersManagement from "./operations/SuppliersManagement";
@@ -93,7 +94,9 @@ function OwnerModulePage() {
   if (moduleKey === "expiry_tracking") return <PharmacyBatches />;
   if (moduleKey === "departments") return <HospitalDashboard defaultTab="departments" />;
   if (moduleKey === "lab_tests") return <HospitalDashboard defaultTab="lab_tests" />;
-  if (moduleKey === "reports") return <AnalyticsReports />;
+  if (moduleKey === "reports") {
+    return isRestaurantUser(user) ? <RestaurantReportsAnalytics /> : <AnalyticsReports />;
+  }
   if (moduleKey === "tables") return <TablesFloorPlan />;
   if (moduleKey === "reservations") return <RestaurantReservations />;
   if (moduleKey === "attendance") return <StaffAttendance />;
@@ -136,7 +139,9 @@ function StaffModulePage() {
   if (moduleKey === "expiry_tracking") return <PharmacyBatches staff />;
   if (moduleKey === "departments") return <HospitalDashboard staff defaultTab="departments" />;
   if (moduleKey === "lab_tests") return <HospitalDashboard staff defaultTab="lab_tests" />;
-  if (moduleKey === "reports") return <AnalyticsReports staff />;
+  if (moduleKey === "reports") {
+    return isRestaurantUser(user) ? <RestaurantReportsAnalytics staff /> : <AnalyticsReports staff />;
+  }
   if (moduleKey === "tables") return <TablesFloorPlan staff />;
   if (moduleKey === "reservations") return <RestaurantReservations staff />;
   if (moduleKey === "attendance") return <StaffAttendance staff />;
