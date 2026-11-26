@@ -7230,3 +7230,274 @@ class RestaurantInventoryAndRecipesTests(TestCase):
             format="json",
         )
         self.assertEqual(cross_adj.status_code, 404)
+
+
+class RestaurantDeliveriesAndCODTests(TestCase):
+    """Module 5: Restaurant Deliveries, Live Rider Dispatch & COD Reconciliation tests."""
+
+    def setUp(self):
+        from companies.models import Company
+        from accounts.models import User, StaffRole
+        from operations.models import Order, OrderItem
+
+        self.company = Company.objects.create(
+            name="Biryani Dispatch Kitchen",
+            business_type="restaurant",
+            subscription_status="active",
+        )
+        self.other_company = Company.objects.create(
+            name="Other Tenant Bistro",
+            business_type="restaurant",
+            subscription_status="active",
+        )
+        self.owner = User.objects.create_user(
+            username="dispatch_owner",
+            email="dispatch_owner@test.com",
+            password="pass",
+            role=User.ROLE_OWNER,
+            company=self.company,
+            is_active=True,
+        )
+        self.other_owner = User.objects.create_user(
+            username="other_dispatch_owner",
+            email="other_dispatch_owner@test.com",
+            password="pass",
+            role=User.ROLE_OWNER,
+            company=self.other_company,
+            is_active=True,
+        )
+
+        rider_role = StaffRole.objects.create(
+            company=self.company,
+            name="Rider",
+            is_active=True,
+            permissions=["deliveries.view_assigned", "deliveries.update_status"],
+        )
+        self.rider_a = User.objects.create_user(
+            username="rider_ali",
+            first_name="Ali",
+            last_name="Rider",
+            email="rider_ali@test.com",
+            password="pass",
+            role=User.ROLE_STAFF,
+            company=self.company,
+            staff_role=rider_role,
+            is_active=True,
+        )
+        self.rider_b = User.objects.create_user(
+            username="rider_bilal",
+            first_name="Bilal",
+            last_name="Express",
+            email="rider_bilal@test.com",
+            password="pass",
+            role=User.ROLE_STAFF,
+            company=self.company,
+            staff_role=rider_role,
+            is_active=True,
+        )
+
+        self.delivery_order_1 = Order.objects.create(
+            company=self.company,
+            order_type=Order.ORDER_TYPE_DELIVERY,
+            customer_name="Hassan",
+            customer_phone="+923001111111",
+            delivery_address="House 12, Block B, DHA",
+            status=Order.STATUS_CONFIRMED,
+            subtotal=Decimal("1200.00"),
+            delivery_fee=Decimal("150.00"),
+            total=Decimal("1350.00"),
+        )
+        OrderItem.objects.create(
+            order=self.delivery_order_1,
+            item_name="Chicken Biryani",
+            quantity=2,
+            unit_price=Decimal("600.00"),
+            line_total=Decimal("1200.00"),
+        )
+
+        self.delivery_order_2 = Order.objects.create(
+            company=self.company,
+            order_type=Order.ORDER_TYPE_DELIVERY,
+            customer_name="Sana",
+            customer_phone="+923002222222",
+            delivery_address="Flat 4A, Gulberg III",
+            status=Order.STATUS_CONFIRMED,
+            subtotal=Decimal("850.00"),
+            delivery_fee=Decimal("150.00"),
+            total=Decimal("1000.00"),
+        )
+
+        # Dine-in order should NEVER appear on the delivery dispatch board
+        self.dine_in_order = Order.objects.create(
+            company=self.company,
+            order_type=Order.ORDER_TYPE_DINE_IN,
+            customer_name="Walk-in Guest",
+            status=Order.STATUS_CONFIRMED,
+            subtotal=Decimal("500.00"),
+            total=Decimal("500.00"),
+        )
+
+        # Other tenant's delivery order must remain strictly isolated
+        self.other_delivery = Order.objects.create(
+            company=self.other_company,
+            order_type=Order.ORDER_TYPE_DELIVERY,
+            customer_name="External Customer",
+            delivery_address="Other City",
+            status=Order.STATUS_READY,
+            total=Decimal("999.00"),
+        )
+
+        self.client = APIClient()
+        self.client.force_authenticate(user=self.owner)
+
+    def test_board_filters_only_tenant_delivery_orders_and_lists_riders(self):
+        res = self.client.get("/api/operations/restaurant/deliveries/")
+        self.assertEqual(res.status_code, 200)
+        data = res.json()
+        order_ids = {o["id"] for o in data["orders"]}
+        self.assertIn(self.delivery_order_1.id, order_ids)
+        self.assertIn(self.delivery_order_2.id, order_ids)
+        self.assertNotIn(self.dine_in_order.id, order_ids)
+        self.assertNotIn(self.other_delivery.id, order_ids)
+        self.assertEqual(data["kpis"]["pending_dispatch"], 2)
+        rider_ids = {r["id"] for r in data["riders"]}
+        self.assertEqual(rider_ids, {self.rider_a.id, self.rider_b.id})
+
+    def test_rider_assign_lifecycle_and_cod_settlement(self):
+        from operations.models import DeliveryAssignment, Order
+
+        # 1. Manual assign order 1 to rider_a
+        res = self.client.post(
+            f"/api/operations/restaurant/deliveries/{self.delivery_order_1.id}/assign/",
+            {"rider_id": self.rider_a.id},
+            format="json",
+        )
+        self.assertEqual(res.status_code, 200)
+        self.delivery_order_1.refresh_from_db()
+        self.assertEqual(self.delivery_order_1.assigned_rider_id, self.rider_a.id)
+        self.assertEqual(self.delivery_order_1.status, Order.STATUS_ASSIGNED)
+        self.assertTrue(
+            DeliveryAssignment.objects.filter(
+                order=self.delivery_order_1, rider=self.rider_a
+            ).exists()
+        )
+
+        # 2. Auto-assign order 2 -> should pick least-busy rider_b
+        res_auto = self.client.post(
+            f"/api/operations/restaurant/deliveries/{self.delivery_order_2.id}/assign/",
+            {"auto": True},
+            format="json",
+        )
+        self.assertEqual(res_auto.status_code, 200)
+        self.delivery_order_2.refresh_from_db()
+        self.assertEqual(self.delivery_order_2.assigned_rider_id, self.rider_b.id)
+
+        # 3. Transition order 1 to out_for_delivery -> sets dispatched_at
+        res_out = self.client.post(
+            f"/api/operations/restaurant/deliveries/{self.delivery_order_1.id}/status/",
+            {"status": "out_for_delivery"},
+            format="json",
+        )
+        self.assertEqual(res_out.status_code, 200)
+        self.delivery_order_1.refresh_from_db()
+        self.assertEqual(self.delivery_order_1.status, Order.STATUS_OUT_FOR_DELIVERY)
+        self.assertIsNotNone(self.delivery_order_1.dispatched_at)
+
+        # 4. Transition order 1 to delivered -> sets delivered_at & cod_collected=True
+        res_del = self.client.post(
+            f"/api/operations/restaurant/deliveries/{self.delivery_order_1.id}/status/",
+            {"status": "delivered"},
+            format="json",
+        )
+        self.assertEqual(res_del.status_code, 200)
+        self.delivery_order_1.refresh_from_db()
+        self.assertEqual(self.delivery_order_1.status, Order.STATUS_DELIVERED)
+        self.assertIsNotNone(self.delivery_order_1.delivered_at)
+        self.assertTrue(self.delivery_order_1.cod_collected)
+        self.assertFalse(self.delivery_order_1.cod_settled)
+
+        # 5. Board reflects Rs. 1350 unsettled COD for rider_a
+        board_before = self.client.get("/api/operations/restaurant/deliveries/").json()
+        self.assertEqual(board_before["kpis"]["unsettled_cod_total"], 1350.0)
+        rider_a_row = next(r for r in board_before["riders"] if r["id"] == self.rider_a.id)
+        self.assertEqual(rider_a_row["unsettled_cod_count"], 1)
+        self.assertEqual(rider_a_row["unsettled_cod_total"], 1350.0)
+
+        # 6. Settle COD for rider_a -> clears balance & sets cod_settled_at
+        res_settle = self.client.post(
+            "/api/operations/restaurant/deliveries/settle-cod/",
+            {"rider_id": self.rider_a.id},
+            format="json",
+        )
+        self.assertEqual(res_settle.status_code, 200)
+        self.assertEqual(res_settle.json()["settled_count"], 1)
+        self.assertEqual(res_settle.json()["settled_amount"], 1350.0)
+
+        self.delivery_order_1.refresh_from_db()
+        self.assertTrue(self.delivery_order_1.cod_settled)
+        self.assertIsNotNone(self.delivery_order_1.cod_settled_at)
+
+        board_after = self.client.get("/api/operations/restaurant/deliveries/").json()
+        self.assertEqual(board_after["kpis"]["unsettled_cod_total"], 0.0)
+
+    def test_multi_tenant_isolation_blocks_cross_company_mutations(self):
+        # Other company cannot assign or update our delivery order
+        other_client = APIClient()
+        other_client.force_authenticate(user=self.other_owner)
+
+        res_assign = other_client.post(
+            f"/api/operations/restaurant/deliveries/{self.delivery_order_1.id}/assign/",
+            {"auto": True},
+            format="json",
+        )
+        self.assertEqual(res_assign.status_code, 404)
+
+        res_status = other_client.post(
+            f"/api/operations/restaurant/deliveries/{self.delivery_order_1.id}/status/",
+            {"status": "delivered"},
+            format="json",
+        )
+        self.assertEqual(res_status.status_code, 404)
+
+        res_settle = other_client.post(
+            "/api/operations/restaurant/deliveries/settle-cod/",
+            {"rider_id": self.rider_a.id},
+            format="json",
+        )
+        self.assertEqual(res_settle.status_code, 404)
+
+    def test_manual_rider_reassignment_overwrites_previous_rider(self):
+        from operations.models import DeliveryAssignment
+
+        # Assign order 1 to rider_a first
+        res1 = self.client.post(
+            f"/api/operations/restaurant/deliveries/{self.delivery_order_1.id}/assign/",
+            {"rider_id": self.rider_a.id, "auto": False},
+            format="json",
+        )
+        self.assertEqual(res1.status_code, 200)
+        self.assertEqual(res1.json()["assigned_rider_id"], self.rider_a.id)
+
+        # Reassign order 1 to rider_b
+        res2 = self.client.post(
+            f"/api/operations/restaurant/deliveries/{self.delivery_order_1.id}/assign/",
+            {"rider_id": self.rider_b.id, "auto": False},
+            format="json",
+        )
+        self.assertEqual(res2.status_code, 200)
+        payload = res2.json()
+        self.assertEqual(payload["assigned_rider_id"], self.rider_b.id)
+        self.assertEqual(payload["assigned_rider_name"], "Bilal Express")
+        self.assertEqual(payload["order"]["assigned_rider_id"], self.rider_b.id)
+
+        # Verify DB & DeliveryAssignment overwritten
+        self.delivery_order_1.refresh_from_db()
+        self.assertEqual(self.delivery_order_1.assigned_rider_id, self.rider_b.id)
+        assignment = DeliveryAssignment.objects.get(order=self.delivery_order_1)
+        self.assertEqual(assignment.rider_id, self.rider_b.id)
+
+        # Confirm GET /api/operations/restaurant/deliveries/ returns rider_b
+        board = self.client.get("/api/operations/restaurant/deliveries/").json()
+        order_row = next(o for o in board["orders"] if o["id"] == self.delivery_order_1.id)
+        self.assertEqual(order_row["assigned_rider_id"], self.rider_b.id)
+        self.assertEqual(order_row["assigned_rider_name"], "Bilal Express")

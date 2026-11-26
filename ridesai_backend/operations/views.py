@@ -496,6 +496,16 @@ class OrderStatusAPIView(BusinessAPIView):
         if next_status in (Order.STATUS_READY, Order.STATUS_PREPARED) and not order.ready_at:
             order.ready_at = now_ts
             update_fields.append("ready_at")
+        if next_status in (Order.STATUS_OUT_FOR_DELIVERY, Order.STATUS_ON_THE_WAY) and not order.dispatched_at:
+            order.dispatched_at = now_ts
+            update_fields.append("dispatched_at")
+        if next_status == Order.STATUS_DELIVERED:
+            if not order.delivered_at:
+                order.delivered_at = now_ts
+                update_fields.append("delivered_at")
+            if order.order_type == Order.ORDER_TYPE_DELIVERY and not order.cod_collected:
+                order.cod_collected = True
+                update_fields.append("cod_collected")
         order.save(update_fields=update_fields)
         DeliveryAssignment.objects.filter(order=order).update(status=next_status)
         OrderEvent.objects.create(company=self.company, order=order, actor=request.user,
