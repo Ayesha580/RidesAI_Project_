@@ -7501,3 +7501,118 @@ class RestaurantDeliveriesAndCODTests(TestCase):
         order_row = next(o for o in board["orders"] if o["id"] == self.delivery_order_1.id)
         self.assertEqual(order_row["assigned_rider_id"], self.rider_b.id)
         self.assertEqual(order_row["assigned_rider_name"], "Bilal Express")
+
+    def test_smart_fairness_tie_breaker_picks_rider_with_fewer_daily_deliveries(self):
+        from django.utils import timezone
+        from operations.models import Order
+        from operations.restaurant_delivery_views import select_best_available_rider
+
+        # Both rider_a and rider_b have 0 active orders,
+        # but rider_a has 2 completed (delivered) orders today and rider_b has 0.
+        now_ts = timezone.now()
+        for idx in range(2):
+            Order.objects.create(
+                company=self.company,
+                order_type=Order.ORDER_TYPE_DELIVERY,
+                customer_name=f"Delivered Guest {idx}",
+                delivery_address="DHA Phase 5",
+                status=Order.STATUS_DELIVERED,
+                assigned_rider=self.rider_a,
+                delivered_at=now_ts,
+                cod_collected=True,
+                total=Decimal("900.00"),
+            )
+
+        chosen = select_best_available_rider(self.company)
+        self.assertIsNotNone(chosen)
+        self.assertEqual(chosen.id, self.rider_b.id)
+
+    def test_auto_dispatch_toggle_on_pos_and_ai_delivery_order_creation(self):
+        from companies.models import CatalogCategory, CatalogItem
+        from operations.models import Order
+        from operations.views import _create_order
+        from operations.whatsapp_agent import execute_create_order
+
+        cat = CatalogCategory.objects.create(company=self.company, name="Burgers")
+        burger = CatalogItem.objects.create(
+            company=self.company,
+            category=cat,
+            name="Zinger Burger",
+            price=Decimal("650.00"),
+            is_available=True,
+        )
+
+        # 1. Verify board returns auto_dispatch_enabled=True by default
+        board = self.client.get("/api/operations/restaurant/deliveries/").json()
+        self.assertTrue(board["auto_dispatch_enabled"])
+
+        # 2. POS delivery order with auto_dispatch_enabled=True -> auto-assigns rider_a
+        pos_order_on = _create_order(
+            self.company,
+            {
+                "order_type": "delivery",
+                "customer_name": "POS Customer On",
+                "customer_phone": "+923009990001",
+                "delivery_address": "Model Town, Lahore",
+                "items": [{"item_id": burger.id, "quantity": 1}],
+            },
+            actor=self.owner,
+            source="dashboard",
+        )
+        pos_order_on.refresh_from_db()
+        self.assertEqual(pos_order_on.assigned_rider_id, self.rider_a.id)
+
+        # 3. AI delivery order with auto_dispatch_enabled=True -> auto-assigns least-busy rider_b
+        ai_res_on = execute_create_order(
+            company=self.company,
+            customer_name="AI Customer On",
+            customer_phone="+923009990002",
+            delivery_address="Johar Town, Lahore",
+            items=[{"item_name": "Zinger Burger", "quantity": 1}],
+            order_type="delivery",
+        )
+        self.assertTrue(ai_res_on["success"])
+        self.assertEqual(ai_res_on.get("assigned_rider_name"), "Bilal Express")
+        ai_order_on = Order.objects.get(order_number=ai_res_on["order_number"])
+        self.assertEqual(ai_order_on.assigned_rider_id, self.rider_b.id)
+
+        # 4. Toggle Smart Auto-Dispatch OFF via PATCH /api/operations/restaurant/deliveries/settings/
+        toggle_res = self.client.patch(
+            "/api/operations/restaurant/deliveries/settings/",
+            {"auto_dispatch_enabled": False},
+            format="json",
+        )
+        self.assertEqual(toggle_res.status_code, 200)
+        self.assertFalse(toggle_res.json()["auto_dispatch_enabled"])
+        self.company.refresh_from_db()
+        self.assertFalse(self.company.auto_dispatch_enabled)
+
+        # 5. POS delivery order with auto_dispatch_enabled=False -> remains unassigned
+        pos_order_off = _create_order(
+            self.company,
+            {
+                "order_type": "delivery",
+                "customer_name": "POS Customer Off",
+                "customer_phone": "+923009990003",
+                "delivery_address": "Gulberg II, Lahore",
+                "items": [{"item_id": burger.id, "quantity": 1}],
+            },
+            actor=self.owner,
+            source="dashboard",
+        )
+        pos_order_off.refresh_from_db()
+        self.assertIsNone(pos_order_off.assigned_rider_id)
+
+        # 6. AI delivery order with auto_dispatch_enabled=False -> remains unassigned
+        ai_res_off = execute_create_order(
+            company=self.company,
+            customer_name="AI Customer Off",
+            customer_phone="+923009990004",
+            delivery_address="Bahria Town, Lahore",
+            items=[{"item_name": "Zinger Burger", "quantity": 1}],
+            order_type="delivery",
+        )
+        self.assertTrue(ai_res_off["success"])
+        self.assertNotIn("assigned_rider_name", ai_res_off)
+        ai_order_off = Order.objects.get(order_number=ai_res_off["order_number"])
+        self.assertIsNone(ai_order_off.assigned_rider_id)

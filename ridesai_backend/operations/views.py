@@ -355,6 +355,9 @@ def _create_order(company, payload, actor=None, source="dashboard"):
 
     from operations.restaurant_inventory_views import deduct_recipe_ingredients_for_order
     deduct_recipe_ingredients_for_order(order)
+
+    from operations.restaurant_delivery_views import auto_assign_delivery_order_if_enabled
+    auto_assign_delivery_order_if_enabled(order, actor=actor)
     return order
 
 

@@ -1279,8 +1279,15 @@ def execute_create_order(
         from operations.restaurant_inventory_views import deduct_recipe_ingredients_for_order
         deduct_recipe_ingredients_for_order(order)
 
+        from operations.restaurant_delivery_views import (
+            auto_assign_delivery_order_if_enabled,
+            _rider_display_name,
+        )
+        assigned_rider = auto_assign_delivery_order_if_enabled(order)
+        assigned_rider_name = _rider_display_name(assigned_rider) if assigned_rider else ""
+
         logger.info(f"[Tool: create_order] Order {order.order_number} created successfully for {company.name}.")
-        return {
+        response_payload = {
             "success": True,
             "order_number": order.order_number,
             "status": order.status,
@@ -1293,6 +1300,9 @@ def execute_create_order(
             "total": f"Rs. {order.total:.2f}",
             "estimated_delivery_time": "30-45 minutes",
         }
+        if assigned_rider_name:
+            response_payload["assigned_rider_name"] = assigned_rider_name
+        return response_payload
 
     except Exception as e:
         logger.error(f"[Tool: create_order] Failed to create order: {e}", exc_info=True)

@@ -146,6 +146,10 @@ class Company(models.Model):
     currency_symbol = models.CharField(max_length=12, blank=True, default="Rs.")
     auto_print_kot = models.BooleanField(default=False)
     auto_print_invoice = models.BooleanField(default=False)
+    auto_dispatch_enabled = models.BooleanField(
+        default=True,
+        help_text="When True, automatically assigns new delivery orders to the available rider with the fewest active and daily deliveries.",
+    )
 
 
     whatsapp_instance_name = models.CharField(max_length=100, blank=True, null=True)
