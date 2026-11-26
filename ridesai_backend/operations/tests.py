@@ -7829,3 +7829,141 @@ class RestaurantCustomersCRMTests(TestCase):
         list_res = other_client.get("/api/operations/restaurant/customers/").json()
         self.assertEqual(list_res["kpis"]["total_guests"], 1)
         self.assertEqual(list_res["customers"][0]["phone"], "923009999999")
+
+    def test_execute_lookup_guest_profile_tool_and_tenant_isolation(self):
+        from operations.whatsapp_agent import (
+            CATEGORY_AGENT_PROFILES,
+            _build_system_prompt,
+            execute_lookup_guest_profile,
+            get_business_context_for_company,
+        )
+
+        # Tool is registered for restaurant vertical
+        rest_tool_names = [
+            t["function"]["name"] for t in CATEGORY_AGENT_PROFILES["restaurant"]["tools"]
+        ]
+        self.assertIn("lookup_guest_profile", rest_tool_names)
+
+        # Save dietary notes for VIP guest Zainab
+        self.client.patch(
+            "/api/operations/restaurant/customers/923001112222/",
+            {"dietary_notes": "Less oil, extra raita"},
+            format="json",
+        )
+
+        # Lookup with variant local format (0300...) returns full profile
+        res = execute_lookup_guest_profile(self.company, "03001112222")
+        self.assertTrue(res["found"])
+        self.assertEqual(res["name"], "Zainab Khan")
+        self.assertTrue(res["is_vip"])
+        self.assertEqual(res["total_orders"], 2)
+        self.assertEqual(res["favorite_dish"], "Mutton Karahi")
+        self.assertEqual(res["dietary_notes"], "Less oil, extra raita")
+        self.assertEqual(res["preferred_order_type"], "delivery")
+
+        # Lookup for another tenant's guest returns found=False (strict isolation)
+        cross = execute_lookup_guest_profile(self.company, "+923009999999")
+        self.assertFalse(cross["found"])
+        self.assertEqual(cross["total_orders"], 0)
+
+        # Anonymous website voice prompt includes lookup_guest_profile instruction
+        ctx = get_business_context_for_company(self.company)
+        anon_prompt = _build_system_prompt(
+            customer_name="Valued Customer",
+            context=ctx,
+            sender_phone="",
+        )
+        self.assertIn("lookup_guest_profile(phone)", anon_prompt)
+
+    def test_prefilled_public_voice_customer_details_and_crm_context_in_prompt(self):
+        from operations.whatsapp_agent import _build_system_prompt, get_business_context_for_company
+
+        # Save dietary notes for returning guest Zainab
+        self.client.patch(
+            "/api/operations/restaurant/customers/923001112222/",
+            {"dietary_notes": "No onions, extra mint chutney"},
+            format="json",
+        )
+
+        ctx = get_business_context_for_company(self.company)
+        ctx["customer_phone"] = "+923001112222"
+        ctx["customer_address"] = "House 14, Block C, Model Town, Lahore"
+
+        prompt = _build_system_prompt(
+            customer_name="Zainab Khan",
+            context=ctx,
+            is_voice_note=True,
+            sender_phone="+923001112222",
+            customer_address="House 14, Block C, Model Town, Lahore",
+        )
+
+        # Pre-filled details block & explicit DO NOT re-ask instruction
+        self.assertIn("PRE-FILLED CUSTOMER DETAILS (ALREADY VERIFIED)", prompt)
+        self.assertIn("Customer Name: Zainab Khan", prompt)
+        self.assertIn("Customer Phone: +923001112222", prompt)
+        self.assertIn("Delivery Address: House 14, Block C, Model Town, Lahore", prompt)
+        self.assertIn("DO NOT ask again for their name, phone number, or address", prompt)
+
+        # Returning guest CRM context automatically injected on turn 1
+        self.assertIn("RETURNING GUEST CONTEXT (PERSONALIZATION)", prompt)
+        self.assertIn("Mutton Karahi", prompt)
+        self.assertIn("No onions, extra mint chutney", prompt)
+
+    def test_auto_attach_guest_dietary_notes_to_order_kitchen_notes(self):
+        from companies.models import CatalogCategory, CatalogItem
+        from operations.models import Order
+        from operations.views import _create_order
+        from operations.whatsapp_agent import execute_create_order
+        from operations.printing.receipt_formatter import build_receipt_payload
+
+        cat = CatalogCategory.objects.create(company=self.company, name="Mains")
+        dish = CatalogItem.objects.create(
+            company=self.company,
+            category=cat,
+            name="Chicken Handi",
+            price=Decimal("1100.00"),
+            is_available=True,
+        )
+
+        # Save dietary notes on guest profile
+        self.client.patch(
+            "/api/operations/restaurant/customers/923001112222/",
+            {"dietary_notes": "Extra spicy, no onions"},
+            format="json",
+        )
+
+        # 1. AI order created WITHOUT explicit notes -> auto-attaches dietary_notes
+        ai_res = execute_create_order(
+            company=self.company,
+            customer_name="Zainab Khan",
+            customer_phone="03001112222",
+            delivery_address="DHA Phase 5, Lahore",
+            items=[{"item_name": "Chicken Handi", "quantity": 1}],
+            notes="",
+            order_type="delivery",
+        )
+        self.assertTrue(ai_res["success"])
+        ai_order = Order.objects.get(order_number=ai_res["order_number"])
+        self.assertIn("Extra spicy, no onions", ai_order.notes)
+
+        # Verify KOT receipt payload renders the attached notes
+        kot_payload = build_receipt_payload(ai_order, slip_type="kot")
+        self.assertTrue(kot_payload["order"]["has_notes"])
+        self.assertIn("Extra spicy, no onions", kot_payload["order"]["notes"])
+
+        # 2. POS order created with separate delivery note -> merges cleanly without losing either
+        pos_order = _create_order(
+            self.company,
+            {
+                "order_type": "delivery",
+                "customer_name": "Zainab Khan",
+                "customer_phone": "+923001112222",
+                "delivery_address": "DHA Phase 5, Lahore",
+                "notes": "Ring bell twice",
+                "items": [{"item_id": dish.id, "quantity": 1}],
+            },
+            actor=self.owner,
+            source="dashboard",
+        )
+        self.assertIn("Ring bell twice", pos_order.notes)
+        self.assertIn("Extra spicy, no onions", pos_order.notes)

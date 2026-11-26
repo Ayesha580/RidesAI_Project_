@@ -399,12 +399,35 @@ TOOL_BOOK_TABLE_RESERVATION = {
     },
 }
 
+TOOL_LOOKUP_GUEST_PROFILE = {
+    "type": "function",
+    "function": {
+        "name": "lookup_guest_profile",
+        "description": (
+            "Looks up a returning restaurant guest's CRM profile and order history by phone number "
+            "(name, VIP status, total orders, favorite dish, saved dietary/preference notes, preferred order type). "
+            "Call this immediately when a guest on the Website Voice/Chat Agent shares their phone number."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "phone": {
+                    "type": "string",
+                    "description": "The guest's phone number (e.g. '03001234567' or '+923001234567').",
+                },
+            },
+            "required": ["phone"],
+        },
+    },
+}
+
 AGENT_TOOLS = [
     TOOL_GET_CATALOG_ITEMS,
     TOOL_GET_UPSELL_SUGGESTIONS,
     TOOL_CREATE_ORDER,
     TOOL_CHECK_ORDER_STATUS,
     TOOL_BOOK_TABLE_RESERVATION,
+    TOOL_LOOKUP_GUEST_PROFILE,
     TOOL_SUBMIT_PRESCRIPTION_REQUEST,
     TOOL_GET_CLINIC_DOCTORS,
     TOOL_BOOK_APPOINTMENT,
@@ -434,6 +457,7 @@ CATEGORY_AGENT_PROFILES = {
             TOOL_CREATE_ORDER,
             TOOL_CHECK_ORDER_STATUS,
             TOOL_BOOK_TABLE_RESERVATION,
+            TOOL_LOOKUP_GUEST_PROFILE,
             TOOL_LOG_UNANSWERED_QUESTION,
         ],
     },
@@ -850,6 +874,46 @@ def execute_book_lab_test(
         return {"success": False, "error": "Could not complete the lab test booking right now."}
 
 
+def execute_lookup_guest_profile(company: Company, phone: str) -> Dict[str, Any]:
+    """
+    Looks up a returning restaurant guest's CRM profile & order history strictly
+    scoped to `company` so the Website Voice/Chat Agent and WhatsApp AI Agent can
+    personalize greetings and respect saved dietary preferences.
+    """
+    if not company or not (phone or "").strip():
+        return {
+            "found": False,
+            "name": "",
+            "is_vip": False,
+            "total_orders": 0,
+            "favorite_dish": "",
+            "dietary_notes": "",
+            "preferred_order_type": "",
+        }
+    from operations.restaurant_customers_views import build_returning_guest_ai_context
+
+    guest_ctx = build_returning_guest_ai_context(company, phone)
+    if not guest_ctx:
+        return {
+            "found": False,
+            "name": "",
+            "is_vip": False,
+            "total_orders": 0,
+            "favorite_dish": "",
+            "dietary_notes": "",
+            "preferred_order_type": "",
+        }
+    return {
+        "found": True,
+        "name": guest_ctx.get("name", ""),
+        "is_vip": bool(guest_ctx.get("is_vip", False)),
+        "total_orders": int(guest_ctx.get("total_orders", 0)),
+        "favorite_dish": guest_ctx.get("favorite_dish", ""),
+        "dietary_notes": guest_ctx.get("dietary_notes", ""),
+        "preferred_order_type": guest_ctx.get("preferred_order_type", ""),
+    }
+
+
 def execute_book_table_reservation(
     company: Company,
     customer_name: str,
@@ -1197,6 +1261,12 @@ def execute_create_order(
                 if item_instr and item_instr.lower() not in clean_notes.lower():
                     combined_notes_parts.append(f"{r['item_name']}: {item_instr}")
             consolidated_notes = " | ".join(combined_notes_parts)
+            from operations.restaurant_customers_views import merge_guest_dietary_notes
+            consolidated_notes = merge_guest_dietary_notes(
+                company=company,
+                customer_phone=clean_phone,
+                existing_notes=consolidated_notes,
+            )
 
             # Create Order (apply shared delivery fee for delivery orders; Rs. 0 for dine_in / takeaway)
             clean_order_type = (order_type or Order.ORDER_TYPE_DELIVERY).strip().lower()
@@ -1761,6 +1831,7 @@ def _build_system_prompt(
     is_voice_note: bool = False,
     has_prior_history: bool = False,
     sender_phone: str = "",
+    customer_address: str = "",
 ) -> str:
     """
     Constructs a detailed grounding system prompt for the LLM using tenant metadata,
@@ -1926,13 +1997,38 @@ def _build_system_prompt(
             "- Once `book_table_reservation` returns `\"success\": true`, quote the exact `table_number`, `reservation_date`, `reservation_time`, and `party_size` from the tool response.\n"
         )
 
+    effective_phone = (sender_phone or context.get("customer_phone") or "").strip()
+    effective_address = (customer_address or context.get("customer_address") or "").strip()
+    raw_cust_name = (customer_name or context.get("customer_name") or "").strip()
+    effective_name = (
+        raw_cust_name
+        if raw_cust_name.lower() not in ("", "valued customer", "customer", "guest", "unknown")
+        else ""
+    )
+
+    prefilled_customer_section = ""
+    if effective_name or effective_phone or effective_address:
+        pf_lines = []
+        if effective_name:
+            pf_lines.append(f"- Customer Name: {effective_name}")
+        if effective_phone:
+            pf_lines.append(f"- Customer Phone: {effective_phone}")
+        if effective_address:
+            pf_lines.append(f"- Delivery Address: {effective_address}")
+        prefilled_customer_section = (
+            "\nPRE-FILLED CUSTOMER DETAILS (ALREADY VERIFIED):\n"
+            + "\n".join(pf_lines)
+            + "\n- You ALREADY have the customer's verified details above—DO NOT ask again for their name, phone number, or address if already provided. "
+            "Use these directly when calling `create_order` or `book_table_reservation`.\n"
+        )
+
     returning_guest_section = ""
     if cat_cfg.get("key") == "restaurant":
         guest_ctx = context.get("returning_guest")
-        if not guest_ctx and sender_phone and context.get("company"):
+        if not guest_ctx and effective_phone and context.get("company"):
             try:
                 from operations.restaurant_customers_views import build_returning_guest_ai_context
-                guest_ctx = build_returning_guest_ai_context(context["company"], sender_phone)
+                guest_ctx = build_returning_guest_ai_context(context["company"], effective_phone)
             except Exception:
                 guest_ctx = None
         if guest_ctx:
@@ -1953,6 +2049,12 @@ def _build_system_prompt(
                     + "\n".join(rg_lines)
                     + "\n- Greet this returning guest warmly by name if known, and automatically respect their saved dietary/preference notes when taking orders (also pass relevant dietary notes into `notes` when calling `create_order`).\n"
                 )
+        else:
+            returning_guest_section = (
+                "\nRETURNING GUEST LOOKUP (WEBSITE VOICE / CHAT AGENT):\n"
+                "- If a guest on the Website Voice/Chat Agent provides their phone number (and no Returning Guest Context is already loaded), "
+                "call `lookup_guest_profile(phone)` immediately to greet them by name, acknowledge their favorite dish, and respect their saved dietary preferences.\n"
+            )
 
     return f"""You are the official AI Assistant for {biz_name} on WhatsApp.
 Your primary role is {role_desc}.
@@ -1983,6 +2085,7 @@ FREQUENTLY ASKED QUESTIONS & POLICIES:
 VERTICAL-SPECIFIC INSTRUCTIONS:
 {category_instructions}
 {restaurant_reservation_rules}
+{prefilled_customer_section}
 {returning_guest_section}
 
 GLOBAL HEALTH & DIETARY GUARDRAILS (PRD MANDATORY):
@@ -2199,6 +2302,7 @@ def _generate_agent_reply(
                 is_voice_note=is_voice_note,
                 has_prior_history=has_prior_history,
                 sender_phone=sender_phone,
+                customer_address=context.get("customer_address", ""),
             )
 
             messages: List[Dict[str, Any]] = [{"role": "system", "content": system_prompt}]
@@ -2272,12 +2376,13 @@ def _generate_agent_reply(
                         if (not name_arg or name_arg == "Valued Customer") and conversation_obj and conversation_obj.customer_name:
                             name_arg = conversation_obj.customer_name.strip()
 
+                        address_arg = (fn_args.get("delivery_address") or "").strip() or (context.get("customer_address") or "").strip()
                         tool_result = execute_create_order(
                             company=company,
                             customer_name=name_arg,
                             customer_phone=phone_arg,
                             items=fn_args.get("items", []),
-                            delivery_address=fn_args.get("delivery_address", ""),
+                            delivery_address=address_arg,
                             notes=fn_args.get("notes", ""),
                             order_type=fn_args.get("order_type"),
                             table_number=fn_args.get("table_number"),
@@ -2325,6 +2430,12 @@ def _generate_agent_reply(
                             reservation_time=fn_args.get("reservation_time", ""),
                             preferred_section=fn_args.get("preferred_section"),
                             special_requests=fn_args.get("special_requests", ""),
+                        )
+                    elif fn_name == "lookup_guest_profile":
+                        lookup_phone = (fn_args.get("phone") or "").strip() or sender_phone
+                        tool_result = execute_lookup_guest_profile(
+                            company=company,
+                            phone=lookup_phone,
                         )
                     elif fn_name == "submit_prescription_request":
                         tool_result = execute_submit_prescription_request(
