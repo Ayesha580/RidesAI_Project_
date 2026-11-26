@@ -59,6 +59,7 @@ import NotificationSettings from "./operations/NotificationSettings";
 import TablesFloorPlan from "./operations/TablesFloorPlan";
 import RestaurantReservations from "./operations/RestaurantReservations";
 import RestaurantInventoryRecipes from "./operations/RestaurantInventoryRecipes";
+import RestaurantDeliveriesDispatch from "./operations/RestaurantDeliveriesDispatch";
 import PrivacyComplianceSettings from "./operations/PrivacyComplianceSettings";
 import StaffAttendance from "./operations/StaffAttendance";
 import SuppliersManagement from "./operations/SuppliersManagement";
@@ -82,6 +83,7 @@ function isRestaurantUser(user) {
 function OwnerModulePage() {
   const { user } = useAuth();
   const { moduleKey } = useParams();
+  if (moduleKey === "deliveries" && isRestaurantUser(user)) return <RestaurantDeliveriesDispatch />;
   if (moduleKey === "orders" || moduleKey === "deliveries") return <OrdersDashboard />;
   if (moduleKey === "inventory" && isRestaurantUser(user)) return <RestaurantInventoryRecipes />;
   if (moduleKey === "calls") return <CallsDashboard />;
@@ -123,7 +125,9 @@ function StaffModulePage() {
   const { moduleKey } = useParams();
   if (moduleKey === "orders") return <OrdersDashboard staff />;
   if (moduleKey === "inventory" && isRestaurantUser(user)) return <RestaurantInventoryRecipes staff />;
-  if (moduleKey === "deliveries") return <DeliveriesDashboard />;
+  if (moduleKey === "deliveries") {
+    return isRestaurantUser(user) ? <RestaurantDeliveriesDispatch staff /> : <DeliveriesDashboard />;
+  }
   if (moduleKey === "my_deliveries") return <RiderDeliveries />;
   if (moduleKey === "prescriptions") return <PharmacyPrescriptions staff />;
   if (moduleKey === "expiry_tracking") return <PharmacyBatches staff />;

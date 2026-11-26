@@ -196,4 +196,13 @@ export const restaurantInventoryApi = {
     api.put(`/operations/restaurant/recipes/${catalogItemId}/`, { ingredients }),
 };
 
+export const restaurantDeliveryApi = {
+  getBoard: (params = {}) => api.get("/operations/restaurant/deliveries/", { params }),
+  assignRider: (orderId, data) =>
+    api.post(`/operations/restaurant/deliveries/${orderId}/assign/`, data),
+  updateStatus: (orderId, status, note = "") =>
+    api.post(`/operations/restaurant/deliveries/${orderId}/status/`, { status, note }),
+  settleCod: (data) => api.post("/operations/restaurant/deliveries/settle-cod/", data),
+};
+
 

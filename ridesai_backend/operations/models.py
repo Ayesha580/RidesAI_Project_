@@ -58,6 +58,11 @@ class Order(models.Model):
     source = models.CharField(max_length=20, default="dashboard", choices=[("dashboard", "Dashboard"), ("agent", "AI Agent"), ("api", "API")])
     prep_started_at = models.DateTimeField(null=True, blank=True)
     ready_at = models.DateTimeField(null=True, blank=True)
+    dispatched_at = models.DateTimeField(null=True, blank=True)
+    delivered_at = models.DateTimeField(null=True, blank=True)
+    cod_collected = models.BooleanField(default=False)
+    cod_settled = models.BooleanField(default=False)
+    cod_settled_at = models.DateTimeField(null=True, blank=True)
     created_by = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL, related_name="created_orders")
     assigned_to = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL, related_name="assigned_business_orders")
     assigned_rider = models.ForeignKey(

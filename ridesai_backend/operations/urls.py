@@ -55,6 +55,12 @@ from .restaurant_inventory_views import (
     RestaurantIngredientMovementsAPIView,
     MenuItemRecipeAPIView,
 )
+from .restaurant_delivery_views import (
+    RestaurantDeliveryBoardAPIView,
+    RestaurantDeliveryAssignAPIView,
+    RestaurantDeliveryStatusAPIView,
+    RestaurantDeliverySettleCODAPIView,
+)
 
 urlpatterns = [
     path("orders/catalog/", OrderCatalogAPIView.as_view(), name="order-catalog"),
@@ -121,6 +127,10 @@ urlpatterns = [
     path("restaurant/inventory/<int:pk>/adjust/", RestaurantIngredientAdjustAPIView.as_view(), name="restaurant-inventory-adjust"),
     path("restaurant/inventory/<int:pk>/movements/", RestaurantIngredientMovementsAPIView.as_view(), name="restaurant-inventory-movements"),
     path("restaurant/recipes/<int:catalog_item_id>/", MenuItemRecipeAPIView.as_view(), name="restaurant-recipes-detail"),
+    path("restaurant/deliveries/", RestaurantDeliveryBoardAPIView.as_view(), name="restaurant-deliveries-board"),
+    path("restaurant/deliveries/<int:order_id>/assign/", RestaurantDeliveryAssignAPIView.as_view(), name="restaurant-deliveries-assign"),
+    path("restaurant/deliveries/<int:order_id>/status/", RestaurantDeliveryStatusAPIView.as_view(), name="restaurant-deliveries-status"),
+    path("restaurant/deliveries/settle-cod/", RestaurantDeliverySettleCODAPIView.as_view(), name="restaurant-deliveries-settle-cod"),
     path("customers/lookup/", CustomerLookupAPIView.as_view(), name="customers-lookup"),
     path("hospital/", include("operations.hospital_urls")),
 ]
