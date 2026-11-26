@@ -352,6 +352,29 @@ def build_status_message(
     return msg
 
 
+def build_rider_whatsapp_url(rider_phone: str, reference_id: str) -> str:
+    """Builds a 1-click customer-to-rider WhatsApp inquiry link."""
+    from urllib.parse import quote
+    wa_phone = normalize_pakistan_phone(rider_phone)
+    if not wa_phone:
+        return ""
+    msg = f"Assalam-o-Alaikum, I am inquiring about Order #{reference_id}"
+    return f"https://wa.me/{wa_phone}?text={quote(msg, safe='')}"
+
+
+def build_rider_contact_block(reference_id: str, rider_name: str = "", rider_phone: str = "") -> str:
+    """Formats assigned rider name, phone, and direct WhatsApp link for customer alerts."""
+    lines = []
+    if rider_name:
+        lines.append(f"🛵 *Rider:* {rider_name}")
+    if rider_phone:
+        lines.append(f"📞 *Rider Phone:* {rider_phone}")
+        wa_url = build_rider_whatsapp_url(rider_phone, reference_id)
+        if wa_url:
+            lines.append(f"💬 *WhatsApp Rider:* {wa_url}")
+    return "\n".join(lines)
+
+
 def send_status_notification(
     company: Company,
     customer_phone: Optional[str] = None,
@@ -439,6 +462,14 @@ def send_status_notification(
             reason=reason,
             replacement_order_number=rep_order_num,
         )
+
+    # Append Customer -> Rider contact details & 1-click WhatsApp link on active delivery alerts
+    if entity_type == "order" and curr in ("out_for_delivery", "on_the_way", "picked_up", "dispatched", "assigned"):
+        r_name = (kwargs.get("rider_name") or "").strip()
+        r_phone = (kwargs.get("rider_phone") or "").strip()
+        rider_block = build_rider_contact_block(str(reference_id), r_name, r_phone)
+        if rider_block and "wa.me/" not in message_text:
+            message_text = f"{message_text}\n\n{rider_block}"
 
     clean_phone = normalize_pakistan_phone(target_phone)
     if not clean_phone:
@@ -554,9 +585,14 @@ def send_order_status_notification(
             return False
 
     rider_obj = getattr(order, "assigned_rider", None)
+    if not rider_obj:
+        delivery_rel = getattr(order, "delivery", None)
+        rider_obj = getattr(delivery_rel, "rider", None) if delivery_rel else None
     rider_name = ""
+    rider_phone = ""
     if rider_obj:
         rider_name = (rider_obj.get_full_name() or rider_obj.username or "").strip()
+        rider_phone = (getattr(rider_obj, "phone", "") or "").strip()
     total_val = getattr(order, "total", None)
     total_str = f"Rs. {float(total_val):.2f}" if total_val is not None else ""
 
@@ -572,4 +608,5 @@ def send_order_status_notification(
         customer_email=getattr(order, "customer_email", None),
         total_amount=total_str,
         rider_name=rider_name,
+        rider_phone=rider_phone,
     )

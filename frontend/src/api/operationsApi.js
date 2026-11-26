@@ -218,6 +218,16 @@ export const restaurantReportsApi = {
   getSummary: (params = {}) => api.get("/operations/restaurant/reports/", { params }),
   downloadCsv: (params = {}) =>
     api.get("/operations/restaurant/reports/export/", { params, responseType: "blob" }),
+  listExpenses: (params = {}) => api.get("/operations/restaurant/expenses/", { params }),
+  createExpense: (data) => api.post("/operations/restaurant/expenses/", data),
+  deleteExpense: (id) => api.delete(`/operations/restaurant/expenses/${id}/`),
+};
+
+export const restaurantSuppliersApi = {
+  list: () => api.get("/operations/restaurant/suppliers/"),
+  create: (data) => api.post("/operations/restaurant/suppliers/", data),
+  update: (id, data) => api.patch(`/operations/restaurant/suppliers/${id}/`, data),
+  remove: (id) => api.delete(`/operations/restaurant/suppliers/${id}/`),
 };
 
 

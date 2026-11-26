@@ -39,6 +39,37 @@ export default function PublicAgentPage() {
   }, [customer, customerStorageKey]);
   const [locating, setLocating] = useState(false);
   const [showContactModal, setShowContactModal] = useState(false);
+  const [recallMatch, setRecallMatch] = useState(null);
+
+  // Privacy-first returning guest recall: triggers ONLY when a full phone (>= 10 digits) is entered
+  useEffect(() => {
+    if (!showContactModal) return;
+    const digits = String(customer.phone || "").replace(/\D/g, "");
+    if (digits.length < 10) {
+      setRecallMatch(null);
+      return;
+    }
+    let cancelled = false;
+    const timer = setTimeout(() => {
+      api
+        .post(`/operations/public/agent/${publicId}/recall/`, { phone: customer.phone })
+        .then(({ data }) => {
+          if (cancelled) return;
+          if (data?.found && (data.name || data.address)) {
+            setRecallMatch({ name: data.name || "", address: data.address || "" });
+          } else {
+            setRecallMatch(null);
+          }
+        })
+        .catch(() => {
+          if (!cancelled) setRecallMatch(null);
+        });
+    }, 350);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [customer.phone, publicId, showContactModal]);
 
   // Conversation & Read-only Display State
   const isEmbed = typeof window !== "undefined" && new URLSearchParams(window.location.search).get("embed") === "1";
@@ -1299,6 +1330,49 @@ export default function PublicAgentPage() {
                   value={customer.phone}
                   onChange={(e) => setCustomer({ ...customer, phone: e.target.value })}
                 />
+                {recallMatch && (
+                  <div
+                    style={{
+                      marginTop: 8,
+                      padding: "9px 12px",
+                      borderRadius: 10,
+                      background: "#fdf4ff",
+                      border: "1px solid #f0abfc",
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "space-between",
+                      gap: 10,
+                      flexWrap: "wrap",
+                    }}
+                  >
+                    <span style={{ fontSize: 12, fontWeight: 700, color: "#86198f" }}>
+                      ✨ Welcome back{recallMatch.name ? `, ${recallMatch.name}` : ""}!
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setCustomer((prev) => ({
+                          ...prev,
+                          name: recallMatch.name || prev.name,
+                          address: recallMatch.address || prev.address,
+                        }));
+                        setRecallMatch(null);
+                      }}
+                      style={{
+                        border: "none",
+                        background: "#0f172a",
+                        color: "#fff",
+                        borderRadius: 8,
+                        padding: "5px 10px",
+                        fontSize: 11,
+                        fontWeight: 700,
+                        cursor: "pointer",
+                      }}
+                    >
+                      Auto-fill my details
+                    </button>
+                  </div>
+                )}
               </div>
 
               <div>

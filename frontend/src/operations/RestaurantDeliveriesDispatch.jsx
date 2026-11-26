@@ -41,6 +41,14 @@ function formatTime(iso) {
   }
 }
 
+function toWaNumber(raw) {
+  const digits = String(raw || "").replace(/\D/g, "");
+  if (!digits) return "";
+  if (digits.startsWith("03") && digits.length === 11) return "92" + digits.slice(1);
+  if (digits.startsWith("00")) return digits.slice(2);
+  return digits;
+}
+
 export default function RestaurantDeliveriesDispatch({ staff = false }) {
   const Layout = staff ? StaffLayout : OwnerLayout;
 
@@ -825,16 +833,37 @@ export default function RestaurantDeliveriesDispatch({ staff = false }) {
 
                         {/* 1-Click Lifecycle Buttons */}
                         {!isTerminal && (
-                          <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-                            {!isOut && (
+                          <>
+                            <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                              {!isOut && (
+                                <button
+                                  type="button"
+                                  disabled={isBusy}
+                                  onClick={() => handleStatusChange(order.id, "out_for_delivery")}
+                                  style={{
+                                    flex: 1,
+                                    border: "none",
+                                    background: "#0284c7",
+                                    color: "#fff",
+                                    borderRadius: 8,
+                                    padding: "8px 10px",
+                                    fontSize: 12,
+                                    fontWeight: 700,
+                                    cursor: isBusy ? "wait" : "pointer",
+                                    whiteSpace: "nowrap",
+                                  }}
+                                >
+                                  🚀 Mark Out for Delivery
+                                </button>
+                              )}
                               <button
                                 type="button"
                                 disabled={isBusy}
-                                onClick={() => handleStatusChange(order.id, "out_for_delivery")}
+                                onClick={() => handleStatusChange(order.id, "delivered")}
                                 style={{
                                   flex: 1,
                                   border: "none",
-                                  background: "#0284c7",
+                                  background: "#059669",
                                   color: "#fff",
                                   borderRadius: 8,
                                   padding: "8px 10px",
@@ -844,51 +873,114 @@ export default function RestaurantDeliveriesDispatch({ staff = false }) {
                                   whiteSpace: "nowrap",
                                 }}
                               >
-                                🚀 Mark Out for Delivery
+                                ✅ Mark Delivered
                               </button>
+                              <button
+                                type="button"
+                                disabled={isBusy}
+                                onClick={() => {
+                                  if (window.confirm(`Cancel delivery order #${order.order_number}?`)) {
+                                    handleStatusChange(order.id, "cancelled");
+                                  }
+                                }}
+                                title="Cancel Order"
+                                style={{
+                                  border: "1px solid #fecaca",
+                                  background: "#fff",
+                                  color: "#b91c1c",
+                                  borderRadius: 8,
+                                  padding: "8px 10px",
+                                  fontSize: 12,
+                                  fontWeight: 700,
+                                  cursor: isBusy ? "wait" : "pointer",
+                                }}
+                              >
+                                ✕
+                              </button>
+                            </div>
+
+                            {/* 1-Click Rider & Customer Contact Buttons */}
+                            {(order.assigned_rider_phone || order.customer_phone) && (
+                              <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 2 }}>
+                                {order.assigned_rider_phone && (
+                                  <>
+                                    <a
+                                      href={`tel:${order.assigned_rider_phone}`}
+                                      style={{
+                                        textDecoration: "none",
+                                        fontSize: 11,
+                                        fontWeight: 700,
+                                        padding: "4px 8px",
+                                        borderRadius: 7,
+                                        background: "#f8fafc",
+                                        color: "#0f172a",
+                                        border: "1px solid #cbd5e1",
+                                      }}
+                                    >
+                                      📞 Call Rider
+                                    </a>
+                                    <a
+                                      href={`https://wa.me/${toWaNumber(order.assigned_rider_phone)}?text=${encodeURIComponent(
+                                        `Assalam-o-Alaikum, Order #${order.order_number} (${order.delivery_address || "delivery"}) kahan tak pohncha hai?`
+                                      )}`}
+                                      target="_blank"
+                                      rel="noreferrer"
+                                      style={{
+                                        textDecoration: "none",
+                                        fontSize: 11,
+                                        fontWeight: 700,
+                                        padding: "4px 8px",
+                                        borderRadius: 7,
+                                        background: "#ecfdf5",
+                                        color: "#047857",
+                                        border: "1px solid #a7f3d0",
+                                      }}
+                                    >
+                                      💬 WhatsApp Rider
+                                    </a>
+                                  </>
+                                )}
+                                {order.customer_phone && (
+                                  <>
+                                    <a
+                                      href={`tel:${order.customer_phone}`}
+                                      style={{
+                                        textDecoration: "none",
+                                        fontSize: 11,
+                                        fontWeight: 700,
+                                        padding: "4px 8px",
+                                        borderRadius: 7,
+                                        background: "#f8fafc",
+                                        color: "#334155",
+                                        border: "1px solid #e2e8f0",
+                                      }}
+                                    >
+                                      📞 Call Customer
+                                    </a>
+                                    <a
+                                      href={`https://wa.me/${toWaNumber(order.customer_phone)}?text=${encodeURIComponent(
+                                        `Assalam-o-Alaikum, aapka Order #${order.order_number} delivery par hai. Please exact location/address confirm kar dein.`
+                                      )}`}
+                                      target="_blank"
+                                      rel="noreferrer"
+                                      style={{
+                                        textDecoration: "none",
+                                        fontSize: 11,
+                                        fontWeight: 700,
+                                        padding: "4px 8px",
+                                        borderRadius: 7,
+                                        background: "#fdf4ff",
+                                        color: "#86198f",
+                                        border: `1px solid ${ACCENT}`,
+                                      }}
+                                    >
+                                      💬 WhatsApp Customer
+                                    </a>
+                                  </>
+                                )}
+                              </div>
                             )}
-                            <button
-                              type="button"
-                              disabled={isBusy}
-                              onClick={() => handleStatusChange(order.id, "delivered")}
-                              style={{
-                                flex: 1,
-                                border: "none",
-                                background: "#059669",
-                                color: "#fff",
-                                borderRadius: 8,
-                                padding: "8px 10px",
-                                fontSize: 12,
-                                fontWeight: 700,
-                                cursor: isBusy ? "wait" : "pointer",
-                                whiteSpace: "nowrap",
-                              }}
-                            >
-                              ✅ Mark Delivered
-                            </button>
-                            <button
-                              type="button"
-                              disabled={isBusy}
-                              onClick={() => {
-                                if (window.confirm(`Cancel delivery order #${order.order_number}?`)) {
-                                  handleStatusChange(order.id, "cancelled");
-                                }
-                              }}
-                              title="Cancel Order"
-                              style={{
-                                border: "1px solid #fecaca",
-                                background: "#fff",
-                                color: "#b91c1c",
-                                borderRadius: 8,
-                                padding: "8px 10px",
-                                fontSize: 12,
-                                fontWeight: 700,
-                                cursor: isBusy ? "wait" : "pointer",
-                              }}
-                            >
-                              ✕
-                            </button>
-                          </div>
+                          </>
                         )}
                       </div>
                     </div>

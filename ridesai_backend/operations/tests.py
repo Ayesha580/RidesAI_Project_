@@ -8190,3 +8190,381 @@ class RestaurantReportsAnalyticsTests(TestCase):
         self.assertEqual(res.status_code, 200)
         self.assertEqual(res.json()["kpis"]["total_orders"], 1)
         self.assertEqual(res.json()["kpis"]["net_revenue"], 9999.0)
+
+
+class RestaurantProductionHardeningTests(TestCase):
+    """Production Hardening: Suppliers, Expenses & True Net Profit, Safe Public Recall, Min Rs. 500 Delivery, Rider Contact."""
+
+    def setUp(self):
+        from companies.models import CatalogCategory, CatalogItem, Company
+        from accounts.models import StaffRole, User
+        from operations.models import Order, OrderItem, RestaurantGuestProfile
+
+        self.company = Company.objects.create(
+            name="Lahore Tandoor Grill",
+            business_type="restaurant",
+            subscription_status="active",
+            agent_enabled=True,
+            min_delivery_order_amount=Decimal("500.00"),
+        )
+        self.other_company = Company.objects.create(
+            name="Other Kitchen",
+            business_type="restaurant",
+            subscription_status="active",
+            agent_enabled=True,
+        )
+        self.owner = User.objects.create_user(
+            username="hardening_owner",
+            email="hardening_owner@test.com",
+            password="pass",
+            role=User.ROLE_OWNER,
+            company=self.company,
+            is_active=True,
+        )
+        self.other_owner = User.objects.create_user(
+            username="hardening_other",
+            email="hardening_other@test.com",
+            password="pass",
+            role=User.ROLE_OWNER,
+            company=self.other_company,
+            is_active=True,
+        )
+
+        rider_role = StaffRole.objects.create(
+            company=self.company,
+            name="Rider",
+            is_active=True,
+            permissions=["deliveries.view_assigned", "deliveries.update_status"],
+        )
+        self.rider = User.objects.create_user(
+            username="hardening_rider",
+            first_name="Kamran",
+            last_name="Khan",
+            email="kamran@test.com",
+            phone="+923009876543",
+            password="pass",
+            role=User.ROLE_STAFF,
+            company=self.company,
+            staff_role=rider_role,
+            is_active=True,
+        )
+
+        cat = CatalogCategory.objects.create(company=self.company, name="Menu")
+        self.cheap_item = CatalogItem.objects.create(
+            company=self.company,
+            category=cat,
+            name="Garlic Naan",
+            price=Decimal("150.00"),
+            is_available=True,
+        )
+        self.main_item = CatalogItem.objects.create(
+            company=self.company,
+            category=cat,
+            name="Chicken Karahi",
+            price=Decimal("1200.00"),
+            is_available=True,
+        )
+
+        # Returning guest for safe public recall
+        RestaurantGuestProfile.objects.create(
+            company=self.company,
+            phone="923001234567",
+            display_phone="+923001234567",
+            name="Rubaisha Munir",
+            dietary_notes="Extra spicy",
+        )
+        self.existing_order = Order.objects.create(
+            company=self.company,
+            order_type=Order.ORDER_TYPE_DELIVERY,
+            customer_name="Rubaisha Munir",
+            customer_phone="+923001234567",
+            delivery_address="House 9, Block C, Gulberg",
+            status=Order.STATUS_ASSIGNED,
+            assigned_rider=self.rider,
+            subtotal=Decimal("1200.00"),
+            total=Decimal("1200.00"),
+        )
+        OrderItem.objects.create(
+            order=self.existing_order,
+            item=self.main_item,
+            item_name="Chicken Karahi",
+            quantity=Decimal("1"),
+            unit_price=Decimal("1200.00"),
+            line_total=Decimal("1200.00"),
+        )
+
+        self.client = APIClient()
+        self.client.force_authenticate(user=self.owner)
+
+    def test_supplier_crud_and_restock_auto_logs_expense(self):
+        from operations.models import RestaurantExpense
+
+        # 1. Create supplier
+        s_res = self.client.post(
+            "/api/operations/restaurant/suppliers/",
+            {
+                "name": "Fresh Poultry Farms",
+                "contact_person": "Tariq",
+                "phone": "+923001110000",
+                "category": "Meat",
+            },
+            format="json",
+        )
+        self.assertEqual(s_res.status_code, 201)
+        sup_id = s_res.json()["id"]
+
+        # 2. Create ingredient linked to supplier
+        i_res = self.client.post(
+            "/api/operations/restaurant/inventory/",
+            {
+                "name": "Chicken Breast",
+                "unit": "kg",
+                "current_stock": "5",
+                "cost_per_unit": "600",
+                "supplier_id": sup_id,
+            },
+            format="json",
+        )
+        self.assertEqual(i_res.status_code, 201)
+        ing_id = i_res.json()["id"]
+        self.assertEqual(i_res.json()["supplier_id"], sup_id)
+
+        # 3. Restock with purchase_cost=3000 & log_as_expense=True -> auto-creates RestaurantExpense
+        adj_res = self.client.post(
+            f"/api/operations/restaurant/inventory/{ing_id}/adjust/",
+            {
+                "movement_type": "stock_in",
+                "quantity": 5,
+                "supplier_id": sup_id,
+                "purchase_cost": 3000,
+                "log_as_expense": True,
+                "reason": "Morning chicken delivery",
+            },
+            format="json",
+        )
+        self.assertEqual(adj_res.status_code, 200)
+        exp_id = adj_res.json()["expense_id"]
+        self.assertIsNotNone(exp_id)
+        exp = RestaurantExpense.objects.get(pk=exp_id, company=self.company)
+        self.assertEqual(exp.category, RestaurantExpense.CAT_INVENTORY)
+        self.assertEqual(exp.amount, Decimal("3000.00"))
+        self.assertEqual(exp.supplier_id, sup_id)
+
+    def test_operating_expenses_and_true_net_profit_in_reports(self):
+        # Record Rs. 400 cleaning expense
+        exp_res = self.client.post(
+            "/api/operations/restaurant/expenses/",
+            {
+                "title": "Kitchen Cleaning Supplies",
+                "category": "cleaning_maintenance",
+                "amount": 400,
+                "notes": "Soap & sanitizer",
+            },
+            format="json",
+        )
+        self.assertEqual(exp_res.status_code, 201)
+        exp_id = exp_res.json()["id"]
+
+        # Reports summary: net_revenue=1200, cogs=0, gross_profit=1200, total_expenses=400 -> net_profit=800
+        rep = self.client.get("/api/operations/restaurant/reports/?range=all").json()
+        self.assertEqual(rep["kpis"]["net_revenue"], 1200.0)
+        self.assertEqual(rep["kpis"]["gross_profit"], 1200.0)
+        self.assertEqual(rep["kpis"]["total_expenses"], 400.0)
+        self.assertEqual(rep["kpis"]["net_profit"], 800.0)
+
+        # Delete expense -> net_profit returns to 1200
+        del_res = self.client.delete(f"/api/operations/restaurant/expenses/{exp_id}/")
+        self.assertEqual(del_res.status_code, 204)
+        rep_after = self.client.get("/api/operations/restaurant/reports/?range=all").json()
+        self.assertEqual(rep_after["kpis"]["total_expenses"], 0.0)
+        self.assertEqual(rep_after["kpis"]["net_profit"], 1200.0)
+
+    def test_safe_public_phone_recall_and_tenant_isolation(self):
+        anon = APIClient()
+        url = f"/api/operations/public/agent/{self.company.agent_public_id}/recall/"
+
+        # Exact full phone match -> returns name & address
+        res_ok = anon.post(url, {"phone": "03001234567"}, format="json")
+        self.assertEqual(res_ok.status_code, 200)
+        self.assertTrue(res_ok.json()["found"])
+        self.assertEqual(res_ok.json()["name"], "Rubaisha Munir")
+        self.assertEqual(res_ok.json()["address"], "House 9, Block C, Gulberg")
+
+        # Partial phone (< 10 digits) -> strictly returns found=False (no PII leak)
+        res_partial = anon.post(url, {"phone": "030012"}, format="json")
+        self.assertEqual(res_partial.status_code, 200)
+        self.assertFalse(res_partial.json()["found"])
+
+        # Cross-tenant agent URL -> cannot recall Company A's guest
+        other_url = f"/api/operations/public/agent/{self.other_company.agent_public_id}/recall/"
+        res_cross = anon.post(other_url, {"phone": "03001234567"}, format="json")
+        self.assertEqual(res_cross.status_code, 200)
+        self.assertFalse(res_cross.json()["found"])
+
+    def test_min_delivery_order_amount_500_pos_and_ai(self):
+        from operations.whatsapp_agent import execute_create_order
+
+        # 1. POS delivery under Rs. 500 -> HTTP 400
+        pos_low = self.client.post(
+            "/api/operations/orders/",
+            {
+                "order_type": "delivery",
+                "customer_name": "Test",
+                "customer_phone": "+923001112233",
+                "delivery_address": "DHA Lahore",
+                "items": [{"item_id": self.cheap_item.id, "quantity": 2}],  # Rs. 300
+            },
+            format="json",
+        )
+        self.assertEqual(pos_low.status_code, 400)
+
+        # 2. AI delivery under Rs. 500 -> blocked with clear error
+        ai_low = execute_create_order(
+            company=self.company,
+            customer_name="Test",
+            customer_phone="+923001112233",
+            delivery_address="DHA Lahore",
+            items=[{"item_name": "Garlic Naan", "quantity": 2}],  # Rs. 300
+            order_type="delivery",
+        )
+        self.assertFalse(ai_low["success"])
+        self.assertIn("500", ai_low["error"])
+
+        # 3. AI delivery >= Rs. 500 -> succeeds
+        ai_ok = execute_create_order(
+            company=self.company,
+            customer_name="Test",
+            customer_phone="+923001112233",
+            delivery_address="DHA Lahore",
+            items=[{"item_name": "Chicken Karahi", "quantity": 1}],  # Rs. 1200
+            order_type="delivery",
+        )
+        self.assertTrue(ai_ok["success"])
+
+        # 4. AI takeaway < Rs. 500 -> allowed (minimum applies to delivery only)
+        ai_takeaway = execute_create_order(
+            company=self.company,
+            customer_name="Test",
+            customer_phone="+923001112233",
+            delivery_address="",
+            items=[{"item_name": "Garlic Naan", "quantity": 1}],  # Rs. 150
+            order_type="takeaway",
+        )
+        self.assertTrue(ai_takeaway["success"])
+
+    def test_delivery_dispatch_returns_rider_and_customer_phones(self):
+        res = self.client.get("/api/operations/restaurant/deliveries/")
+        self.assertEqual(res.status_code, 200)
+        order_row = next(o for o in res.json()["orders"] if o["id"] == self.existing_order.id)
+        self.assertEqual(order_row["assigned_rider_phone"], "+923009876543")
+        self.assertEqual(order_row["customer_phone"], "+923001234567")
+
+    def test_decimal_kg_ingredient_deduction_and_exact_cogs(self):
+        from operations.models import MenuItemRecipe, Order, RestaurantIngredient
+        from operations.views import _create_order
+
+        # 5.00 kg Chicken at Rs. 800/kg; recipe uses 0.25 kg per Chicken Karahi -> COGS = Rs. 200.00
+        chicken = RestaurantIngredient.objects.create(
+            company=self.company,
+            name="Boneless Chicken",
+            unit="kg",
+            current_stock=Decimal("5.000"),
+            low_stock_threshold=Decimal("1.000"),
+            cost_per_unit=Decimal("800.00"),
+        )
+        MenuItemRecipe.objects.create(
+            company=self.company,
+            catalog_item=self.main_item,
+            ingredient=chicken,
+            quantity_required=Decimal("0.250"),
+        )
+
+        # Place order for 1 Chicken Karahi -> deducts exactly 0.25 kg (leaving 4.75 kg)
+        new_order = _create_order(
+            self.company,
+            {
+                "order_type": "takeaway",
+                "customer_name": "Weight Test",
+                "customer_phone": "+923001119999",
+                "items": [{"item_id": self.main_item.id, "quantity": 1}],
+            },
+            actor=self.owner,
+            source="dashboard",
+        )
+        chicken.refresh_from_db()
+        self.assertEqual(chicken.current_stock, Decimal("4.750"))
+
+        # Reports COGS includes exact 0.25 * 800 = 200 for both existing_order and new_order (2 x 200 = 400)
+        rep = self.client.get("/api/operations/restaurant/reports/?range=all").json()
+        self.assertEqual(rep["kpis"]["estimated_cogs"], 400.0)
+
+    def test_customer_to_rider_whatsapp_notification_and_ai_order_tracking(self):
+        from unittest.mock import patch
+        from operations.notifications import send_order_status_notification
+        from operations.whatsapp_agent import execute_check_order_status
+
+        # 1. Verify out_for_delivery WhatsApp notification includes rider name, phone & wa.me link
+        self.company.whatsapp_instance_name = "test_inst"
+        self.company.save(update_fields=["whatsapp_instance_name"])
+        captured_messages = []
+
+        def fake_send_wa(instance_name, phone, to, text, **kwargs):
+            captured_messages.append(text)
+            return {"success": True}
+
+        with patch("operations.notifications.evolution_client.send_text_message", side_effect=fake_send_wa):
+            send_order_status_notification(
+                order=self.existing_order,
+                previous_status="assigned",
+                new_status="out_for_delivery",
+            )
+
+        self.assertEqual(len(captured_messages), 1)
+        wa_body = captured_messages[0]
+        self.assertIn("Kamran Khan", wa_body)
+        self.assertIn("+923009876543", wa_body)
+        self.assertIn("https://wa.me/923009876543?text=", wa_body)
+        self.assertIn(self.existing_order.order_number, wa_body)
+
+        # 2. Verify AI execute_check_order_status returns rider contact + WhatsApp URL
+        track = execute_check_order_status(
+            company=self.company,
+            customer_phone="+923001234567",
+            order_number=self.existing_order.order_number,
+        )
+        self.assertTrue(track["found"])
+        latest = track["latest_order"]
+        self.assertEqual(latest["assigned_rider_name"], "Kamran Khan")
+        self.assertEqual(latest["assigned_rider_phone"], "+923009876543")
+        self.assertIn("https://wa.me/923009876543?text=", latest["rider_whatsapp_url"])
+
+    def test_initial_stock_auto_logs_operating_expense_and_updates_net_profit(self):
+        from operations.models import RestaurantExpense
+
+        # POST /api/operations/restaurant/inventory/ with 20 kg @ Rs. 350 -> Rs. 7,000 expense
+        res = self.client.post(
+            "/api/operations/restaurant/inventory/",
+            {
+                "name": "Mutton Leg",
+                "unit": "kg",
+                "current_stock": "20",
+                "low_stock_threshold": "3",
+                "cost_per_unit": "350",
+                "log_as_expense": True,
+            },
+            format="json",
+        )
+        self.assertEqual(res.status_code, 201)
+        data = res.json()
+        self.assertIsNotNone(data["expense_id"])
+        self.assertEqual(data["expense_amount"], 7000.0)
+
+        exp = RestaurantExpense.objects.get(pk=data["expense_id"], company=self.company)
+        self.assertEqual(exp.category, RestaurantExpense.CAT_INVENTORY)
+        self.assertEqual(exp.amount, Decimal("7000.00"))
+        self.assertIn("Initial Stock: Mutton Leg", exp.title)
+
+        # Verify reports deducts Rs. 7,000 from net_profit (gross_profit=1200 - 7000 = -5800)
+        rep = self.client.get("/api/operations/restaurant/reports/?range=all").json()
+        self.assertEqual(rep["kpis"]["total_expenses"], 7000.0)
+        self.assertEqual(rep["kpis"]["net_profit"], -5800.0)

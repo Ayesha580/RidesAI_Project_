@@ -12,10 +12,11 @@ from decimal import Decimal
 from typing import Any, Dict, List, Optional, Tuple
 
 from django.http import HttpResponse
+from django.shortcuts import get_object_or_404
 from django.utils import timezone
 from rest_framework.response import Response
 
-from .models import MenuItemRecipe, Order
+from .models import MenuItemRecipe, Order, RestaurantExpense, RestaurantSupplier
 from .views import BusinessAPIView
 
 
@@ -217,6 +218,45 @@ class RestaurantReportsSummaryAPIView(BusinessAPIView):
             if net_revenue > 0
             else 0.0
         )
+
+        # Operating Expenses in the same date window
+        exp_qs = RestaurantExpense.objects.filter(company=company).select_related("supplier")
+        if start_d:
+            exp_qs = exp_qs.filter(expense_date__gte=start_d)
+        if end_d:
+            exp_qs = exp_qs.filter(expense_date__lte=end_d)
+        expenses_list = list(exp_qs.order_by("-expense_date", "-created_at"))
+        total_expenses = sum((e.amount or Decimal("0.00")) for e in expenses_list)
+        net_profit = gross_profit - total_expenses
+        net_margin_pct = (
+            round(float(net_profit) / float(net_revenue) * 100.0, 1)
+            if net_revenue > 0
+            else 0.0
+        )
+
+        cat_labels = dict(RestaurantExpense.CATEGORY_CHOICES)
+        exp_cat_map: Dict[str, Dict[str, Any]] = {}
+        for exp in expenses_list:
+            ck = exp.category or RestaurantExpense.CAT_OTHER
+            if ck not in exp_cat_map:
+                exp_cat_map[ck] = {
+                    "category": ck,
+                    "label": cat_labels.get(ck, ck.replace("_", " ").title()),
+                    "amount": Decimal("0.00"),
+                    "count": 0,
+                }
+            exp_cat_map[ck]["amount"] += exp.amount or Decimal("0.00")
+            exp_cat_map[ck]["count"] += 1
+        expenses_by_category = [
+            {
+                "category": v["category"],
+                "label": v["label"],
+                "amount": round(float(v["amount"]), 2),
+                "count": v["count"],
+            }
+            for v in sorted(exp_cat_map.values(), key=lambda x: x["amount"], reverse=True)
+        ]
+
         avg_order_value = (
             round(float(net_revenue) / total_orders, 2) if total_orders > 0 else 0.0
         )
@@ -306,8 +346,12 @@ class RestaurantReportsSummaryAPIView(BusinessAPIView):
                 "estimated_cogs": round(float(estimated_cogs), 2),
                 "gross_profit": round(float(gross_profit), 2),
                 "gross_margin_pct": gross_margin_pct,
+                "total_expenses": round(float(total_expenses), 2),
+                "net_profit": round(float(net_profit), 2),
+                "net_margin_pct": net_margin_pct,
                 "unsettled_cod_total": round(float(unsettled_cod_total), 2),
             },
+            "expenses_by_category": expenses_by_category,
             "order_type_breakdown": order_type_breakdown,
             "channel_breakdown": channel_breakdown,
             "daily_trend": daily_trend,
@@ -348,6 +392,8 @@ class RestaurantReportsExportCSVAPIView(BusinessAPIView):
             "COD Settled",
         ])
 
+        total_net_rev = Decimal("0.00")
+        total_cogs = Decimal("0.00")
         for order in orders:
             local_dt = timezone.localtime(order.created_at) if order.created_at else None
             dt_str = local_dt.strftime("%Y-%m-%d %H:%M") if local_dt else ""
@@ -355,6 +401,9 @@ class RestaurantReportsExportCSVAPIView(BusinessAPIView):
             order_total = order.total or Decimal("0.00")
             cogs = Decimal("0.00") if is_cancelled else _compute_order_cogs(order, recipe_cost_map)
             profit = Decimal("0.00") if is_cancelled else (order_total - cogs)
+            if not is_cancelled:
+                total_net_rev += order_total
+                total_cogs += cogs
             cod_label = (
                 "Yes"
                 if order.cod_settled
@@ -375,8 +424,124 @@ class RestaurantReportsExportCSVAPIView(BusinessAPIView):
                 cod_label,
             ])
 
+        exp_qs = RestaurantExpense.objects.filter(company=company)
+        if start_d:
+            exp_qs = exp_qs.filter(expense_date__gte=start_d)
+        if end_d:
+            exp_qs = exp_qs.filter(expense_date__lte=end_d)
+        total_expenses = sum((e.amount or Decimal("0.00")) for e in exp_qs)
+        gross_profit = total_net_rev - total_cogs
+        net_profit = gross_profit - total_expenses
+
+        writer.writerow([])
+        writer.writerow(["SUMMARY", "", "", "", "", "", "", "", "Net Revenue", "Est. COGS", "Operating Expenses", "Net Profit"])
+        writer.writerow([
+            "TOTALS", "", "", "", "", "", "", "",
+            f"{float(total_net_rev):.2f}",
+            f"{float(total_cogs):.2f}",
+            f"{float(total_expenses):.2f}",
+            f"{float(net_profit):.2f}",
+        ])
+
         response = HttpResponse(buf.getvalue(), content_type="text/csv; charset=utf-8")
         response["Content-Disposition"] = (
             f'attachment; filename="restaurant_financial_report_{range_key}.csv"'
         )
         return response
+
+
+def _serialize_expense(exp: RestaurantExpense) -> Dict[str, Any]:
+    return {
+        "id": exp.id,
+        "title": exp.title,
+        "category": exp.category,
+        "category_label": exp.get_category_display(),
+        "amount": round(float(exp.amount or 0), 2),
+        "expense_date": exp.expense_date.isoformat() if exp.expense_date else None,
+        "supplier_id": exp.supplier_id,
+        "supplier_name": exp.supplier.name if exp.supplier else "",
+        "notes": exp.notes or "",
+        "recorded_by": (
+            (exp.recorded_by.get_full_name() or exp.recorded_by.username)
+            if exp.recorded_by
+            else ""
+        ),
+        "created_at": exp.created_at.isoformat() if exp.created_at else None,
+    }
+
+
+class RestaurantExpenseListCreateAPIView(BusinessAPIView):
+    """GET / POST /api/operations/restaurant/expenses/"""
+
+    required_business_permission = None
+
+    def get(self, request):
+        company = self.company
+        _, start_d, end_d = _resolve_date_window(request)
+        category = str(request.query_params.get("category") or "").strip().lower()
+
+        qs = RestaurantExpense.objects.filter(company=company).select_related("supplier", "recorded_by")
+        if start_d:
+            qs = qs.filter(expense_date__gte=start_d)
+        if end_d:
+            qs = qs.filter(expense_date__lte=end_d)
+        if category and category != "all":
+            qs = qs.filter(category=category)
+
+        rows = list(qs.order_by("-expense_date", "-created_at")[:300])
+        total_amount = sum((e.amount or Decimal("0.00")) for e in rows)
+        return Response({
+            "total_expenses": round(float(total_amount), 2),
+            "categories": [
+                {"key": k, "label": lbl} for k, lbl in RestaurantExpense.CATEGORY_CHOICES
+            ],
+            "expenses": [_serialize_expense(e) for e in rows],
+        })
+
+    def post(self, request):
+        company = self.company
+        title = str(request.data.get("title") or "").strip()[:200]
+        if not title:
+            return Response({"title": "Expense title is required."}, status=400)
+
+        category = str(request.data.get("category") or RestaurantExpense.CAT_OTHER).strip().lower()
+        valid_cats = {k for k, _ in RestaurantExpense.CATEGORY_CHOICES}
+        if category not in valid_cats:
+            category = RestaurantExpense.CAT_OTHER
+
+        try:
+            amount = Decimal(str(request.data.get("amount", "0")))
+        except Exception:
+            return Response({"amount": "Invalid amount."}, status=400)
+        if amount <= 0:
+            return Response({"amount": "Amount must be greater than 0."}, status=400)
+
+        exp_date = _parse_iso_date(request.data.get("expense_date")) or timezone.localdate()
+
+        supplier_obj = None
+        raw_sid = request.data.get("supplier_id")
+        if raw_sid is not None and str(raw_sid).strip() != "":
+            supplier_obj = get_object_or_404(RestaurantSupplier, pk=raw_sid, company=company)
+
+        exp = RestaurantExpense.objects.create(
+            company=company,
+            title=title,
+            category=category,
+            amount=amount,
+            expense_date=exp_date,
+            supplier=supplier_obj,
+            notes=str(request.data.get("notes") or "").strip(),
+            recorded_by=request.user,
+        )
+        return Response(_serialize_expense(exp), status=201)
+
+
+class RestaurantExpenseDetailAPIView(BusinessAPIView):
+    """DELETE /api/operations/restaurant/expenses/<pk>/"""
+
+    required_business_permission = None
+
+    def delete(self, request, pk: int):
+        exp = get_object_or_404(RestaurantExpense, pk=pk, company=self.company)
+        exp.delete()
+        return Response(status=204)

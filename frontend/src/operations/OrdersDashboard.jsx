@@ -153,6 +153,10 @@ function OwnerOrdersWorkspace({ user }) {
       setCreateErr("Delivery address is required for delivery orders.");
       return;
     }
+    if (orderType === "delivery" && liveTotal < 500) {
+      setCreateErr("Minimum order amount for delivery is Rs. 500. Please add more items or switch to Takeaway/Dine-In.");
+      return;
+    }
     if (orderType === "dine_in" && tables.length > 0 && !tableId && !allowWaitingArea) {
       setCreateErr("Please select an available table, enable Waiting Area / Counter (No Table), or switch to Takeaway.");
       return;
@@ -841,6 +845,23 @@ function OwnerOrdersWorkspace({ user }) {
               />
             </label>
 
+            {orderType === "delivery" && liveTotal < 500 && (
+              <div
+                style={{
+                  padding: "9px 12px",
+                  borderRadius: 10,
+                  background: "#fffbeb",
+                  border: "1px solid #fcd34d",
+                  color: "#92400e",
+                  fontSize: 12.5,
+                  fontWeight: 700,
+                }}
+              >
+                ⚠ Minimum order amount for delivery is Rs. 500 (current subtotal: Rs.{" "}
+                {liveTotal.toLocaleString("en-PK", { maximumFractionDigits: 0 })}). Add more items or switch to Takeaway/Dine-In.
+              </div>
+            )}
+
             {/* Footer with Live Total */}
             <div
               style={{
@@ -877,16 +898,19 @@ function OwnerOrdersWorkspace({ user }) {
                 </button>
                 <button
                   type="submit"
-                  disabled={creating}
+                  disabled={creating || (orderType === "delivery" && liveTotal < 500)}
                   style={{
                     border: "none",
-                    background: "#ff77ff",
-                    color: "#240729",
+                    background: orderType === "delivery" && liveTotal < 500 ? "#e5e7eb" : "#ff77ff",
+                    color: orderType === "delivery" && liveTotal < 500 ? "#9ca3af" : "#240729",
                     borderRadius: 10,
                     padding: "10px 20px",
                     fontSize: 13.5,
                     fontWeight: 800,
-                    cursor: creating ? "wait" : "pointer",
+                    cursor:
+                      creating || (orderType === "delivery" && liveTotal < 500)
+                        ? "not-allowed"
+                        : "pointer",
                   }}
                 >
                   {creating ? "Creating..." : "Place Order & Send to KDS"}

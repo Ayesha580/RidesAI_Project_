@@ -1129,12 +1129,15 @@ def execute_create_order(
     """
     if not items:
         return {"success": False, "error": "No items provided in order request."}
-    if not delivery_address or not delivery_address.strip():
-        return {"success": False, "error": "Delivery address is required to place an order."}
+    early_order_type = (order_type or Order.ORDER_TYPE_DELIVERY).strip().lower()
+    if early_order_type not in (Order.ORDER_TYPE_DELIVERY, Order.ORDER_TYPE_DINE_IN, Order.ORDER_TYPE_TAKEAWAY):
+        early_order_type = Order.ORDER_TYPE_DELIVERY
+    if early_order_type == Order.ORDER_TYPE_DELIVERY and (not delivery_address or not delivery_address.strip()):
+        return {"success": False, "error": "Delivery address is required to place a delivery order."}
 
-    # Auto Location Fallback Validation: check against effective service areas
+    # Auto Location Fallback Validation: check against effective service areas (delivery only)
     effective_areas = get_effective_service_areas(company)
-    if effective_areas:
+    if early_order_type == Order.ORDER_TYPE_DELIVERY and effective_areas and delivery_address:
         PAKISTAN_CITIES = [
             "Karachi", "Lahore", "Faisalabad", "Rawalpindi", "Gujranwala", "Peshawar",
             "Multan", "Islamabad", "Quetta", "Sialkot", "Hyderabad", "Bahawalpur", "Sargodha"
@@ -1274,6 +1277,23 @@ def execute_create_order(
                 clean_order_type = Order.ORDER_TYPE_DELIVERY
             clean_table_num = (table_number or "").strip()
 
+            # Minimum delivery order amount guard for restaurant verticals (default Rs. 500)
+            biz_type_lower = str(getattr(company, "business_type", "") or "").lower()
+            is_restaurant_biz = any(
+                k in biz_type_lower for k in ("restaurant", "cafe", "café", "food", "bakery", "fast food", "hotel")
+            )
+            min_delivery_amt = Decimal(str(getattr(company, "min_delivery_order_amount", Decimal("500.00")) or Decimal("0")))
+            if clean_order_type == Order.ORDER_TYPE_DELIVERY and is_restaurant_biz and min_delivery_amt > 0 and subtotal < min_delivery_amt:
+                return {
+                    "success": False,
+                    "error": (
+                        f"Minimum order amount for delivery is Rs. {int(min_delivery_amt)}. "
+                        f"Your current subtotal is Rs. {subtotal:.0f}. "
+                        "Please add more items to reach the minimum or switch to Takeaway/Dine-In."
+                    ),
+                    "min_delivery_order_amount": float(min_delivery_amt),
+                }
+
             from operations.views import resolve_delivery_fee
             delivery_fee = resolve_delivery_fee(
                 company=company,
@@ -1399,16 +1419,30 @@ def execute_check_order_status(
         else:
             return {"found": False, "message": "No phone number or order number provided."}
 
-        orders = list(qs.prefetch_related("items").order_by("-created_at")[:5])
+        orders = list(
+            qs.select_related("assigned_rider", "delivery__rider")
+            .prefetch_related("items")
+            .order_by("-created_at")[:5]
+        )
         if not orders:
             return {
                 "found": False,
                 "message": "No active or past orders found for your details.",
             }
 
+        from operations.notifications import build_rider_whatsapp_url
+
         history = []
         for o in orders:
-            history.append({
+            rider = getattr(o, "assigned_rider", None)
+            if not rider:
+                deliv = getattr(o, "delivery", None)
+                rider = getattr(deliv, "rider", None) if deliv else None
+            r_name = (rider.get_full_name() or rider.username or "").strip() if rider else ""
+            r_phone = (getattr(rider, "phone", "") or "").strip() if rider else ""
+            r_wa_url = build_rider_whatsapp_url(r_phone, o.order_number) if r_phone else ""
+
+            row = {
                 "order_number": o.order_number,
                 "status": o.status,
                 "status_display": o.get_status_display(),
@@ -1416,7 +1450,12 @@ def execute_check_order_status(
                 "delivery_address": o.delivery_address,
                 "created_at": o.created_at.strftime("%Y-%m-%d %I:%M %p"),
                 "items": [f"{it.quantity}x {it.item_name}" for it in o.items.all()],
-            })
+            }
+            if r_name or r_phone:
+                row["assigned_rider_name"] = r_name
+                row["assigned_rider_phone"] = r_phone
+                row["rider_whatsapp_url"] = r_wa_url
+            history.append(row)
 
         return {
             "found": True,
@@ -1850,6 +1889,13 @@ def _build_system_prompt(
         if std_delivery_fee > 0
         else "Free delivery (Rs. 0)"
     )
+    company_obj_ctx = context.get("company")
+    min_del_amt = float(getattr(company_obj_ctx, "min_delivery_order_amount", 500) or 500)
+    min_delivery_line = (
+        f"\n- Minimum Delivery Order: Rs. {min_del_amt:.0f} (applies to Delivery orders only — if a delivery subtotal is below Rs. {min_del_amt:.0f}, politely ask the customer to add another item or switch to Takeaway/Dine-In)"
+        if get_category_agent_config(context.get("business_type") or "restaurant").get("key") == "restaurant" and min_del_amt > 0
+        else ""
+    )
 
     # Category profile resolution
     biz_type = context.get("business_type") or "restaurant"
@@ -2069,7 +2115,7 @@ BUSINESS DETAILS:
 - Default Greeting: {greeting}
 - Store Address: {address}
 - Delivery Zones / Service Areas: {delivery_zones_str}
-- Standard Delivery Fee: {delivery_fee_line}
+- Standard Delivery Fee: {delivery_fee_line}{min_delivery_line}
 - Support Phone: {phone}
 - Customer Name: {customer_name}
 
