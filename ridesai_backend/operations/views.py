@@ -342,6 +342,18 @@ def _create_order(company, payload, actor=None, source="dashboard"):
                 item_notes=item_notes,
             )
             subtotal += line_total
+        # Minimum delivery order amount enforcement for restaurant verticals (default Rs. 500)
+        biz_type_lower = str(getattr(company, "business_type", "") or "").lower()
+        is_restaurant_biz = any(
+            k in biz_type_lower for k in ("restaurant", "cafe", "café", "food", "bakery", "fast food", "hotel")
+        )
+        min_delivery_amt = Decimal(str(getattr(company, "min_delivery_order_amount", Decimal("500.00")) or Decimal("0")))
+        if raw_order_type == Order.ORDER_TYPE_DELIVERY and is_restaurant_biz and min_delivery_amt > 0 and subtotal < min_delivery_amt:
+            raise ValueError(
+                f"Minimum order amount for delivery is Rs. {int(min_delivery_amt)}. "
+                "Please add more items or switch to Takeaway/Dine-In."
+            )
+
         # Delivery fees are always derived from the matched business service area.
         # Collection orders have no delivery fee; never trust a customer-supplied fee.
         fee = Decimal(str(delivery_area.delivery_fee if delivery_area else "0"))
@@ -877,6 +889,83 @@ class PublicAgentThrottle(AnonRateThrottle):
             return super().get_rate()
         except Exception:
             return "120/minute"
+
+
+@method_decorator(xframe_options_exempt, name="dispatch")
+class PublicAgentRecallAPIView(APIView):
+    """
+    POST /api/operations/public/agent/<public_id>/recall/
+    Privacy-first returning customer recall for the Public Website Voice Agent.
+    - Requires a full phone number (>= 10 digits); never allows partial or name-search autocomplete.
+    - Strictly scoped to the agent's company.
+    """
+    permission_classes = [AllowAny]
+    authentication_classes = []
+    throttle_classes = [PublicAgentThrottle]
+
+    def post(self, request, public_id):
+        import re
+        from companies.models import Company
+        from operations.customer_recall_views import PLACEHOLDER_NAMES, _normalize_phone_key
+        from operations.models import Customer, RestaurantGuestProfile
+
+        company = get_object_or_404(Company, agent_public_id=public_id)
+        if not company.agent_enabled:
+            return Response({"found": False}, status=200)
+
+        raw_phone = str(request.data.get("phone") or "").strip()
+        digits = re.sub(r"\D", "", raw_phone)
+        if len(digits) < 10:
+            return Response({"found": False}, status=200)
+
+        norm = _normalize_phone_key(raw_phone)
+        if not norm or len(norm) < 10:
+            return Response({"found": False}, status=200)
+
+        name = ""
+        address = ""
+
+        # 1. RestaurantGuestProfile
+        profile = RestaurantGuestProfile.objects.filter(company=company, phone=norm).first()
+        if profile and (profile.name or "").strip().lower() not in PLACEHOLDER_NAMES:
+            name = profile.name.strip()
+
+        # 2. Customer table (stores last delivery_address)
+        for cust in Customer.objects.filter(company=company).order_by("-updated_at")[:200]:
+            if _normalize_phone_key(cust.phone) == norm:
+                if not name and (cust.name or "").strip().lower() not in PLACEHOLDER_NAMES:
+                    name = cust.name.strip()
+                if not address and (cust.delivery_address or "").strip():
+                    address = cust.delivery_address.strip()
+                break
+
+        # 3. Latest non-cancelled Order matching normalized phone
+        for order in (
+            Order.objects.filter(company=company)
+            .exclude(status=Order.STATUS_CANCELLED)
+            .exclude(customer_phone="")
+            .order_by("-created_at")[:300]
+        ):
+            if _normalize_phone_key(order.customer_phone) != norm:
+                continue
+            if not name and (order.customer_name or "").strip().lower() not in PLACEHOLDER_NAMES:
+                name = order.customer_name.strip()
+            if not address and (order.delivery_address or "").strip():
+                address = order.delivery_address.strip()
+            if name and address:
+                break
+
+        if not name and not address:
+            return Response({"found": False}, status=200)
+
+        return Response(
+            {
+                "found": True,
+                "name": name,
+                "address": address,
+            },
+            status=200,
+        )
 
 
 @method_decorator(xframe_options_exempt, name="dispatch")

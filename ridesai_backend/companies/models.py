@@ -150,6 +150,12 @@ class Company(models.Model):
         default=True,
         help_text="When True, automatically assigns new delivery orders to the available rider with the fewest active and daily deliveries.",
     )
+    min_delivery_order_amount = models.DecimalField(
+        max_digits=10,
+        decimal_places=2,
+        default=Decimal("500.00"),
+        help_text="Minimum subtotal required for delivery orders (Rs. 500.00 default).",
+    )
 
 
     whatsapp_instance_name = models.CharField(max_length=100, blank=True, null=True)

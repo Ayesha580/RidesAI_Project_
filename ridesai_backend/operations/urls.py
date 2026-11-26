@@ -4,7 +4,7 @@ from .views import (OrderCatalogAPIView, OrderListCreateAPIView, OrderStatusAPIV
                     AgentTogglePauseAPIView, AgentChatAPIView, AgentConversationListAPIView, OrderAssignAPIView,
                     OrderAutoAssignRiderAPIView, OwnerBusinessAssistantAPIView,
                     PublicAgentChatAPIView, PublicAgentCatalogAPIView, PublicAgentConversationAPIView,
-                    PublicAgentWidgetScriptAPIView, WhatsAppWebhookAPIView, WhatsAppSettingsAPIView)
+                    PublicAgentRecallAPIView, PublicAgentWidgetScriptAPIView, WhatsAppWebhookAPIView, WhatsAppSettingsAPIView)
 from .calling_views import IncomingAICallWebhookView
 from .evolution_views import (
     ConnectWhatsAppView,
@@ -54,6 +54,8 @@ from .restaurant_inventory_views import (
     RestaurantIngredientAdjustAPIView,
     RestaurantIngredientMovementsAPIView,
     MenuItemRecipeAPIView,
+    RestaurantSupplierListCreateAPIView,
+    RestaurantSupplierDetailAPIView,
 )
 from .restaurant_delivery_views import (
     RestaurantDeliveryBoardAPIView,
@@ -69,6 +71,8 @@ from .restaurant_customers_views import (
 from .restaurant_reports_views import (
     RestaurantReportsSummaryAPIView,
     RestaurantReportsExportCSVAPIView,
+    RestaurantExpenseListCreateAPIView,
+    RestaurantExpenseDetailAPIView,
 )
 
 urlpatterns = [
@@ -97,6 +101,7 @@ urlpatterns = [
     path("calls/incoming/", IncomingAICallWebhookView.as_view(), name="incoming-call-twiml"),
     path("public/agent/<uuid:public_id>/catalog/", PublicAgentCatalogAPIView.as_view(), name="public-agent-catalog"),
     path("public/agent/<uuid:public_id>/conversation/<uuid:conversation_id>/", PublicAgentConversationAPIView.as_view(), name="public-agent-conversation"),
+    path("public/agent/<uuid:public_id>/recall/", PublicAgentRecallAPIView.as_view(), name="public-agent-recall"),
     path("public/agent/<uuid:public_id>/chat/", PublicAgentChatAPIView.as_view(), name="public-agent-chat"),
     path("widget/<uuid:public_id>.js", PublicAgentWidgetScriptAPIView.as_view(), name="public-agent-widget-js"),
     path("widget/<str:public_id>.js", PublicAgentWidgetScriptAPIView.as_view(), name="public-agent-widget-js-str"),
@@ -136,6 +141,10 @@ urlpatterns = [
     path("restaurant/inventory/<int:pk>/adjust/", RestaurantIngredientAdjustAPIView.as_view(), name="restaurant-inventory-adjust"),
     path("restaurant/inventory/<int:pk>/movements/", RestaurantIngredientMovementsAPIView.as_view(), name="restaurant-inventory-movements"),
     path("restaurant/recipes/<int:catalog_item_id>/", MenuItemRecipeAPIView.as_view(), name="restaurant-recipes-detail"),
+    path("restaurant/suppliers/", RestaurantSupplierListCreateAPIView.as_view(), name="restaurant-suppliers-list"),
+    path("restaurant/suppliers/<int:pk>/", RestaurantSupplierDetailAPIView.as_view(), name="restaurant-suppliers-detail"),
+    path("restaurant/expenses/", RestaurantExpenseListCreateAPIView.as_view(), name="restaurant-expenses-list"),
+    path("restaurant/expenses/<int:pk>/", RestaurantExpenseDetailAPIView.as_view(), name="restaurant-expenses-detail"),
     path("restaurant/deliveries/", RestaurantDeliveryBoardAPIView.as_view(), name="restaurant-deliveries-board"),
     path("restaurant/deliveries/settings/", RestaurantDeliverySettingsAPIView.as_view(), name="restaurant-deliveries-settings"),
     path("restaurant/deliveries/<int:order_id>/assign/", RestaurantDeliveryAssignAPIView.as_view(), name="restaurant-deliveries-assign"),

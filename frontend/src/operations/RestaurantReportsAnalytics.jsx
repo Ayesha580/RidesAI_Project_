@@ -46,18 +46,45 @@ function formatShortDate(iso) {
 export default function RestaurantReportsAnalytics({ staff = false }) {
   const Layout = staff ? StaffLayout : OwnerLayout;
 
+  const [tab, setTab] = useState("overview"); // "overview" | "expenses"
   const [range, setRange] = useState("30d");
   const [loading, setLoading] = useState(true);
   const [exporting, setExporting] = useState(false);
   const [error, setError] = useState("");
+  const [toast, setToast] = useState("");
   const [data, setData] = useState(null);
+
+  // Operating Expenses state
+  const [expenses, setExpenses] = useState([]);
+  const [expenseCategories, setExpenseCategories] = useState([]);
+  const [showExpenseModal, setShowExpenseModal] = useState(false);
+  const [savingExpense, setSavingExpense] = useState(false);
+  const [expForm, setExpForm] = useState({
+    title: "",
+    category: "cleaning_maintenance",
+    amount: "",
+    expense_date: new Date().toISOString().slice(0, 10),
+    notes: "",
+  });
+
+  const showToast = (msg) => {
+    setToast(msg);
+    setTimeout(() => setToast(""), 3200);
+  };
 
   const loadReports = useCallback(async () => {
     setLoading(true);
     setError("");
     try {
-      const res = await restaurantReportsApi.getSummary({ range });
-      setData(res.data || null);
+      const [repRes, expRes] = await Promise.all([
+        restaurantReportsApi.getSummary({ range }),
+        restaurantReportsApi.listExpenses({ range }),
+      ]);
+      setData(repRes.data || null);
+      setExpenses(Array.isArray(expRes.data?.expenses) ? expRes.data.expenses : []);
+      if (Array.isArray(expRes.data?.categories)) {
+        setExpenseCategories(expRes.data.categories);
+      }
     } catch (err) {
       setError(
         err?.response?.data?.detail || "Could not load restaurant financial analytics."
@@ -66,6 +93,48 @@ export default function RestaurantReportsAnalytics({ staff = false }) {
       setLoading(false);
     }
   }, [range]);
+
+  const handleAddExpense = async (e) => {
+    e.preventDefault();
+    if (!expForm.title.trim() || !expForm.amount) return;
+    setSavingExpense(true);
+    setError("");
+    try {
+      await restaurantReportsApi.createExpense({
+        title: expForm.title.trim(),
+        category: expForm.category,
+        amount: Number(expForm.amount),
+        expense_date: expForm.expense_date,
+        notes: expForm.notes.trim(),
+      });
+      setShowExpenseModal(false);
+      setExpForm({
+        title: "",
+        category: "cleaning_maintenance",
+        amount: "",
+        expense_date: new Date().toISOString().slice(0, 10),
+        notes: "",
+      });
+      showToast("Operating expense recorded.");
+      await loadReports();
+    } catch (err) {
+      setError(err?.response?.data?.detail || "Failed to record expense.");
+    } finally {
+      setSavingExpense(false);
+    }
+  };
+
+  const handleDeleteExpense = async (id) => {
+    if (!window.confirm("Delete this operating expense?")) return;
+    setError("");
+    try {
+      await restaurantReportsApi.deleteExpense(id);
+      showToast("Expense deleted.");
+      await loadReports();
+    } catch (err) {
+      setError(err?.response?.data?.detail || "Failed to delete expense.");
+    }
+  };
 
   useEffect(() => {
     loadReports();
@@ -101,6 +170,9 @@ export default function RestaurantReportsAnalytics({ staff = false }) {
     estimated_cogs: 0,
     gross_profit: 0,
     gross_margin_pct: 0,
+    total_expenses: 0,
+    net_profit: 0,
+    net_margin_pct: 0,
     unsettled_cod_total: 0,
   };
 
@@ -114,27 +186,27 @@ export default function RestaurantReportsAnalytics({ staff = false }) {
     {
       label: "Net Revenue",
       value: formatMoney(kpis.net_revenue),
-      sub: `${kpis.total_orders} active orders (${kpis.cancelled_orders} cancelled)`,
+      sub: `${kpis.total_orders} orders • Avg ${formatMoney(kpis.avg_order_value)}`,
       accent: "#0f172a",
-      highlight: true,
     },
     {
-      label: "Gross Profit & Margin",
-      value: formatMoney(kpis.gross_profit),
-      sub: `${kpis.gross_margin_pct || 0}% gross margin`,
-      accent: "#059669",
-    },
-    {
-      label: "Avg Order Value",
-      value: formatMoney(kpis.avg_order_value),
-      sub: `${kpis.total_orders} completed/active orders`,
-      accent: "#6366f1",
-    },
-    {
-      label: "Estimated Food Cost (COGS)",
+      label: "Food Cost (COGS)",
       value: formatMoney(kpis.estimated_cogs),
-      sub: "Calculated from dish recipes",
+      sub: `Gross Profit: ${formatMoney(kpis.gross_profit)} (${kpis.gross_margin_pct || 0}%)`,
       accent: "#d97706",
+    },
+    {
+      label: "Operating Expenses",
+      value: formatMoney(kpis.total_expenses),
+      sub: `${expenses.length} recorded expense${expenses.length === 1 ? "" : "s"}`,
+      accent: "#dc2626",
+    },
+    {
+      label: "True Net Profit",
+      value: formatMoney(kpis.net_profit),
+      sub: `${kpis.net_margin_pct || 0}% net margin (after COGS & expenses)`,
+      accent: Number(kpis.net_profit || 0) >= 0 ? "#059669" : "#b91c1c",
+      highlight: true,
     },
     {
       label: "Delivery Fees & Pending COD",
@@ -217,6 +289,22 @@ export default function RestaurantReportsAnalytics({ staff = false }) {
           </div>
         </div>
 
+        {toast && (
+          <div
+            style={{
+              marginBottom: 14,
+              padding: "10px 14px",
+              borderRadius: 10,
+              background: "#ecfdf5",
+              border: "1px solid #a7f3d0",
+              color: "#065f46",
+              fontSize: 13,
+              fontWeight: 600,
+            }}
+          >
+            ✓ {toast}
+          </div>
+        )}
         {error && (
           <div
             style={{
@@ -267,6 +355,71 @@ export default function RestaurantReportsAnalytics({ staff = false }) {
           ))}
         </div>
 
+        {/* Section Tabs */}
+        <div
+          style={{
+            display: "flex",
+            justifyContent: "space-between",
+            alignItems: "center",
+            flexWrap: "wrap",
+            gap: 10,
+            marginBottom: 16,
+            borderBottom: "1px solid #e2e8f0",
+            paddingBottom: 10,
+          }}
+        >
+          <div style={{ display: "flex", gap: 8 }}>
+            <button
+              type="button"
+              onClick={() => setTab("overview")}
+              style={{
+                border: tab === "overview" ? `1.5px solid ${ACCENT}` : "1px solid #e2e8f0",
+                background: tab === "overview" ? "#fdf4ff" : "#fff",
+                color: tab === "overview" ? "#86198f" : "#475569",
+                borderRadius: 10,
+                padding: "8px 16px",
+                fontSize: 13,
+                fontWeight: 700,
+                cursor: "pointer",
+              }}
+            >
+              📊 Financial Overview
+            </button>
+            <button
+              type="button"
+              onClick={() => setTab("expenses")}
+              style={{
+                border: tab === "expenses" ? `1.5px solid ${ACCENT}` : "1px solid #e2e8f0",
+                background: tab === "expenses" ? "#fdf4ff" : "#fff",
+                color: tab === "expenses" ? "#86198f" : "#475569",
+                borderRadius: 10,
+                padding: "8px 16px",
+                fontSize: 13,
+                fontWeight: 700,
+                cursor: "pointer",
+              }}
+            >
+              💸 Operating Expenses ({expenses.length})
+            </button>
+          </div>
+          <button
+            type="button"
+            onClick={() => setShowExpenseModal(true)}
+            style={{
+              border: "none",
+              background: "#0f172a",
+              color: "#fff",
+              borderRadius: 10,
+              padding: "8px 14px",
+              fontSize: 12,
+              fontWeight: 700,
+              cursor: "pointer",
+            }}
+          >
+            + Add Expense
+          </button>
+        </div>
+
         {loading ? (
           <div
             style={{
@@ -279,6 +432,112 @@ export default function RestaurantReportsAnalytics({ staff = false }) {
             }}
           >
             Calculating financial analytics...
+          </div>
+        ) : tab === "expenses" ? (
+          <div style={{ display: "grid", gap: 14 }}>
+            <div
+              style={{
+                background: "#ffffff",
+                border: "1px solid #e2e8f0",
+                borderRadius: 14,
+                overflow: "hidden",
+              }}
+            >
+              <div
+                style={{
+                  padding: "14px 18px",
+                  borderBottom: "1px solid #e2e8f0",
+                  display: "flex",
+                  justifyContent: "space-between",
+                  alignItems: "center",
+                }}
+              >
+                <div>
+                  <div style={{ fontSize: 15, fontWeight: 800, color: "#0f172a" }}>
+                    Operating Expense History
+                  </div>
+                  <div style={{ fontSize: 12, color: "#64748b" }}>
+                    Inventory restocks, cleaning, utensils, utilities, wages &amp; other operating costs
+                  </div>
+                </div>
+                <div style={{ fontSize: 14, fontWeight: 800, color: "#dc2626" }}>
+                  Total: {formatMoney(kpis.total_expenses)}
+                </div>
+              </div>
+              {expenses.length === 0 ? (
+                <div style={{ padding: 40, textAlign: "center", color: "#64748b", fontSize: 13 }}>
+                  No operating expenses recorded in this period. Click <strong>+ Add Expense</strong> to log one.
+                </div>
+              ) : (
+                <div style={{ overflowX: "auto" }}>
+                  <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+                    <thead>
+                      <tr style={{ background: "#f8fafc", textAlign: "left", color: "#475569" }}>
+                        <th style={{ padding: "12px 18px", fontWeight: 700 }}>Date</th>
+                        <th style={{ padding: "12px 14px", fontWeight: 700 }}>Title</th>
+                        <th style={{ padding: "12px 14px", fontWeight: 700 }}>Category</th>
+                        <th style={{ padding: "12px 14px", fontWeight: 700 }}>Supplier / Notes</th>
+                        <th style={{ padding: "12px 14px", fontWeight: 700 }}>Amount</th>
+                        <th style={{ padding: "12px 18px", fontWeight: 700, textAlign: "right" }}>
+                          Action
+                        </th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {expenses.map((exp) => (
+                        <tr key={exp.id} style={{ borderTop: "1px solid #f1f5f9" }}>
+                          <td style={{ padding: "12px 18px", color: "#475569" }}>
+                            {exp.expense_date}
+                          </td>
+                          <td style={{ padding: "12px 14px", fontWeight: 700, color: "#0f172a" }}>
+                            {exp.title}
+                          </td>
+                          <td style={{ padding: "12px 14px" }}>
+                            <span
+                              style={{
+                                fontSize: 11,
+                                fontWeight: 700,
+                                padding: "3px 9px",
+                                borderRadius: 999,
+                                background: "#f1f5f9",
+                                color: "#334155",
+                              }}
+                            >
+                              {exp.category_label}
+                            </span>
+                          </td>
+                          <td style={{ padding: "12px 14px", color: "#64748b", fontSize: 12 }}>
+                            {exp.supplier_name ? `${exp.supplier_name} • ` : ""}
+                            {exp.notes || "—"}
+                          </td>
+                          <td style={{ padding: "12px 14px", fontWeight: 800, color: "#dc2626" }}>
+                            {formatMoney(exp.amount)}
+                          </td>
+                          <td style={{ padding: "12px 18px", textAlign: "right" }}>
+                            <button
+                              type="button"
+                              onClick={() => handleDeleteExpense(exp.id)}
+                              style={{
+                                border: "1px solid #fecaca",
+                                background: "#fff",
+                                color: "#b91c1c",
+                                borderRadius: 7,
+                                padding: "4px 9px",
+                                fontSize: 11,
+                                fontWeight: 700,
+                                cursor: "pointer",
+                              }}
+                            >
+                              Delete
+                            </button>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
           </div>
         ) : (
           <div style={{ display: "grid", gap: 16 }}>
@@ -634,6 +893,147 @@ export default function RestaurantReportsAnalytics({ staff = false }) {
           </div>
         )}
       </div>
+
+      {/* Add Operating Expense Modal */}
+      {showExpenseModal && (
+        <div
+          onClick={() => setShowExpenseModal(false)}
+          style={{
+            position: "fixed",
+            inset: 0,
+            background: "rgba(15, 23, 42, 0.45)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            zIndex: 1000,
+            padding: 16,
+          }}
+        >
+          <form
+            onClick={(e) => e.stopPropagation()}
+            onSubmit={handleAddExpense}
+            style={{
+              width: "100%",
+              maxWidth: 460,
+              background: "#ffffff",
+              borderRadius: 16,
+              padding: 22,
+              display: "grid",
+              gap: 12,
+              boxShadow: "0 20px 50px rgba(15, 23, 42, 0.2)",
+            }}
+          >
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+              <h3 style={{ margin: 0, fontSize: 17, fontWeight: 800, color: "#0f172a" }}>
+                💸 Add Operating Expense
+              </h3>
+              <button
+                type="button"
+                onClick={() => setShowExpenseModal(false)}
+                style={{ border: "none", background: "transparent", fontSize: 16, cursor: "pointer" }}
+              >
+                ✕
+              </button>
+            </div>
+            <div>
+              <label style={{ display: "block", fontSize: 12, fontWeight: 700, color: "#475569", marginBottom: 4 }}>
+                Expense Title *
+              </label>
+              <input
+                required
+                value={expForm.title}
+                onChange={(e) => setExpForm({ ...expForm, title: e.target.value })}
+                placeholder="e.g., Kitchen Dishwashing Liquid & Mop, Electricity Bill"
+                style={{ width: "100%", padding: "8px 10px", borderRadius: 8, border: "1px solid #cbd5e1", fontSize: 13, boxSizing: "border-box" }}
+              />
+            </div>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+              <div>
+                <label style={{ display: "block", fontSize: 12, fontWeight: 700, color: "#475569", marginBottom: 4 }}>
+                  Category
+                </label>
+                <select
+                  value={expForm.category}
+                  onChange={(e) => setExpForm({ ...expForm, category: e.target.value })}
+                  style={{ width: "100%", padding: "8px 10px", borderRadius: 8, border: "1px solid #cbd5e1", fontSize: 13, background: "#fff" }}
+                >
+                  {(expenseCategories.length
+                    ? expenseCategories
+                    : [
+                        { key: "inventory_purchase", label: "Inventory / Stock Purchase" },
+                        { key: "cleaning_maintenance", label: "Cleaning & Maintenance" },
+                        { key: "utensils_equipment", label: "Utensils & Equipment" },
+                        { key: "utilities", label: "Utilities" },
+                        { key: "staff_wages", label: "Staff Wages" },
+                        { key: "rent", label: "Rent" },
+                        { key: "marketing", label: "Marketing" },
+                        { key: "other", label: "Other" },
+                      ]
+                  ).map((c) => (
+                    <option key={c.key} value={c.key}>
+                      {c.label}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label style={{ display: "block", fontSize: 12, fontWeight: 700, color: "#475569", marginBottom: 4 }}>
+                  Amount (Rs.) *
+                </label>
+                <input
+                  required
+                  type="number"
+                  min="1"
+                  step="0.01"
+                  value={expForm.amount}
+                  onChange={(e) => setExpForm({ ...expForm, amount: e.target.value })}
+                  placeholder="e.g. 2500"
+                  style={{ width: "100%", padding: "8px 10px", borderRadius: 8, border: "1px solid #cbd5e1", fontSize: 13, boxSizing: "border-box" }}
+                />
+              </div>
+            </div>
+            <div>
+              <label style={{ display: "block", fontSize: 12, fontWeight: 700, color: "#475569", marginBottom: 4 }}>
+                Date
+              </label>
+              <input
+                type="date"
+                value={expForm.expense_date}
+                onChange={(e) => setExpForm({ ...expForm, expense_date: e.target.value })}
+                style={{ width: "100%", padding: "8px 10px", borderRadius: 8, border: "1px solid #cbd5e1", fontSize: 13, boxSizing: "border-box" }}
+              />
+            </div>
+            <div>
+              <label style={{ display: "block", fontSize: 12, fontWeight: 700, color: "#475569", marginBottom: 4 }}>
+                Notes (optional)
+              </label>
+              <textarea
+                rows={2}
+                value={expForm.notes}
+                onChange={(e) => setExpForm({ ...expForm, notes: e.target.value })}
+                placeholder="Receipt #, vendor details, etc."
+                style={{ width: "100%", padding: "8px 10px", borderRadius: 8, border: "1px solid #cbd5e1", fontSize: 13, boxSizing: "border-box" }}
+              />
+            </div>
+            <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 4 }}>
+              <button
+                type="button"
+                onClick={() => setShowExpenseModal(false)}
+                style={{ border: "1px solid #cbd5e1", background: "#fff", borderRadius: 9, padding: "8px 14px", fontSize: 12, fontWeight: 700, cursor: "pointer" }}
+              >
+                Cancel
+              </button>
+              <button
+                type="submit"
+                disabled={savingExpense}
+                style={{ border: "none", background: "#0f172a", color: "#fff", borderRadius: 9, padding: "8px 16px", fontSize: 12, fontWeight: 700, cursor: savingExpense ? "wait" : "pointer" }}
+              >
+                {savingExpense ? "Saving..." : "Save Expense"}
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
     </Layout>
   );
 }

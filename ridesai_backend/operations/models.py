@@ -1057,6 +1057,13 @@ class RestaurantIngredient(models.Model):
     current_stock = models.DecimalField(max_digits=12, decimal_places=3, default=Decimal("0"))
     low_stock_threshold = models.DecimalField(max_digits=12, decimal_places=3, default=Decimal("5"))
     cost_per_unit = models.DecimalField(max_digits=12, decimal_places=2, default=Decimal("0"))
+    supplier = models.ForeignKey(
+        "operations.RestaurantSupplier",
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="ingredients",
+    )
     supplier_name = models.CharField(max_length=160, blank=True, default="")
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -1143,6 +1150,14 @@ class IngredientStockMovement(models.Model):
     quantity_delta = models.DecimalField(max_digits=12, decimal_places=3)
     stock_after = models.DecimalField(max_digits=12, decimal_places=3, default=Decimal("0"))
     reason = models.CharField(max_length=255, blank=True, default="")
+    supplier = models.ForeignKey(
+        "operations.RestaurantSupplier",
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="stock_movements",
+    )
+    total_cost = models.DecimalField(max_digits=12, decimal_places=2, null=True, blank=True)
     order = models.ForeignKey(
         Order,
         null=True,
@@ -1370,6 +1385,97 @@ class RestaurantGuestProfile(models.Model):
 
     def __str__(self):
         return f"{self.name or self.phone} ({self.company_id})"
+
+
+# ============================================================================
+# Restaurant Suppliers & Operating Expenses (Production Hardening — Multi-Tenant)
+# ============================================================================
+
+class RestaurantSupplier(models.Model):
+    company = models.ForeignKey(
+        "companies.Company",
+        on_delete=models.CASCADE,
+        related_name="restaurant_suppliers",
+        db_index=True,
+    )
+    name = models.CharField(max_length=200)
+    contact_person = models.CharField(max_length=160, blank=True, default="")
+    phone = models.CharField(max_length=40, blank=True, default="")
+    email = models.EmailField(blank=True, default="")
+    address = models.TextField(blank=True, default="")
+    category = models.CharField(max_length=80, blank=True, default="General")
+    notes = models.TextField(blank=True, default="")
+    is_active = models.BooleanField(default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ("name",)
+        indexes = [
+            models.Index(fields=["company", "is_active"], name="op_rsup_comp_act_idx"),
+        ]
+
+    def __str__(self):
+        return f"{self.name} ({self.category or 'General'})"
+
+
+class RestaurantExpense(models.Model):
+    CAT_INVENTORY = "inventory_purchase"
+    CAT_CLEANING = "cleaning_maintenance"
+    CAT_UTENSILS = "utensils_equipment"
+    CAT_UTILITIES = "utilities"
+    CAT_STAFF_WAGES = "staff_wages"
+    CAT_RENT = "rent"
+    CAT_MARKETING = "marketing"
+    CAT_OTHER = "other"
+
+    CATEGORY_CHOICES = [
+        (CAT_INVENTORY, "Inventory / Stock Purchase"),
+        (CAT_CLEANING, "Cleaning & Maintenance"),
+        (CAT_UTENSILS, "Utensils & Kitchen Equipment"),
+        (CAT_UTILITIES, "Utilities (Gas / Electricity / Water)"),
+        (CAT_STAFF_WAGES, "Staff Wages & Tips"),
+        (CAT_RENT, "Rent & Lease"),
+        (CAT_MARKETING, "Marketing & Promotions"),
+        (CAT_OTHER, "Other Operating Expense"),
+    ]
+
+    company = models.ForeignKey(
+        "companies.Company",
+        on_delete=models.CASCADE,
+        related_name="restaurant_expenses",
+        db_index=True,
+    )
+    title = models.CharField(max_length=200)
+    category = models.CharField(max_length=40, choices=CATEGORY_CHOICES, default=CAT_OTHER, db_index=True)
+    amount = models.DecimalField(max_digits=12, decimal_places=2)
+    expense_date = models.DateField(db_index=True)
+    supplier = models.ForeignKey(
+        RestaurantSupplier,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="expenses",
+    )
+    notes = models.TextField(blank=True, default="")
+    recorded_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="recorded_restaurant_expenses",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ("-expense_date", "-created_at")
+        indexes = [
+            models.Index(fields=["company", "expense_date"], name="op_rexp_comp_date_idx"),
+            models.Index(fields=["company", "category"], name="op_rexp_comp_cat_idx"),
+        ]
+
+    def __str__(self):
+        return f"{self.title} - Rs. {self.amount} ({self.expense_date})"
 
 
 
