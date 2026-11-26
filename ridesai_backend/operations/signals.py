@@ -43,6 +43,9 @@ def order_auto_assign_rider_on_save(sender, instance, created, **kwargs):
 
     # Trigger when transitioning from preparing to prepared, or when marked prepared without a rider
     if is_prepared_status and not instance.assigned_rider:
+        company = getattr(instance, "company", None)
+        if company and not getattr(company, "auto_dispatch_enabled", True):
+            return
         if prev_status == Order.STATUS_PREPARING or not prev_status or not instance.assigned_rider:
             try:
                 assign_best_rider(instance)

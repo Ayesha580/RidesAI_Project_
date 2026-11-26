@@ -198,6 +198,7 @@ export const restaurantInventoryApi = {
 
 export const restaurantDeliveryApi = {
   getBoard: (params = {}) => api.get("/operations/restaurant/deliveries/", { params }),
+  updateSettings: (data) => api.patch("/operations/restaurant/deliveries/settings/", data),
   assignRider: (orderId, data) =>
     api.post(`/operations/restaurant/deliveries/${orderId}/assign/`, data),
   updateStatus: (orderId, status, note = "") =>

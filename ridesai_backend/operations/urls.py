@@ -60,6 +60,7 @@ from .restaurant_delivery_views import (
     RestaurantDeliveryAssignAPIView,
     RestaurantDeliveryStatusAPIView,
     RestaurantDeliverySettleCODAPIView,
+    RestaurantDeliverySettingsAPIView,
 )
 
 urlpatterns = [
@@ -128,6 +129,7 @@ urlpatterns = [
     path("restaurant/inventory/<int:pk>/movements/", RestaurantIngredientMovementsAPIView.as_view(), name="restaurant-inventory-movements"),
     path("restaurant/recipes/<int:catalog_item_id>/", MenuItemRecipeAPIView.as_view(), name="restaurant-recipes-detail"),
     path("restaurant/deliveries/", RestaurantDeliveryBoardAPIView.as_view(), name="restaurant-deliveries-board"),
+    path("restaurant/deliveries/settings/", RestaurantDeliverySettingsAPIView.as_view(), name="restaurant-deliveries-settings"),
     path("restaurant/deliveries/<int:order_id>/assign/", RestaurantDeliveryAssignAPIView.as_view(), name="restaurant-deliveries-assign"),
     path("restaurant/deliveries/<int:order_id>/status/", RestaurantDeliveryStatusAPIView.as_view(), name="restaurant-deliveries-status"),
     path("restaurant/deliveries/settle-cod/", RestaurantDeliverySettleCODAPIView.as_view(), name="restaurant-deliveries-settle-cod"),

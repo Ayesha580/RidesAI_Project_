@@ -16,6 +16,10 @@ from .views import BusinessAPIView
 
 
 ACTIVE_RIDER_ORDER_STATUSES = (
+    Order.STATUS_NEW,
+    Order.STATUS_PENDING,
+    Order.STATUS_CONFIRMED,
+    Order.STATUS_PREPARING,
     Order.STATUS_PREPARED,
     Order.STATUS_READY,
     Order.STATUS_ASSIGNED,
@@ -69,6 +73,91 @@ def _rider_display_name(rider):
         return ""
     full = f"{getattr(rider, 'first_name', '')} {getattr(rider, 'last_name', '')}".strip()
     return full or getattr(rider, "username", "") or getattr(rider, "email", "")
+
+
+def select_best_available_rider(company, exclude_order_id=None):
+    """
+    Smart Fairness Rider Selection:
+    1. Only active delivery riders belonging to `company`.
+    2. Fewest currently active delivery orders (excluding `exclude_order_id`).
+    3. Fewest completed (delivered) orders today (fairness tie-breaker).
+    4. Lowest rider.id as deterministic final tie-breaker.
+    """
+    riders = _get_company_riders(company)
+    if not riders:
+        return None
+
+    today = timezone.localdate()
+    scored = []
+    for rider in riders:
+        active_qs = Order.objects.filter(
+            company=company,
+            order_type=Order.ORDER_TYPE_DELIVERY,
+            assigned_rider=rider,
+            status__in=ACTIVE_RIDER_ORDER_STATUSES,
+        )
+        if exclude_order_id is not None:
+            active_qs = active_qs.exclude(pk=exclude_order_id)
+        active_count = active_qs.count()
+
+        completed_today_count = (
+            Order.objects.filter(
+                company=company,
+                order_type=Order.ORDER_TYPE_DELIVERY,
+                assigned_rider=rider,
+                status=Order.STATUS_DELIVERED,
+            )
+            .filter(Q(delivered_at__date=today) | Q(delivered_at__isnull=True, updated_at__date=today))
+            .count()
+        )
+        scored.append((active_count, completed_today_count, rider.id, rider))
+
+    scored.sort(key=lambda item: (item[0], item[1], item[2]))
+    return scored[0][3]
+
+
+def auto_assign_delivery_order_if_enabled(order, actor=None):
+    """
+    Automatically assigns the best available rider to a newly created delivery order
+    when the company's `auto_dispatch_enabled` setting is True.
+    """
+    if not order or order.order_type != Order.ORDER_TYPE_DELIVERY:
+        return None
+    if order.assigned_rider_id is not None:
+        return order.assigned_rider
+
+    company = getattr(order, "company", None)
+    if not company or not getattr(company, "auto_dispatch_enabled", True):
+        return None
+
+    rider = select_best_available_rider(company, exclude_order_id=order.id)
+    if not rider:
+        return None
+
+    order.assigned_rider = rider
+    order.save(update_fields=["assigned_rider", "updated_at"])
+
+    DeliveryAssignment.objects.update_or_create(
+        order=order,
+        defaults={
+            "company": company,
+            "rider": rider,
+            "assigned_by": actor,
+            "status": order.status,
+        },
+    )
+
+    OrderEvent.objects.create(
+        company=company,
+        order=order,
+        actor=actor,
+        event_type="rider_smart_auto_assigned",
+        from_status=order.status,
+        to_status=order.status,
+        note=f"Smart Auto-Dispatch assigned to {_rider_display_name(rider)}",
+        metadata={"rider_id": rider.id, "auto_dispatch": True},
+    )
+    return rider
 
 
 def _serialize_delivery_order(order):
@@ -238,6 +327,7 @@ class RestaurantDeliveryBoardAPIView(BusinessAPIView):
         orders_data = [_serialize_delivery_order(o) for o in orders_qs[:200]]
 
         return Response({
+            "auto_dispatch_enabled": bool(getattr(company, "auto_dispatch_enabled", True)),
             "kpis": {
                 "pending_dispatch": pending_dispatch,
                 "out_for_delivery": out_for_delivery,
@@ -285,29 +375,12 @@ class RestaurantDeliveryAssignAPIView(BusinessAPIView):
         if rider_id is not None and str(rider_id).strip() != "" and not auto:
             rider = get_object_or_404(User, pk=rider_id, company=company, is_active=True)
         elif auto:
-            riders = _get_company_riders(company)
-            if not riders:
+            rider = select_best_available_rider(company, exclude_order_id=order.id)
+            if not rider:
                 return Response(
                     {"detail": "No active riders available. Please add a rider in Staff / Employees."},
                     status=400,
                 )
-            best_rider = None
-            min_active = float("inf")
-            for candidate in riders:
-                active_count = (
-                    Order.objects.filter(
-                        company=company,
-                        order_type=Order.ORDER_TYPE_DELIVERY,
-                        assigned_rider=candidate,
-                        status__in=ACTIVE_RIDER_ORDER_STATUSES,
-                    )
-                    .exclude(pk=order.pk)
-                    .count()
-                )
-                if active_count < min_active:
-                    min_active = active_count
-                    best_rider = candidate
-            rider = best_rider or riders[0]
         else:
             return Response({"detail": "Provide rider_id or set auto=true."}, status=400)
 
@@ -549,4 +622,32 @@ class RestaurantDeliverySettleCODAPIView(BusinessAPIView):
             "settled_at": now_ts.isoformat(),
             "rider_id": int(rider_id) if rider_id is not None and str(rider_id).strip() != "" else None,
             "order_ids": settled_ids,
+        })
+
+
+class RestaurantDeliverySettingsAPIView(BusinessAPIView):
+    """
+    PATCH /api/operations/restaurant/deliveries/settings/
+    Body: { "auto_dispatch_enabled": true | false }
+    """
+
+    required_business_permission = None
+
+    def patch(self, request):
+        company = self.company
+        if "auto_dispatch_enabled" not in request.data:
+            return Response({"detail": "Provide 'auto_dispatch_enabled' boolean."}, status=400)
+        raw = request.data.get("auto_dispatch_enabled")
+        if isinstance(raw, bool):
+            enabled = raw
+        elif isinstance(raw, str) and raw.strip().lower() in ("true", "false"):
+            enabled = raw.strip().lower() == "true"
+        else:
+            return Response({"detail": "'auto_dispatch_enabled' must be a boolean."}, status=400)
+
+        company.auto_dispatch_enabled = enabled
+        company.save(update_fields=["auto_dispatch_enabled"])
+        return Response({
+            "success": True,
+            "auto_dispatch_enabled": company.auto_dispatch_enabled,
         })

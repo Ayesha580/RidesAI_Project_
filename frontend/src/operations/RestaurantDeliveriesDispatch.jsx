@@ -52,6 +52,8 @@ export default function RestaurantDeliveriesDispatch({ staff = false }) {
   const [loading, setLoading] = useState(true);
   const [busyId, setBusyId] = useState(null);
   const [settlingKey, setSettlingKey] = useState(null);
+  const [autoDispatchEnabled, setAutoDispatchEnabled] = useState(true);
+  const [togglingDispatch, setTogglingDispatch] = useState(false);
   const [error, setError] = useState("");
   const [toast, setToast] = useState("");
 
@@ -82,6 +84,9 @@ export default function RestaurantDeliveriesDispatch({ staff = false }) {
           date: dateFilter,
         });
         const data = res.data || {};
+        if (typeof data.auto_dispatch_enabled === "boolean") {
+          setAutoDispatchEnabled(data.auto_dispatch_enabled);
+        }
         setKpis(
           data.kpis || {
             pending_dispatch: 0,
@@ -126,6 +131,28 @@ export default function RestaurantDeliveriesDispatch({ staff = false }) {
         String(o.assigned_rider_name || "").toLowerCase().includes(q)
     );
   }, [orders, search]);
+
+  const handleToggleAutoDispatch = async () => {
+    const nextVal = !autoDispatchEnabled;
+    setTogglingDispatch(true);
+    setError("");
+    try {
+      const res = await restaurantDeliveryApi.updateSettings({
+        auto_dispatch_enabled: nextVal,
+      });
+      const updated = Boolean(res.data?.auto_dispatch_enabled);
+      setAutoDispatchEnabled(updated);
+      showToast(
+        updated
+          ? "Smart Auto-Dispatch enabled for new delivery orders."
+          : "Smart Auto-Dispatch paused (manual dispatch mode)."
+      );
+    } catch (err) {
+      setError(err?.response?.data?.detail || "Failed to update Smart Auto-Dispatch setting.");
+    } finally {
+      setTogglingDispatch(false);
+    }
+  };
 
   const handleAssignRider = async (orderId, payload) => {
     setBusyId(orderId);
@@ -259,11 +286,47 @@ export default function RestaurantDeliveriesDispatch({ staff = false }) {
           }}
         >
           <div>
-            <h2 style={{ margin: 0, fontSize: 22, fontWeight: 800, color: "#0f172a" }}>
-              Deliveries, Rider Dispatch &amp; COD
-            </h2>
+            <div style={{ display: "flex", alignItems: "center", flexWrap: "wrap", gap: 10 }}>
+              <h2 style={{ margin: 0, fontSize: 22, fontWeight: 800, color: "#0f172a" }}>
+                Deliveries, Rider Dispatch &amp; COD
+              </h2>
+              <button
+                type="button"
+                disabled={togglingDispatch}
+                onClick={handleToggleAutoDispatch}
+                title="Auto-assigns new delivery orders to the available rider with the fewest active & daily deliveries."
+                style={{
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: 6,
+                  borderRadius: 999,
+                  padding: "5px 12px",
+                  fontSize: 12,
+                  fontWeight: 800,
+                  cursor: togglingDispatch ? "wait" : "pointer",
+                  border: autoDispatchEnabled ? `1.5px solid ${ACCENT}` : "1px solid #cbd5e1",
+                  background: autoDispatchEnabled ? "#fdf4ff" : "#f8fafc",
+                  color: autoDispatchEnabled ? "#86198f" : "#64748b",
+                  transition: "all 0.15s ease",
+                }}
+              >
+                <span>⚡ Smart Auto-Dispatch:</span>
+                <span
+                  style={{
+                    padding: "1px 7px",
+                    borderRadius: 999,
+                    fontSize: 11,
+                    fontWeight: 800,
+                    background: autoDispatchEnabled ? "#c026d3" : "#94a3b8",
+                    color: "#fff",
+                  }}
+                >
+                  {autoDispatchEnabled ? "ON" : "OFF"}
+                </span>
+              </button>
+            </div>
             <p style={{ margin: "4px 0 0", fontSize: 13, color: "#64748b" }}>
-              Assign riders in 1 click, track live doorstep deliveries, and reconcile Cash-on-Delivery.
+              Auto-assigns new delivery orders to the available rider with the fewest active &amp; daily deliveries.
             </p>
           </div>
           <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
