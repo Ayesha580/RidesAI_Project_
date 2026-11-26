@@ -12,7 +12,31 @@ export default function PublicAgentPage() {
   const [serviceAreas, setServiceAreas] = useState([]);
 
   // Customer contact info (optional / for orders + OpenStreetMap delivery pin)
-  const [customer, setCustomer] = useState({ name: "", email: "", phone: "", address: "", delivery_lat: "", delivery_lng: "" });
+  const customerStorageKey = `ridesai_public_customer_${publicId}`;
+  const [customer, setCustomer] = useState(() => {
+    try {
+      const saved = window.localStorage.getItem(`ridesai_public_customer_${publicId}`);
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        return {
+          name: parsed?.name || "",
+          email: parsed?.email || "",
+          phone: parsed?.phone || "",
+          address: parsed?.address || "",
+          delivery_lat: parsed?.delivery_lat ?? "",
+          delivery_lng: parsed?.delivery_lng ?? "",
+        };
+      }
+    } catch {}
+    return { name: "", email: "", phone: "", address: "", delivery_lat: "", delivery_lng: "" };
+  });
+  const customerRef = useRef(customer);
+  customerRef.current = customer;
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(customerStorageKey, JSON.stringify(customer));
+    } catch {}
+  }, [customer, customerStorageKey]);
   const [locating, setLocating] = useState(false);
   const [showContactModal, setShowContactModal] = useState(false);
 
@@ -223,17 +247,19 @@ export default function PublicAgentPage() {
 
     try {
       const activeConvId = conversationIdRef.current || conversationId;
+      const latestCustomer = customerRef.current || customer;
       const { data } = await api.post(`/operations/public/agent/${publicId}/chat/`, {
         message: spokenText?.trim() || "",
         audio_base64: audioBase64,
         audio: audioBase64,
         conversation_id: activeConvId,
-        customer_name: customer.name,
-        customer_email: customer.email,
-        customer_phone: customer.phone,
-        delivery_address: customer.address || undefined,
-        delivery_lat: customer.delivery_lat !== "" ? Number(customer.delivery_lat) : undefined,
-        delivery_lng: customer.delivery_lng !== "" ? Number(customer.delivery_lng) : undefined,
+        customer_name: (latestCustomer.name || "").trim(),
+        customer_email: (latestCustomer.email || "").trim(),
+        customer_phone: (latestCustomer.phone || "").trim(),
+        customer_address: (latestCustomer.address || "").trim() || undefined,
+        delivery_address: (latestCustomer.address || "").trim() || undefined,
+        delivery_lat: latestCustomer.delivery_lat !== "" ? Number(latestCustomer.delivery_lat) : undefined,
+        delivery_lng: latestCustomer.delivery_lng !== "" ? Number(latestCustomer.delivery_lng) : undefined,
       });
 
       if (data?.conversation_id) {

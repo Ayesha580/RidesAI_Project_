@@ -285,6 +285,13 @@ def _create_order(company, payload, actor=None, source="dashboard"):
                         "Please select another available table."
                     )
 
+        from operations.restaurant_customers_views import merge_guest_dietary_notes
+        merged_notes = merge_guest_dietary_notes(
+            company=company,
+            customer_phone=payload.get("customer_phone", ""),
+            existing_notes=payload.get("notes", ""),
+        )
+
         order = Order.objects.create(company=company, customer_name=customer_name,
             order_type=raw_order_type,
             table=table_obj,
@@ -294,7 +301,7 @@ def _create_order(company, payload, actor=None, source="dashboard"):
             delivery_address=payload.get("delivery_address", "") if raw_order_type == Order.ORDER_TYPE_DELIVERY else "",
             delivery_lat=parsed_lat,
             delivery_lng=parsed_lng,
-            notes=payload.get("notes", ""), source=source, created_by=actor)
+            notes=merged_notes, source=source, created_by=actor)
 
         if raw_order_type == Order.ORDER_TYPE_DINE_IN and table_obj:
             table_obj.status = RestaurantTable.STATUS_OCCUPIED
@@ -1004,16 +1011,39 @@ class PublicAgentChatAPIView(APIView):
 
         message = transliterate_to_roman_urdu(message)
 
+        req_name = str(request.data.get("customer_name") or "").strip()[:160]
+        req_email = str(request.data.get("customer_email") or "").strip()
+        req_phone = str(request.data.get("customer_phone") or "").strip()[:40]
+        req_address = str(
+            request.data.get("customer_address") or request.data.get("delivery_address") or ""
+        ).strip()
+
         key = request.data.get("conversation_id")
         if key:
             conversation = get_object_or_404(AgentConversation, conversation_key=key, company=company)
+            conv_updates = []
+            if req_name and conversation.customer_name != req_name:
+                conversation.customer_name = req_name
+                conv_updates.append("customer_name")
+            if req_email and conversation.customer_email != req_email:
+                conversation.customer_email = req_email
+                conv_updates.append("customer_email")
+            if req_phone and conversation.customer_phone != req_phone:
+                conversation.customer_phone = req_phone
+                conv_updates.append("customer_phone")
+            if conv_updates:
+                conv_updates.append("updated_at")
+                conversation.save(update_fields=conv_updates)
         else:
             conversation = AgentConversation.objects.create(
                 company=company,
-                customer_name=str(request.data.get("customer_name", ""))[:160],
-                customer_email=request.data.get("customer_email", ""),
-                customer_phone=request.data.get("customer_phone", "")
+                customer_name=req_name,
+                customer_email=req_email,
+                customer_phone=req_phone,
             )
+
+        effective_name = req_name or conversation.customer_name or "Valued Customer"
+        effective_phone = req_phone or conversation.customer_phone or ""
 
         AgentMessage.objects.create(
             conversation=conversation,
@@ -1053,6 +1083,12 @@ class PublicAgentChatAPIView(APIView):
         result = self._public_action(company, conversation, action) if action else None
 
         biz_context = get_business_context_for_company(company)
+        if effective_phone:
+            biz_context["customer_phone"] = effective_phone
+        if req_address:
+            biz_context["customer_address"] = req_address
+        if effective_name and effective_name != "Valued Customer":
+            biz_context["customer_name"] = effective_name
         if result:
             biz_context["action_result"] = result
 
@@ -1064,9 +1100,9 @@ class PublicAgentChatAPIView(APIView):
             if api_key and len(api_key.strip()) > 10:
                 answer = _generate_agent_reply(
                     message_text=message,
-                    customer_name=conversation.customer_name or "Valued Customer",
+                    customer_name=effective_name,
                     context=biz_context,
-                    sender_phone=conversation.customer_phone or "",
+                    sender_phone=effective_phone,
                     is_voice_note=True,
                     record_turn=False,
                     conversation_obj=conversation,

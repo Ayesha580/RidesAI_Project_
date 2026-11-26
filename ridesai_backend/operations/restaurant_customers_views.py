@@ -194,6 +194,7 @@ def build_returning_guest_ai_context(company, sender_phone: str) -> Optional[Dic
 
     # Match non-cancelled orders whose normalized phone equals `norm`
     dish_counts: Counter = Counter()
+    order_type_counts: Counter = Counter()
     total_orders = 0
     total_spend = Decimal("0.00")
     latest_name = ""
@@ -213,6 +214,8 @@ def build_returning_guest_ai_context(company, sender_phone: str) -> Optional[Dic
         total_spend += order.total or Decimal("0.00")
         if last_order_at is None:
             last_order_at = order.created_at
+        if order.order_type:
+            order_type_counts[order.order_type] += 1
         if not latest_name:
             cname = _clean_name(order.customer_name)
             if cname:
@@ -232,6 +235,9 @@ def build_returning_guest_ai_context(company, sender_phone: str) -> Optional[Dic
         return None
 
     favorite_dish = dish_counts.most_common(1)[0][0] if dish_counts else ""
+    preferred_order_type = (
+        order_type_counts.most_common(1)[0][0] if order_type_counts else ""
+    )
     segment = _compute_segment(
         total_orders=total_orders,
         total_spend=total_spend,
@@ -244,10 +250,33 @@ def build_returning_guest_ai_context(company, sender_phone: str) -> Optional[Dic
         "total_orders": total_orders,
         "favorite_dish": favorite_dish,
         "dietary_notes": dietary_notes,
+        "preferred_order_type": preferred_order_type,
         "tags": tags,
         "is_vip": segment == "vip",
         "segment": segment,
     }
+
+
+def merge_guest_dietary_notes(company, customer_phone: str, existing_notes: str = "") -> str:
+    """
+    Looks up saved `dietary_notes` in `RestaurantGuestProfile` for `(company, normalized_phone)`.
+    If non-empty and not already present (case-insensitive) in `existing_notes`, appends it cleanly
+    so kitchen staff & KOT receipts always see the guest's dietary preferences.
+    """
+    base = (existing_notes or "").strip()
+    if not company or not (customer_phone or "").strip():
+        return base
+    norm = _normalize_phone_key(customer_phone)
+    if not norm:
+        return base
+    profile = RestaurantGuestProfile.objects.filter(company=company, phone=norm).only("dietary_notes").first()
+    dietary = (profile.dietary_notes or "").strip() if profile else ""
+    if not dietary:
+        return base
+    if dietary.lower() in base.lower():
+        return base
+    pref_tag = f"Guest Preference: {dietary}"
+    return f"{base} | {pref_tag}" if base else pref_tag
 
 
 def _build_guest_detail_payload(company, norm_phone: str) -> Optional[Dict[str, Any]]:
