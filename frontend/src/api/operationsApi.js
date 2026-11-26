@@ -214,4 +214,10 @@ export const restaurantCustomersApi = {
     api.patch(`/operations/restaurant/customers/${encodeURIComponent(phone)}/`, data),
 };
 
+export const restaurantReportsApi = {
+  getSummary: (params = {}) => api.get("/operations/restaurant/reports/", { params }),
+  downloadCsv: (params = {}) =>
+    api.get("/operations/restaurant/reports/export/", { params, responseType: "blob" }),
+};
+
 

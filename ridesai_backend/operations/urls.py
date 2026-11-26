@@ -66,6 +66,10 @@ from .restaurant_customers_views import (
     RestaurantCustomersListAPIView,
     RestaurantCustomerDetailAPIView,
 )
+from .restaurant_reports_views import (
+    RestaurantReportsSummaryAPIView,
+    RestaurantReportsExportCSVAPIView,
+)
 
 urlpatterns = [
     path("orders/catalog/", OrderCatalogAPIView.as_view(), name="order-catalog"),
@@ -139,6 +143,8 @@ urlpatterns = [
     path("restaurant/deliveries/settle-cod/", RestaurantDeliverySettleCODAPIView.as_view(), name="restaurant-deliveries-settle-cod"),
     path("restaurant/customers/", RestaurantCustomersListAPIView.as_view(), name="restaurant-customers-list"),
     path("restaurant/customers/<str:phone>/", RestaurantCustomerDetailAPIView.as_view(), name="restaurant-customers-detail"),
+    path("restaurant/reports/", RestaurantReportsSummaryAPIView.as_view(), name="restaurant-reports-summary"),
+    path("restaurant/reports/export/", RestaurantReportsExportCSVAPIView.as_view(), name="restaurant-reports-export"),
     path("customers/lookup/", CustomerLookupAPIView.as_view(), name="customers-lookup"),
     path("hospital/", include("operations.hospital_urls")),
 ]

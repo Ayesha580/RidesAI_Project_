@@ -7967,3 +7967,226 @@ class RestaurantCustomersCRMTests(TestCase):
         )
         self.assertIn("Ring bell twice", pos_order.notes)
         self.assertIn("Extra spicy, no onions", pos_order.notes)
+
+
+class RestaurantReportsAnalyticsTests(TestCase):
+    """Module 7: Restaurant Reports, Recipe-Based Profitability & CSV Export tests."""
+
+    def setUp(self):
+        from datetime import timedelta
+        from django.utils import timezone
+        from companies.models import CatalogCategory, CatalogItem, Company
+        from accounts.models import User
+        from operations.models import MenuItemRecipe, Order, OrderItem, RestaurantIngredient
+
+        self.company = Company.objects.create(
+            name="Royal Karahi House",
+            business_type="restaurant",
+            subscription_status="active",
+        )
+        self.other_company = Company.objects.create(
+            name="Other Cafe",
+            business_type="restaurant",
+            subscription_status="active",
+        )
+        self.owner = User.objects.create_user(
+            username="reports_owner",
+            email="reports_owner@test.com",
+            password="pass",
+            role=User.ROLE_OWNER,
+            company=self.company,
+            is_active=True,
+        )
+        self.other_owner = User.objects.create_user(
+            username="reports_other_owner",
+            email="reports_other_owner@test.com",
+            password="pass",
+            role=User.ROLE_OWNER,
+            company=self.other_company,
+            is_active=True,
+        )
+
+        # Menu items + Ingredient + Recipe (Zinger Burger COGS = 2 * 100 = Rs. 200 per unit)
+        cat = CatalogCategory.objects.create(company=self.company, name="Burgers")
+        self.burger = CatalogItem.objects.create(
+            company=self.company,
+            category=cat,
+            name="Zinger Burger",
+            price=Decimal("600.00"),
+            is_available=True,
+        )
+        self.drink = CatalogItem.objects.create(
+            company=self.company,
+            category=cat,
+            name="Mint Margarita",
+            price=Decimal("250.00"),
+            is_available=True,
+        )
+        chicken = RestaurantIngredient.objects.create(
+            company=self.company,
+            name="Chicken Fillet",
+            unit="pcs",
+            current_stock=Decimal("50"),
+            cost_per_unit=Decimal("100.00"),
+        )
+        MenuItemRecipe.objects.create(
+            company=self.company,
+            catalog_item=self.burger,
+            ingredient=chicken,
+            quantity_required=Decimal("2.000"),
+        )
+
+        # 1. Today POS Delivery order: 2 Burgers (1200) + 150 delivery fee = 1350; COGS = 400
+        self.order_today_pos = Order.objects.create(
+            company=self.company,
+            order_type=Order.ORDER_TYPE_DELIVERY,
+            customer_name="Ali",
+            status=Order.STATUS_DELIVERED,
+            source="dashboard",
+            subtotal=Decimal("1200.00"),
+            delivery_fee=Decimal("150.00"),
+            total=Decimal("1350.00"),
+            cod_collected=True,
+            cod_settled=False,
+        )
+        OrderItem.objects.create(
+            order=self.order_today_pos,
+            item=self.burger,
+            item_name="Zinger Burger",
+            quantity=Decimal("2"),
+            unit_price=Decimal("600.00"),
+            line_total=Decimal("1200.00"),
+        )
+
+        # 2. Today WhatsApp AI Dine-in order: 2 Mint Margaritas (no recipe -> COGS 0) = 500
+        self.order_today_ai = Order.objects.create(
+            company=self.company,
+            order_type=Order.ORDER_TYPE_DINE_IN,
+            customer_name="Sara",
+            status=Order.STATUS_CONFIRMED,
+            source="agent",
+            subtotal=Decimal("500.00"),
+            delivery_fee=Decimal("0.00"),
+            total=Decimal("500.00"),
+        )
+        OrderItem.objects.create(
+            order=self.order_today_ai,
+            item=self.drink,
+            item_name="Mint Margarita",
+            quantity=Decimal("2"),
+            unit_price=Decimal("250.00"),
+            line_total=Decimal("500.00"),
+        )
+
+        # 3. Cancelled order today -> must be EXCLUDED from net_revenue & COGS
+        self.order_cancelled = Order.objects.create(
+            company=self.company,
+            order_type=Order.ORDER_TYPE_DELIVERY,
+            customer_name="Cancelled Guest",
+            status=Order.STATUS_CANCELLED,
+            source="dashboard",
+            subtotal=Decimal("600.00"),
+            total=Decimal("600.00"),
+        )
+        OrderItem.objects.create(
+            order=self.order_cancelled,
+            item=self.burger,
+            item_name="Zinger Burger",
+            quantity=Decimal("1"),
+            unit_price=Decimal("600.00"),
+            line_total=Decimal("600.00"),
+        )
+
+        # 4. Historical order (20 days ago, takeaway, Website Voice AI)
+        self.order_old = Order.objects.create(
+            company=self.company,
+            order_type=Order.ORDER_TYPE_TAKEAWAY,
+            customer_name="Old Guest",
+            status=Order.STATUS_DELIVERED,
+            source="api",
+            subtotal=Decimal("600.00"),
+            total=Decimal("600.00"),
+        )
+        Order.objects.filter(pk=self.order_old.pk).update(
+            created_at=timezone.now() - timedelta(days=20)
+        )
+        OrderItem.objects.create(
+            order=self.order_old,
+            item=self.burger,
+            item_name="Zinger Burger",
+            quantity=Decimal("1"),
+            unit_price=Decimal("600.00"),
+            line_total=Decimal("600.00"),
+        )
+
+        # 5. Other tenant's order (must remain isolated)
+        Order.objects.create(
+            company=self.other_company,
+            order_type=Order.ORDER_TYPE_DELIVERY,
+            customer_name="External",
+            status=Order.STATUS_DELIVERED,
+            total=Decimal("9999.00"),
+        )
+
+        self.client = APIClient()
+        self.client.force_authenticate(user=self.owner)
+
+    def test_reports_revenue_cogs_profit_and_breakdowns(self):
+        # All-time report
+        res = self.client.get("/api/operations/restaurant/reports/?range=all")
+        self.assertEqual(res.status_code, 200)
+        data = res.json()
+        kpis = data["kpis"]
+
+        # Net revenue = 1350 + 500 + 600 = 2450 (excludes 600 cancelled & 9999 other company)
+        self.assertEqual(kpis["net_revenue"], 2450.0)
+        self.assertEqual(kpis["total_orders"], 3)
+        self.assertEqual(kpis["cancelled_orders"], 1)
+        self.assertEqual(kpis["delivery_fees_total"], 150.0)
+        # COGS = 2 burgers (400) + 1 old burger (200) + 2 drinks (0) = 600
+        self.assertEqual(kpis["estimated_cogs"], 600.0)
+        self.assertEqual(kpis["gross_profit"], 1850.0)
+        self.assertEqual(kpis["unsettled_cod_total"], 1350.0)
+
+        # Order type split
+        ot_map = {r["key"]: r for r in data["order_type_breakdown"]}
+        self.assertEqual(ot_map["delivery"]["orders"], 1)
+        self.assertEqual(ot_map["dine_in"]["orders"], 1)
+        self.assertEqual(ot_map["takeaway"]["orders"], 1)
+
+        # Channel split
+        ch_map = {r["channel"]: r for r in data["channel_breakdown"]}
+        self.assertEqual(ch_map["POS"]["orders"], 1)
+        self.assertEqual(ch_map["WhatsApp AI"]["orders"], 1)
+        self.assertEqual(ch_map["Website Voice AI"]["orders"], 1)
+
+        # Top dishes margin table
+        burger_row = next(d for d in data["top_dishes"] if d["dish_name"] == "Zinger Burger")
+        self.assertEqual(burger_row["qty_sold"], 3.0)
+        self.assertEqual(burger_row["revenue"], 1800.0)
+        self.assertEqual(burger_row["estimated_cogs"], 600.0)
+        self.assertEqual(burger_row["gross_profit"], 1200.0)
+
+    def test_date_range_today_and_csv_export(self):
+        # Today filter excludes the 20-day-old order
+        res_today = self.client.get("/api/operations/restaurant/reports/?range=today")
+        self.assertEqual(res_today.status_code, 200)
+        self.assertEqual(res_today.json()["kpis"]["total_orders"], 2)
+        self.assertEqual(res_today.json()["kpis"]["net_revenue"], 1850.0)
+
+        # CSV export returns valid text/csv with expected headers & rows
+        csv_res = self.client.get("/api/operations/restaurant/reports/export/?range=all")
+        self.assertEqual(csv_res.status_code, 200)
+        self.assertIn("text/csv", csv_res["Content-Type"])
+        body = csv_res.content.decode("utf-8")
+        self.assertIn("Order Ref,Date/Time,Customer,Order Type,Channel,Status,Subtotal,Delivery Fee,Total,Est. COGS,Est. Profit,COD Settled", body)
+        self.assertIn(self.order_today_pos.order_number, body)
+        self.assertNotIn("External", body)
+
+    def test_multi_tenant_isolation_on_reports(self):
+        other_client = APIClient()
+        other_client.force_authenticate(user=self.other_owner)
+        res = other_client.get("/api/operations/restaurant/reports/?range=all")
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.json()["kpis"]["total_orders"], 1)
+        self.assertEqual(res.json()["kpis"]["net_revenue"], 9999.0)
