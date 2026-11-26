@@ -7616,3 +7616,216 @@ class RestaurantDeliveriesAndCODTests(TestCase):
         self.assertNotIn("assigned_rider_name", ai_res_off)
         ai_order_off = Order.objects.get(order_number=ai_res_off["order_number"])
         self.assertIsNone(ai_order_off.assigned_rider_id)
+
+
+class RestaurantCustomersCRMTests(TestCase):
+    """Module 6: Restaurant Customers CRM, Guest Profiles, Segmentation & AI Personalization."""
+
+    def setUp(self):
+        from datetime import timedelta
+        from django.utils import timezone
+        from companies.models import Company
+        from accounts.models import User
+        from operations.models import Order, OrderItem, TableReservation
+
+        self.company = Company.objects.create(
+            name="Spice Route Grill",
+            business_type="restaurant",
+            subscription_status="active",
+        )
+        self.other_company = Company.objects.create(
+            name="Other Bistro",
+            business_type="restaurant",
+            subscription_status="active",
+        )
+        self.owner = User.objects.create_user(
+            username="crm_owner",
+            email="crm_owner@test.com",
+            password="pass",
+            role=User.ROLE_OWNER,
+            company=self.company,
+            is_active=True,
+        )
+        self.other_owner = User.objects.create_user(
+            username="crm_other_owner",
+            email="crm_other_owner@test.com",
+            password="pass",
+            role=User.ROLE_OWNER,
+            company=self.other_company,
+            is_active=True,
+        )
+
+        # 1. VIP guest (spend >= 5000 across 2 orders, favorite dish: Mutton Karahi)
+        o_vip_1 = Order.objects.create(
+            company=self.company,
+            order_type=Order.ORDER_TYPE_DELIVERY,
+            customer_name="Zainab Khan",
+            customer_phone="+923001112222",
+            status=Order.STATUS_DELIVERED,
+            total=Decimal("3200.00"),
+        )
+        OrderItem.objects.create(
+            order=o_vip_1, item_name="Mutton Karahi", quantity=2,
+            unit_price=Decimal("1600.00"), line_total=Decimal("3200.00"),
+        )
+        o_vip_2 = Order.objects.create(
+            company=self.company,
+            order_type=Order.ORDER_TYPE_DELIVERY,
+            customer_name="Zainab Khan",
+            customer_phone="03001112222",  # variant format normalizes to same guest
+            status=Order.STATUS_DELIVERED,
+            total=Decimal("2400.00"),
+        )
+        OrderItem.objects.create(
+            order=o_vip_2, item_name="Mutton Karahi", quantity=1,
+            unit_price=Decimal("1600.00"), line_total=Decimal("1600.00"),
+        )
+        OrderItem.objects.create(
+            order=o_vip_2, item_name="Garlic Naan", quantity=2,
+            unit_price=Decimal("400.00"), line_total=Decimal("800.00"),
+        )
+
+        # 2. Repeat guest (2 orders, spend < 5000, recent)
+        for _ in range(2):
+            o_rep = Order.objects.create(
+                company=self.company,
+                order_type=Order.ORDER_TYPE_TAKEAWAY,
+                customer_name="Usman Tariq",
+                customer_phone="+923003334444",
+                status=Order.STATUS_DELIVERED,
+                total=Decimal("900.00"),
+            )
+            OrderItem.objects.create(
+                order=o_rep, item_name="Zinger Burger", quantity=1,
+                unit_price=Decimal("900.00"), line_total=Decimal("900.00"),
+            )
+
+        # 3. New guest (1 recent order)
+        o_new = Order.objects.create(
+            company=self.company,
+            order_type=Order.ORDER_TYPE_DINE_IN,
+            customer_name="Ayesha Ali",
+            customer_phone="+923005556666",
+            status=Order.STATUS_DELIVERED,
+            total=Decimal("1200.00"),
+        )
+        OrderItem.objects.create(
+            order=o_new, item_name="Chicken Tikka", quantity=1,
+            unit_price=Decimal("1200.00"), line_total=Decimal("1200.00"),
+        )
+
+        # 4. At-Risk guest (1 order older than 30 days)
+        o_risk = Order.objects.create(
+            company=self.company,
+            order_type=Order.ORDER_TYPE_DELIVERY,
+            customer_name="Hamza Raza",
+            customer_phone="+923007778888",
+            status=Order.STATUS_DELIVERED,
+            total=Decimal("1500.00"),
+        )
+        old_ts = timezone.now() - timedelta(days=45)
+        Order.objects.filter(pk=o_risk.pk).update(created_at=old_ts)
+        OrderItem.objects.create(
+            order=o_risk, item_name="Beef Pulao", quantity=1,
+            unit_price=Decimal("1500.00"), line_total=Decimal("1500.00"),
+        )
+
+        # Reservation for VIP guest
+        now_dt = timezone.now()
+        TableReservation.objects.create(
+            company=self.company,
+            customer_name="Zainab Khan",
+            customer_phone="+923001112222",
+            party_size=4,
+            reservation_date=now_dt.date(),
+            reservation_time=now_dt.time(),
+            reserved_at=now_dt,
+            status=TableReservation.STATUS_CONFIRMED,
+        )
+
+        # Other tenant guest (must stay strictly isolated)
+        Order.objects.create(
+            company=self.other_company,
+            order_type=Order.ORDER_TYPE_DELIVERY,
+            customer_name="External Guest",
+            customer_phone="+923009999999",
+            status=Order.STATUS_DELIVERED,
+            total=Decimal("9999.00"),
+        )
+
+        self.client = APIClient()
+        self.client.force_authenticate(user=self.owner)
+
+    def test_customers_list_aggregates_spend_favorite_dish_and_segments(self):
+        res = self.client.get("/api/operations/restaurant/customers/")
+        self.assertEqual(res.status_code, 200)
+        data = res.json()
+
+        self.assertEqual(data["kpis"]["total_guests"], 4)
+        self.assertEqual(data["kpis"]["vip_count"], 1)
+        self.assertEqual(data["kpis"]["repeat_count"], 1)
+        self.assertEqual(data["kpis"]["new_count"], 1)
+        self.assertEqual(data["kpis"]["at_risk_count"], 1)
+
+        by_phone = {c["phone"]: c for c in data["customers"]}
+        self.assertNotIn("923009999999", by_phone)
+
+        vip = by_phone["923001112222"]
+        self.assertEqual(vip["segment"], "vip")
+        self.assertEqual(vip["total_orders"], 2)
+        self.assertEqual(vip["total_spend"], 5600.0)
+        self.assertEqual(vip["favorite_dish"], "Mutton Karahi")
+        self.assertEqual(vip["reservations_count"], 1)
+
+        self.assertEqual(by_phone["923003334444"]["segment"], "repeat")
+        self.assertEqual(by_phone["923005556666"]["segment"], "new")
+        self.assertEqual(by_phone["923007778888"]["segment"], "at_risk")
+
+        # Filter by segment=at_risk
+        risk_res = self.client.get("/api/operations/restaurant/customers/?segment=at_risk").json()
+        self.assertEqual(len(risk_res["customers"]), 1)
+        self.assertEqual(risk_res["customers"][0]["name"], "Hamza Raza")
+
+    def test_patch_profile_and_whatsapp_ai_returning_guest_prompt(self):
+        from operations.whatsapp_agent import _build_system_prompt, get_business_context_for_company
+
+        # Save dietary notes & VIP override for Ayesha (currently 'new')
+        patch_res = self.client.patch(
+            "/api/operations/restaurant/customers/923005556666/",
+            {
+                "dietary_notes": "No onions, extra spicy",
+                "is_vip_override": True,
+                "tags": ["Spice Lover"],
+            },
+            format="json",
+        )
+        self.assertEqual(patch_res.status_code, 200)
+        detail = patch_res.json()
+        self.assertEqual(detail["dietary_notes"], "No onions, extra spicy")
+        self.assertTrue(detail["is_vip_override"])
+        self.assertEqual(detail["segment"], "vip")
+
+        # Verify WhatsApp AI system prompt injects favorite dish & saved dietary notes
+        ctx = get_business_context_for_company(self.company)
+        prompt = _build_system_prompt(
+            customer_name="Ayesha Ali",
+            context=ctx,
+            sender_phone="+923005556666",
+        )
+        self.assertIn("RETURNING GUEST CONTEXT", prompt)
+        self.assertIn("Chicken Tikka", prompt)
+        self.assertIn("No onions, extra spicy", prompt)
+        self.assertIn("VIP Guest", prompt)
+
+    def test_multi_tenant_isolation_on_customer_detail(self):
+        other_client = APIClient()
+        other_client.force_authenticate(user=self.other_owner)
+
+        # Other tenant cannot view Spice Route Grill's VIP guest
+        res = other_client.get("/api/operations/restaurant/customers/923001112222/")
+        self.assertEqual(res.status_code, 404)
+
+        # Other tenant's list only contains its own guest
+        list_res = other_client.get("/api/operations/restaurant/customers/").json()
+        self.assertEqual(list_res["kpis"]["total_guests"], 1)
+        self.assertEqual(list_res["customers"][0]["phone"], "923009999999")

@@ -1760,6 +1760,7 @@ def _build_system_prompt(
     context: Dict[str, Any],
     is_voice_note: bool = False,
     has_prior_history: bool = False,
+    sender_phone: str = "",
 ) -> str:
     """
     Constructs a detailed grounding system prompt for the LLM using tenant metadata,
@@ -1925,6 +1926,34 @@ def _build_system_prompt(
             "- Once `book_table_reservation` returns `\"success\": true`, quote the exact `table_number`, `reservation_date`, `reservation_time`, and `party_size` from the tool response.\n"
         )
 
+    returning_guest_section = ""
+    if cat_cfg.get("key") == "restaurant":
+        guest_ctx = context.get("returning_guest")
+        if not guest_ctx and sender_phone and context.get("company"):
+            try:
+                from operations.restaurant_customers_views import build_returning_guest_ai_context
+                guest_ctx = build_returning_guest_ai_context(context["company"], sender_phone)
+            except Exception:
+                guest_ctx = None
+        if guest_ctx:
+            rg_lines = []
+            if guest_ctx.get("name"):
+                rg_lines.append(f"- Guest Name: {guest_ctx['name']}")
+            if guest_ctx.get("is_vip"):
+                rg_lines.append("- VIP Status: VIP Guest (provide extra-warm, priority hospitality)")
+            if guest_ctx.get("total_orders"):
+                rg_lines.append(f"- Past Orders: {guest_ctx['total_orders']}")
+            if guest_ctx.get("favorite_dish"):
+                rg_lines.append(f"- Favorite Dish: {guest_ctx['favorite_dish']}")
+            if guest_ctx.get("dietary_notes"):
+                rg_lines.append(f"- Saved Dietary / Preference Notes: {guest_ctx['dietary_notes']}")
+            if rg_lines:
+                returning_guest_section = (
+                    "\nRETURNING GUEST CONTEXT (PERSONALIZATION):\n"
+                    + "\n".join(rg_lines)
+                    + "\n- Greet this returning guest warmly by name if known, and automatically respect their saved dietary/preference notes when taking orders (also pass relevant dietary notes into `notes` when calling `create_order`).\n"
+                )
+
     return f"""You are the official AI Assistant for {biz_name} on WhatsApp.
 Your primary role is {role_desc}.
 
@@ -1954,6 +1983,7 @@ FREQUENTLY ASKED QUESTIONS & POLICIES:
 VERTICAL-SPECIFIC INSTRUCTIONS:
 {category_instructions}
 {restaurant_reservation_rules}
+{returning_guest_section}
 
 GLOBAL HEALTH & DIETARY GUARDRAILS (PRD MANDATORY):
 - Never diagnose medical conditions, prescribe prescription medications, or claim that any food, supplement, or product treats or cures any illness.
@@ -2168,6 +2198,7 @@ def _generate_agent_reply(
                 context=context,
                 is_voice_note=is_voice_note,
                 has_prior_history=has_prior_history,
+                sender_phone=sender_phone,
             )
 
             messages: List[Dict[str, Any]] = [{"role": "system", "content": system_prompt}]

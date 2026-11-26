@@ -62,6 +62,10 @@ from .restaurant_delivery_views import (
     RestaurantDeliverySettleCODAPIView,
     RestaurantDeliverySettingsAPIView,
 )
+from .restaurant_customers_views import (
+    RestaurantCustomersListAPIView,
+    RestaurantCustomerDetailAPIView,
+)
 
 urlpatterns = [
     path("orders/catalog/", OrderCatalogAPIView.as_view(), name="order-catalog"),
@@ -133,6 +137,8 @@ urlpatterns = [
     path("restaurant/deliveries/<int:order_id>/assign/", RestaurantDeliveryAssignAPIView.as_view(), name="restaurant-deliveries-assign"),
     path("restaurant/deliveries/<int:order_id>/status/", RestaurantDeliveryStatusAPIView.as_view(), name="restaurant-deliveries-status"),
     path("restaurant/deliveries/settle-cod/", RestaurantDeliverySettleCODAPIView.as_view(), name="restaurant-deliveries-settle-cod"),
+    path("restaurant/customers/", RestaurantCustomersListAPIView.as_view(), name="restaurant-customers-list"),
+    path("restaurant/customers/<str:phone>/", RestaurantCustomerDetailAPIView.as_view(), name="restaurant-customers-detail"),
     path("customers/lookup/", CustomerLookupAPIView.as_view(), name="customers-lookup"),
     path("hospital/", include("operations.hospital_urls")),
 ]

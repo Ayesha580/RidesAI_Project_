@@ -206,4 +206,12 @@ export const restaurantDeliveryApi = {
   settleCod: (data) => api.post("/operations/restaurant/deliveries/settle-cod/", data),
 };
 
+export const restaurantCustomersApi = {
+  list: (params = {}) => api.get("/operations/restaurant/customers/", { params }),
+  getDetail: (phone) =>
+    api.get(`/operations/restaurant/customers/${encodeURIComponent(phone)}/`),
+  updateProfile: (phone, data) =>
+    api.patch(`/operations/restaurant/customers/${encodeURIComponent(phone)}/`, data),
+};
+
 
