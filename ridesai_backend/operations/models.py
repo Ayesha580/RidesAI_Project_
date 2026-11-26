@@ -1336,6 +1336,42 @@ class Supplier(models.Model):
         return f"{self.name} ({self.category or 'General'})"
 
 
+# ============================================================================
+# Restaurant Customers CRM & Guest Profiles (Module 6 — Multi-Tenant)
+# ============================================================================
+
+class RestaurantGuestProfile(models.Model):
+    company = models.ForeignKey(
+        "companies.Company",
+        on_delete=models.CASCADE,
+        related_name="restaurant_guest_profiles",
+        db_index=True,
+    )
+    phone = models.CharField(max_length=40, db_index=True)
+    display_phone = models.CharField(max_length=40, blank=True, default="")
+    name = models.CharField(max_length=160, blank=True, default="")
+    dietary_notes = models.TextField(blank=True, default="")
+    tags = models.JSONField(default=list, blank=True)
+    is_vip_override = models.BooleanField(default=False)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ("-updated_at",)
+        constraints = [
+            models.UniqueConstraint(
+                fields=["company", "phone"],
+                name="unique_restaurant_guest_profile_per_company",
+            )
+        ]
+        indexes = [
+            models.Index(fields=["company", "phone"], name="op_rgp_comp_phone_idx"),
+        ]
+
+    def __str__(self):
+        return f"{self.name or self.phone} ({self.company_id})"
+
+
 
 
 
