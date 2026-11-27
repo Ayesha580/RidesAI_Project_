@@ -9,7 +9,7 @@ from decimal import Decimal
 import math
 
 from django.db import IntegrityError, transaction
-from django.db.models import Sum
+from django.db.models import Q, Sum
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
 from rest_framework.permissions import IsAuthenticated
@@ -24,6 +24,8 @@ from operations.models import (
     HospitalAdmission,
     HospitalBed,
     HospitalDepartment,
+    HospitalDoctor,
+    HospitalDoctorSchedule,
     HospitalWard,
     LabTestBooking,
     Patient,
@@ -211,20 +213,26 @@ class HospitalDepartmentDetailAPIView(HospitalBaseAPIView):
 
         if "name" in request.data and str(request.data["name"]).strip():
             dept.name = str(request.data["name"]).strip()[:150]
+        if "code" in request.data:
+            dept.code = str(request.data["code"] or "").strip()[:24]
+        if "head_of_department" in request.data:
+            dept.head_of_department = str(request.data["head_of_department"] or "").strip()[:150]
         if "ward_type" in request.data:
             wt = str(request.data["ward_type"]).strip()
             if wt in {c[0] for c in HospitalDepartment.WARD_TYPE_CHOICES}:
                 dept.ward_type = wt
-        if "floor_or_location" in request.data:
-            dept.floor_or_location = str(request.data["floor_or_location"] or "").strip()[:120]
+        if "floor_location" in request.data or "floor_or_location" in request.data:
+            fl = request.data["floor_location"] if "floor_location" in request.data else request.data["floor_or_location"]
+            dept.floor_or_location = str(fl or "").strip()[:120]
         if "total_beds" in request.data:
             dept.total_beds = max(0, int(request.data["total_beds"] or 0))
         if "available_beds" in request.data:
             dept.available_beds = max(0, int(request.data["available_beds"] or 0))
         if "is_24_7" in request.data:
             dept.is_24_7 = bool(request.data["is_24_7"])
-        if "phone_extension" in request.data:
-            dept.phone_extension = str(request.data["phone_extension"] or "").strip()[:32]
+        if "phone_ext" in request.data or "phone_extension" in request.data:
+            pe = request.data["phone_ext"] if "phone_ext" in request.data else request.data["phone_extension"]
+            dept.phone_extension = str(pe or "").strip()[:32]
         if "is_active" in request.data:
             dept.is_active = bool(request.data["is_active"])
         if "head_doctor_id" in request.data:
@@ -445,6 +453,12 @@ class HospitalDashboardAPIView(HospitalBaseAPIView):
         except Exception:
             active_ai_conversations = 0
 
+        docs_qs = HospitalDoctor.objects.filter(company=company, is_active=True)
+        total_doctors = docs_qs.count()
+        doctors_available_today = docs_qs.filter(
+            availability_status__in=[HospitalDoctor.STATUS_AVAILABLE, HospitalDoctor.STATUS_IN_OPD]
+        ).count()
+
         return Response({
             "kpis": {
                 "total_departments": total_departments,
@@ -460,6 +474,8 @@ class HospitalDashboardAPIView(HospitalBaseAPIView):
                 "discharges_today": discharges_today,
                 "appointments_today": appointments_today,
                 "active_ai_conversations": active_ai_conversations,
+                "total_doctors": total_doctors,
+                "doctors_available_today": doctors_available_today,
             },
             "ward_occupancy_summary": ward_summary,
             "recent_admissions": recent_admissions,
@@ -795,3 +811,282 @@ class HospitalBedDischargeAPIView(HospitalBaseAPIView):
             },
             status=200,
         )
+
+
+# ============================================================================
+# Hospital Module 2: Doctors Directory & Weekly OPD Schedules
+# ============================================================================
+
+DAY_ORDER = {"mon": 0, "tue": 1, "wed": 2, "thu": 3, "fri": 4, "sat": 5, "sun": 6}
+DAY_LABELS = dict(HospitalDoctorSchedule.DAY_CHOICES)
+
+
+def _parse_time_str(val):
+    if not val:
+        return None
+    if hasattr(val, "hour"):
+        return val
+    s = str(val).strip()
+    for fmt in ("%H:%M", "%H:%M:%S"):
+        try:
+            return datetime.strptime(s, fmt).time()
+        except ValueError:
+            continue
+    return None
+
+
+def _serialize_doctor(doc: HospitalDoctor) -> dict:
+    scheds = sorted(
+        list(doc.schedules.filter(is_active=True)),
+        key=lambda s: (DAY_ORDER.get(s.day_of_week, 9), s.start_time),
+    )
+    return {
+        "id": doc.id,
+        "department_id": doc.department_id,
+        "department_name": doc.department.name if doc.department else "",
+        "full_name": doc.full_name,
+        "specialization": doc.specialization or "",
+        "qualification": doc.qualification or "",
+        "license_number": doc.license_number or "",
+        "pmdc_number": doc.license_number or "",
+        "phone": doc.phone or "",
+        "email": doc.email or "",
+        "consultation_fee": float(doc.consultation_fee or 0),
+        "follow_up_fee": float(doc.follow_up_fee or 0),
+        "slot_duration_minutes": int(doc.slot_duration_minutes or 15),
+        "availability_status": doc.availability_status,
+        "availability_label": doc.get_availability_status_display(),
+        "room_number": doc.room_number or "",
+        "bio": doc.bio or "",
+        "is_active": bool(doc.is_active),
+        "schedules": [
+            {
+                "id": s.id,
+                "day_of_week": s.day_of_week,
+                "day_label": DAY_LABELS.get(s.day_of_week, s.day_of_week.title()),
+                "start_time": s.start_time.strftime("%H:%M") if s.start_time else "",
+                "end_time": s.end_time.strftime("%H:%M") if s.end_time else "",
+                "max_patients": int(s.max_patients or 20),
+                "is_active": bool(s.is_active),
+            }
+            for s in scheds
+        ],
+        "created_at": doc.created_at.isoformat() if doc.created_at else None,
+    }
+
+
+def _sync_doctor_schedules(company, doctor: HospitalDoctor, schedules_payload):
+    if not isinstance(schedules_payload, list):
+        return
+    valid_days = set(DAY_ORDER.keys())
+    doctor.schedules.all().delete()
+    seen = set()
+    to_create = []
+    for row in schedules_payload:
+        if not isinstance(row, dict):
+            continue
+        day = str(row.get("day_of_week") or "").strip().lower()[:3]
+        if day not in valid_days:
+            continue
+        start_t = _parse_time_str(row.get("start_time"))
+        end_t = _parse_time_str(row.get("end_time"))
+        if not start_t or not end_t:
+            continue
+        key = (day, start_t)
+        if key in seen:
+            continue
+        seen.add(key)
+        try:
+            max_p = max(1, int(row.get("max_patients") or 20))
+        except (TypeError, ValueError):
+            max_p = 20
+        to_create.append(
+            HospitalDoctorSchedule(
+                company=company,
+                doctor=doctor,
+                day_of_week=day,
+                start_time=start_t,
+                end_time=end_t,
+                max_patients=max_p,
+                is_active=bool(row.get("is_active", True)),
+            )
+        )
+    if to_create:
+        HospitalDoctorSchedule.objects.bulk_create(to_create)
+
+
+class HospitalDoctorsAPIView(HospitalBaseAPIView):
+    """GET / POST /api/operations/hospital/doctors/"""
+
+    def get(self, request):
+        company = self._get_company(request)
+        if not company:
+            return Response({"detail": "No company associated with this account."}, status=403)
+
+        qs = (
+            HospitalDoctor.objects.filter(company=company, is_active=True)
+            .select_related("department")
+            .prefetch_related("schedules")
+            .order_by("full_name")
+        )
+        dept_id = request.query_params.get("department_id")
+        if dept_id and str(dept_id).strip().isdigit():
+            qs = qs.filter(department_id=int(dept_id))
+        avail = str(request.query_params.get("availability_status") or "").strip().lower()
+        if avail and avail != "all":
+            qs = qs.filter(availability_status=avail)
+        search = str(request.query_params.get("search") or "").strip()
+        if search:
+            qs = qs.filter(
+                Q(full_name__icontains=search)
+                | Q(specialization__icontains=search)
+                | Q(qualification__icontains=search)
+                | Q(room_number__icontains=search)
+            )
+        return Response([_serialize_doctor(d) for d in qs], status=200)
+
+    def post(self, request):
+        company = self._get_company(request)
+        if not company:
+            return Response({"detail": "No company associated with this account."}, status=403)
+
+        full_name = str(request.data.get("full_name") or "").strip()[:160]
+        if not full_name:
+            return Response({"full_name": "Doctor full name is required."}, status=400)
+
+        dept = None
+        dept_id = request.data.get("department_id")
+        if dept_id is not None and str(dept_id).strip() != "":
+            dept = get_object_or_404(HospitalDepartment, pk=dept_id, company=company)
+
+        avail = str(request.data.get("availability_status") or HospitalDoctor.STATUS_AVAILABLE).strip().lower()
+        if avail not in {c[0] for c in HospitalDoctor.AVAILABILITY_CHOICES}:
+            avail = HospitalDoctor.STATUS_AVAILABLE
+
+        try:
+            fee = max(Decimal("0.00"), Decimal(str(request.data.get("consultation_fee", "0.00") or "0.00")))
+        except Exception:
+            fee = Decimal("0.00")
+        try:
+            f_fee = max(Decimal("0.00"), Decimal(str(request.data.get("follow_up_fee", "0.00") or "0.00")))
+        except Exception:
+            f_fee = Decimal("0.00")
+        try:
+            slot_min = max(5, min(120, int(request.data.get("slot_duration_minutes") or 15)))
+        except (TypeError, ValueError):
+            slot_min = 15
+
+        with transaction.atomic():
+            doc = HospitalDoctor.objects.create(
+                company=company,
+                department=dept,
+                full_name=full_name,
+                specialization=str(request.data.get("specialization") or "").strip()[:160],
+                qualification=str(request.data.get("qualification") or "").strip()[:200],
+                license_number=str(
+                    request.data.get("license_number") or request.data.get("pmdc_number") or ""
+                ).strip()[:80],
+                phone=str(request.data.get("phone") or "").strip()[:40],
+                email=str(request.data.get("email") or "").strip()[:254],
+                consultation_fee=fee,
+                follow_up_fee=f_fee,
+                slot_duration_minutes=slot_min,
+                availability_status=avail,
+                room_number=str(request.data.get("room_number") or "").strip()[:60],
+                bio=str(request.data.get("bio") or "").strip(),
+                is_active=True,
+            )
+            if "schedules" in request.data:
+                _sync_doctor_schedules(company, doc, request.data.get("schedules"))
+
+        doc = HospitalDoctor.objects.select_related("department").prefetch_related("schedules").get(pk=doc.pk)
+        return Response(_serialize_doctor(doc), status=201)
+
+
+class HospitalDoctorDetailAPIView(HospitalBaseAPIView):
+    """PATCH / DELETE /api/operations/hospital/doctors/<pk>/"""
+
+    def patch(self, request, pk: int):
+        company = self._get_company(request)
+        if not company:
+            return Response({"detail": "No company associated with this account."}, status=403)
+        doc = get_object_or_404(HospitalDoctor, pk=pk, company=company)
+
+        with transaction.atomic():
+            if "full_name" in request.data and str(request.data["full_name"]).strip():
+                doc.full_name = str(request.data["full_name"]).strip()[:160]
+            if "department_id" in request.data:
+                did = request.data.get("department_id")
+                doc.department = get_object_or_404(HospitalDepartment, pk=did, company=company) if did else None
+            for field, max_len in [
+                ("specialization", 160),
+                ("qualification", 200),
+                ("phone", 40),
+                ("email", 254),
+                ("room_number", 60),
+            ]:
+                if field in request.data:
+                    setattr(doc, field, str(request.data.get(field) or "").strip()[:max_len])
+            if "license_number" in request.data or "pmdc_number" in request.data:
+                doc.license_number = str(
+                    request.data.get("license_number") or request.data.get("pmdc_number") or ""
+                ).strip()[:80]
+            if "bio" in request.data:
+                doc.bio = str(request.data.get("bio") or "").strip()
+            if "consultation_fee" in request.data:
+                try:
+                    doc.consultation_fee = max(Decimal("0.00"), Decimal(str(request.data["consultation_fee"] or "0.00")))
+                except Exception:
+                    pass
+            if "follow_up_fee" in request.data:
+                try:
+                    doc.follow_up_fee = max(Decimal("0.00"), Decimal(str(request.data["follow_up_fee"] or "0.00")))
+                except Exception:
+                    pass
+            if "slot_duration_minutes" in request.data:
+                try:
+                    doc.slot_duration_minutes = max(5, min(120, int(request.data["slot_duration_minutes"] or 15)))
+                except (TypeError, ValueError):
+                    pass
+            if "availability_status" in request.data:
+                av = str(request.data["availability_status"] or "").strip().lower()
+                if av in {c[0] for c in HospitalDoctor.AVAILABILITY_CHOICES}:
+                    doc.availability_status = av
+            if "is_active" in request.data:
+                doc.is_active = bool(request.data["is_active"])
+            doc.save()
+
+            if "schedules" in request.data:
+                _sync_doctor_schedules(company, doc, request.data.get("schedules"))
+
+        doc = HospitalDoctor.objects.select_related("department").prefetch_related("schedules").get(pk=doc.pk)
+        return Response(_serialize_doctor(doc), status=200)
+
+    def delete(self, request, pk: int):
+        company = self._get_company(request)
+        if not company:
+            return Response({"detail": "No company associated with this account."}, status=403)
+        doc = get_object_or_404(HospitalDoctor, pk=pk, company=company)
+        doc.delete()
+        return Response(status=204)
+
+
+class HospitalDoctorStatusAPIView(HospitalBaseAPIView):
+    """POST /api/operations/hospital/doctors/<pk>/status/"""
+
+    def post(self, request, pk: int):
+        company = self._get_company(request)
+        if not company:
+            return Response({"detail": "No company associated with this account."}, status=403)
+        doc = get_object_or_404(HospitalDoctor, pk=pk, company=company)
+        next_status = str(request.data.get("availability_status") or request.data.get("status") or "").strip().lower()
+        valid = {c[0] for c in HospitalDoctor.AVAILABILITY_CHOICES}
+        if next_status not in valid:
+            return Response(
+                {"availability_status": f"Invalid status. Choose from: {', '.join(sorted(valid))}."},
+                status=400,
+            )
+        doc.availability_status = next_status
+        doc.save(update_fields=["availability_status", "updated_at"])
+        doc = HospitalDoctor.objects.select_related("department").prefetch_related("schedules").get(pk=doc.pk)
+        return Response(_serialize_doctor(doc), status=200)

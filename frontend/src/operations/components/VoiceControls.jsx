@@ -51,18 +51,39 @@ export default function VoiceControls({ onTranscript, speechText, disabled = fal
     setListening(false);
   };
 
+  const cleanTextForSpeech = (text) => {
+    if (!text) return "";
+    return String(text)
+      .replace(/\[([^\]]+)\]\([^)]+\)/g, "$1")
+      .replace(/#+\s*/g, "")
+      .replace(/[*_~`]+/g, "")
+      .replace(/[•\u2022]/g, " ")
+      .replace(/^\s*[-*]\s+/gm, "")
+      .replace(/!{2,}/g, "!")
+      .replace(/\b([01]?\d|2[0-3]):([0-5]\d)(?!\s*(?:am|pm)\b)/gi, (_, hStr, mStr) => {
+        const h = parseInt(hStr, 10);
+        const ampm = h >= 12 ? "PM" : "AM";
+        const h12 = h % 12 || 12;
+        return `${h12}:${mStr} ${ampm}`;
+      })
+      .replace(/\bRs\.?\s*(\d+)/gi, "$1 rupees")
+      .replace(/\s+/g, " ")
+      .trim();
+  };
+
   const speak = () => {
     setVoiceError("");
     if (!canSpeak) {
       setVoiceError("Voice playback is not supported in this browser.");
       return;
     }
-    if (!speechText?.trim()) {
+    const cleaned = cleanTextForSpeech(speechText);
+    if (!cleaned) {
       setVoiceError("Send a message first; the assistant response will be available to play here.");
       return;
     }
     window.speechSynthesis.cancel();
-    const utterance = new SpeechSynthesisUtterance(speechText);
+    const utterance = new SpeechSynthesisUtterance(cleaned);
     utterance.lang = navigator.language || "en-US";
     window.speechSynthesis.speak(utterance);
   };

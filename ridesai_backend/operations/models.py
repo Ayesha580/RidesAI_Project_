@@ -1647,3 +1647,105 @@ class HospitalAdmission(models.Model):
 
     def __str__(self):
         return f"{self.patient_name} ({self.status})"
+
+
+# ============================================================================
+# Hospital Module 2: Doctors Directory & Weekly OPD Schedules (Multi-Tenant)
+# ============================================================================
+
+class HospitalDoctor(models.Model):
+    STATUS_AVAILABLE = "available"
+    STATUS_IN_OPD = "in_opd"
+    STATUS_ON_LEAVE = "on_leave"
+    STATUS_OFF_DUTY = "off_duty"
+
+    AVAILABILITY_CHOICES = [
+        (STATUS_AVAILABLE, "Available"),
+        (STATUS_IN_OPD, "In OPD"),
+        (STATUS_ON_LEAVE, "On Leave"),
+        (STATUS_OFF_DUTY, "Off Duty"),
+    ]
+
+    company = models.ForeignKey(
+        "companies.Company",
+        on_delete=models.CASCADE,
+        related_name="hospital_doctors",
+        db_index=True,
+    )
+    department = models.ForeignKey(
+        HospitalDepartment,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="hospital_doctors",
+    )
+    full_name = models.CharField(max_length=160)
+    specialization = models.CharField(max_length=160, blank=True, default="")
+    qualification = models.CharField(max_length=200, blank=True, default="")
+    license_number = models.CharField(max_length=80, blank=True, default="")
+    phone = models.CharField(max_length=40, blank=True, default="")
+    email = models.EmailField(blank=True, default="")
+    consultation_fee = models.DecimalField(max_digits=10, decimal_places=2, default=Decimal("0.00"))
+    follow_up_fee = models.DecimalField(max_digits=10, decimal_places=2, default=Decimal("0.00"))
+    slot_duration_minutes = models.PositiveIntegerField(default=15)
+    availability_status = models.CharField(
+        max_length=20,
+        choices=AVAILABILITY_CHOICES,
+        default=STATUS_AVAILABLE,
+        db_index=True,
+    )
+    room_number = models.CharField(max_length=60, blank=True, default="")
+    bio = models.TextField(blank=True, default="")
+    is_active = models.BooleanField(default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ("full_name",)
+        indexes = [
+            models.Index(fields=["company", "availability_status"], name="op_hdoc_comp_st_idx"),
+        ]
+
+    def __str__(self):
+        return f"{self.full_name} ({self.specialization or 'General'})"
+
+
+class HospitalDoctorSchedule(models.Model):
+    DAY_CHOICES = [
+        ("mon", "Monday"),
+        ("tue", "Tuesday"),
+        ("wed", "Wednesday"),
+        ("thu", "Thursday"),
+        ("fri", "Friday"),
+        ("sat", "Saturday"),
+        ("sun", "Sunday"),
+    ]
+
+    company = models.ForeignKey(
+        "companies.Company",
+        on_delete=models.CASCADE,
+        related_name="hospital_doctor_schedules",
+        db_index=True,
+    )
+    doctor = models.ForeignKey(
+        HospitalDoctor,
+        on_delete=models.CASCADE,
+        related_name="schedules",
+    )
+    day_of_week = models.CharField(max_length=8, choices=DAY_CHOICES)
+    start_time = models.TimeField()
+    end_time = models.TimeField()
+    max_patients = models.PositiveIntegerField(default=20)
+    is_active = models.BooleanField(default=True)
+
+    class Meta:
+        ordering = ("day_of_week", "start_time")
+        constraints = [
+            models.UniqueConstraint(
+                fields=["doctor", "day_of_week", "start_time"],
+                name="unique_hospital_doctor_schedule_slot",
+            )
+        ]
+
+    def __str__(self):
+        return f"{self.doctor.full_name} — {self.day_of_week} {self.start_time}-{self.end_time}"

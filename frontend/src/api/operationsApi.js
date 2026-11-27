@@ -98,6 +98,12 @@ export const hospitalApi = {
   deleteBed: (bedId) => api.delete(`/operations/hospital/beds/${bedId}/`),
   admitBed: (bedId, data) => api.post(`/operations/hospital/beds/${bedId}/admit/`, data),
   dischargeBed: (bedId, data = {}) => api.post(`/operations/hospital/beds/${bedId}/discharge/`, data),
+  listDoctors: (params = {}) => api.get("/operations/hospital/doctors/", { params }),
+  createDoctor: (data) => api.post("/operations/hospital/doctors/", data),
+  updateDoctor: (id, data) => api.patch(`/operations/hospital/doctors/${id}/`, data),
+  deleteDoctor: (id) => api.delete(`/operations/hospital/doctors/${id}/`),
+  updateDoctorStatus: (id, availability_status) =>
+    api.post(`/operations/hospital/doctors/${id}/status/`, { availability_status }),
   getLabBookings: (params = {}) => api.get("/operations/hospital/lab-bookings/", { params }),
   createLabBooking: (data) => api.post("/operations/hospital/lab-bookings/", data),
   updateLabBookingStatus: (id, data) => api.patch(`/operations/hospital/lab-bookings/${id}/status/`, data),

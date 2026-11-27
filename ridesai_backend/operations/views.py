@@ -639,72 +639,96 @@ class OrderAssignAPIView(BusinessAPIView):
         return Response(_order_payload(order))
 
 
-class AgentSettingsAPIView(BusinessAPIView):
+class AgentSettingsAPIView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def _ensure_public_id(self, company):
+        if not getattr(company, "agent_public_id", None):
+            import uuid as _uuid
+            company.agent_public_id = _uuid.uuid4()
+            company.save(update_fields=["agent_public_id"])
+        return str(company.agent_public_id)
+
     def get(self, request):
         if request.user.role != User.ROLE_OWNER:
             return Response({"detail": "Only the business owner can configure the AI Agent."}, status=403)
+        company = getattr(request.user, "company", None)
+        if not company:
+            return Response({"detail": "No company associated with this account."}, status=400)
+        pub_id = self._ensure_public_id(company)
         return Response({
-            "enabled": self.company.agent_enabled,
-            "is_ai_paused": self.company.is_ai_paused,
-            "enable_upselling": self.company.enable_upselling,
-            "allowed_actions": self.company.agent_allowed_actions,
-            "greeting": self.company.agent_greeting,
-            "tone": self.company.agent_tone,
-            "support_phone": self.company.agent_support_phone,
-            "support_email": self.company.agent_support_email,
-            "public_id": str(self.company.agent_public_id),
+            "enabled": company.agent_enabled,
+            "is_ai_paused": company.is_ai_paused,
+            "enable_upselling": company.enable_upselling,
+            "allowed_actions": company.agent_allowed_actions,
+            "greeting": company.agent_greeting,
+            "tone": company.agent_tone,
+            "support_phone": company.agent_support_phone,
+            "support_email": company.agent_support_email,
+            "public_id": pub_id,
+            "public_url": f"/agent/{pub_id}",
         })
 
     def patch(self, request):
         if request.user.role != User.ROLE_OWNER:
             return Response({"detail": "Only the business owner can configure the AI Agent."}, status=403)
+        company = getattr(request.user, "company", None)
+        if not company:
+            return Response({"detail": "No company associated with this account."}, status=400)
         allowed = {"create_order", "update_order_status", "lookup_order", "handover"}
-        actions = list(dict.fromkeys(request.data.get("allowed_actions", self.company.agent_allowed_actions) or []))
+        actions = list(dict.fromkeys(request.data.get("allowed_actions", company.agent_allowed_actions) or []))
         if set(actions) - allowed:
             return Response({"allowed_actions": "Contains unsupported actions."}, status=400)
-        self.company.agent_enabled = bool(request.data.get("enabled", self.company.agent_enabled))
+        company.agent_enabled = bool(request.data.get("enabled", company.agent_enabled))
         if "is_ai_paused" in request.data:
-            self.company.is_ai_paused = bool(request.data["is_ai_paused"])
+            company.is_ai_paused = bool(request.data["is_ai_paused"])
         if "enable_upselling" in request.data:
-            self.company.enable_upselling = bool(request.data["enable_upselling"])
-        self.company.agent_allowed_actions = actions
-        self.company.agent_greeting = str(request.data.get("greeting", self.company.agent_greeting))[:2000]
-        tone = request.data.get("tone", self.company.agent_tone)
+            company.enable_upselling = bool(request.data["enable_upselling"])
+        company.agent_allowed_actions = actions
+        company.agent_greeting = str(request.data.get("greeting", company.agent_greeting))[:2000]
+        tone = request.data.get("tone", company.agent_tone)
         if tone not in ("friendly", "professional", "concise"):
             return Response({"tone": "Choose friendly, professional or concise."}, status=400)
-        self.company.agent_tone = tone
-        self.company.agent_support_phone = str(request.data.get("support_phone", self.company.agent_support_phone))[:30]
-        self.company.agent_support_email = str(request.data.get("support_email", self.company.agent_support_email))[:254]
-        self.company.save(update_fields=[
+        company.agent_tone = tone
+        company.agent_support_phone = str(request.data.get("support_phone", company.agent_support_phone))[:30]
+        company.agent_support_email = str(request.data.get("support_email", company.agent_support_email))[:254]
+        company.save(update_fields=[
             "agent_enabled", "is_ai_paused", "enable_upselling", "agent_allowed_actions", "agent_greeting",
             "agent_tone", "agent_support_phone", "agent_support_email"
         ])
+        pub_id = self._ensure_public_id(company)
         return Response({
-            "enabled": self.company.agent_enabled,
-            "is_ai_paused": self.company.is_ai_paused,
-            "enable_upselling": self.company.enable_upselling,
+            "enabled": company.agent_enabled,
+            "is_ai_paused": company.is_ai_paused,
+            "enable_upselling": company.enable_upselling,
             "allowed_actions": actions,
-            "greeting": self.company.agent_greeting,
-            "tone": self.company.agent_tone,
-            "support_phone": self.company.agent_support_phone,
-            "support_email": self.company.agent_support_email,
-            "public_id": str(self.company.agent_public_id),
+            "greeting": company.agent_greeting,
+            "tone": company.agent_tone,
+            "support_phone": company.agent_support_phone,
+            "support_email": company.agent_support_email,
+            "public_id": pub_id,
+            "public_url": f"/agent/{pub_id}",
         })
 
 
-class AgentTogglePauseAPIView(BusinessAPIView):
+class AgentTogglePauseAPIView(APIView):
+    permission_classes = [IsAuthenticated]
+
     def post(self, request):
         if request.user.role != User.ROLE_OWNER:
             return Response({"detail": "Only the business owner can pause or resume the AI Agent."}, status=403)
+        company = getattr(request.user, "company", None)
+        if not company:
+            return Response({"detail": "No company associated with this account."}, status=400)
         if "is_ai_paused" in request.data:
-            self.company.is_ai_paused = bool(request.data["is_ai_paused"])
+            company.is_ai_paused = bool(request.data["is_ai_paused"])
         else:
-            self.company.is_ai_paused = not self.company.is_ai_paused
-        self.company.save(update_fields=["is_ai_paused"])
+            company.is_ai_paused = not company.is_ai_paused
+        company.save(update_fields=["is_ai_paused"])
         return Response({
             "success": True,
-            "is_ai_paused": self.company.is_ai_paused,
-            "message": "AI Voice Agent paused." if self.company.is_ai_paused else "AI Voice Agent resumed."
+            "is_ai_paused": company.is_ai_paused,
+            "message": "AI Voice Agent paused." if company.is_ai_paused else "AI Voice Agent resumed."
         })
 
 

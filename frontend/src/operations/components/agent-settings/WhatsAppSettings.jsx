@@ -298,7 +298,8 @@ export default function WhatsAppSettings() {
   const { user } = useAuth();
 
   // Channel & Agent info states
-  const [publicId, setPublicId] = useState("");
+  const [publicId, setPublicId] = useState(() => user?.agent_public_id || "");
+  const [linkLoaded, setLinkLoaded] = useState(Boolean(user?.agent_public_id));
   const [isAiPaused, setIsAiPaused] = useState(false);
   const [togglingPause, setTogglingPause] = useState(false);
   const [isLinkCopied, setIsLinkCopied] = useState(false);
@@ -356,12 +357,20 @@ export default function WhatsAppSettings() {
           }
           if (agentRes.status === "fulfilled" && agentRes.value?.data) {
             const aData = agentRes.value.data;
-            setPublicId(aData.public_id || "");
+            const resolvedPublicId = aData.public_id || aData.agent_public_id || user?.agent_public_id || "";
+            setPublicId(resolvedPublicId);
             setIsAiPaused(Boolean(aData.is_ai_paused));
+          } else if (user?.agent_public_id) {
+            setPublicId(user.agent_public_id);
           }
+          setLinkLoaded(true);
         }
       } catch (err) {
         if (isMounted) {
+          if (user?.agent_public_id) {
+            setPublicId(user.agent_public_id);
+          }
+          setLinkLoaded(true);
           setVerifyToken("ridesai_wa_" + (user?.company_id || "secret_token"));
         }
       }
@@ -629,7 +638,10 @@ export default function WhatsAppSettings() {
                 <input
                   type="text"
                   readOnly
-                  value={publicLink || "Loading customer link..."}
+                  value={
+                    publicLink ||
+                    (linkLoaded ? "Unable to load customer link — please refresh." : "Loading customer link...")
+                  }
                   className="wa-input wa-input-readonly w-full px-3.5 py-2.5 bg-gray-50 border border-gray-200 rounded-xl text-sm font-mono text-gray-600 select-all"
                 />
                 <button

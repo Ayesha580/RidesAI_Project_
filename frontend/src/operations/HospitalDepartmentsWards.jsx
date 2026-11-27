@@ -81,6 +81,7 @@ export default function HospitalDepartmentsWards({ staff = false }) {
   const [dischargeNotes, setDischargeNotes] = useState("");
 
   const [showWardModal, setShowWardModal] = useState(false);
+  const [editingWard, setEditingWard] = useState(null);
   const [wardForm, setWardForm] = useState({
     name: "",
     department_id: "",
@@ -92,6 +93,7 @@ export default function HospitalDepartmentsWards({ staff = false }) {
   });
 
   const [showDeptModal, setShowDeptModal] = useState(false);
+  const [editingDept, setEditingDept] = useState(null);
   const [deptForm, setDeptForm] = useState({
     name: "",
     code: "",
@@ -177,19 +179,32 @@ export default function HospitalDepartmentsWards({ staff = false }) {
     }
   };
 
-  const handleCreateWard = async (e) => {
+  const handleSaveWard = async (e) => {
     e.preventDefault();
     if (!wardForm.name.trim()) return;
     setSaving(true);
     setError("");
     try {
-      await hospitalApi.createWard({
-        ...wardForm,
+      const payload = {
+        name: wardForm.name.trim(),
         department_id: wardForm.department_id ? Number(wardForm.department_id) : null,
+        ward_type: wardForm.ward_type,
         daily_bed_rate: Number(wardForm.daily_bed_rate || 0),
-        auto_create_beds: Number(wardForm.auto_create_beds || 0),
-      });
+        floor: wardForm.floor.trim(),
+      };
+      if (editingWard) {
+        await hospitalApi.updateWard(editingWard.id, payload);
+        showToast(`Updated ward "${payload.name}".`);
+      } else {
+        await hospitalApi.createWard({
+          ...payload,
+          auto_create_beds: Number(wardForm.auto_create_beds || 0),
+          bed_prefix: wardForm.bed_prefix.trim(),
+        });
+        showToast("Ward and beds created.");
+      }
       setShowWardModal(false);
+      setEditingWard(null);
       setWardForm({
         name: "",
         department_id: "",
@@ -199,28 +214,33 @@ export default function HospitalDepartmentsWards({ staff = false }) {
         auto_create_beds: "6",
         bed_prefix: "GW",
       });
-      showToast("Ward and beds created.");
       await loadAll(true);
     } catch (err) {
-      setError(err?.response?.data?.detail || "Could not create ward.");
+      setError(err?.response?.data?.detail || "Could not save ward.");
     } finally {
       setSaving(false);
     }
   };
 
-  const handleCreateDept = async (e) => {
+  const handleSaveDept = async (e) => {
     e.preventDefault();
     if (!deptForm.name.trim()) return;
     setSaving(true);
     setError("");
     try {
-      await hospitalApi.createDepartment(deptForm);
+      if (editingDept) {
+        await hospitalApi.updateDepartment(editingDept.id, deptForm);
+        showToast(`Updated department "${deptForm.name}".`);
+      } else {
+        await hospitalApi.createDepartment(deptForm);
+        showToast("Department created.");
+      }
       setShowDeptModal(false);
+      setEditingDept(null);
       setDeptForm({ name: "", code: "", head_of_department: "", floor_location: "", phone_ext: "", is_24_7: false });
-      showToast("Department created.");
       await loadAll(true);
     } catch (err) {
-      setError(err?.response?.data?.detail || err?.response?.data?.name || "Could not create department.");
+      setError(err?.response?.data?.detail || err?.response?.data?.name || "Could not save department.");
     } finally {
       setSaving(false);
     }
@@ -299,7 +319,11 @@ export default function HospitalDepartmentsWards({ staff = false }) {
           <div style={{ display: "flex", gap: 8 }}>
             <button
               type="button"
-              onClick={() => setShowDeptModal(true)}
+              onClick={() => {
+                setEditingDept(null);
+                setDeptForm({ name: "", code: "", head_of_department: "", floor_location: "", phone_ext: "", is_24_7: false });
+                setShowDeptModal(true);
+              }}
               style={{
                 border: "1px solid #cbd5e1",
                 background: "#fff",
@@ -315,7 +339,11 @@ export default function HospitalDepartmentsWards({ staff = false }) {
             </button>
             <button
               type="button"
-              onClick={() => setShowWardModal(true)}
+              onClick={() => {
+                setEditingWard(null);
+                setWardForm({ name: "", department_id: "", ward_type: "general", daily_bed_rate: "5000", floor: "", auto_create_beds: "6", bed_prefix: "BED" });
+                setShowWardModal(true);
+              }}
               style={{
                 border: "none",
                 background: ACCENT,
@@ -447,6 +475,34 @@ export default function HospitalDepartmentsWards({ staff = false }) {
                         {ward.available_beds} available / {ward.occupied_beds} occupied / {ward.cleaning_beds} cleaning
                       </div>
                     </div>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setEditingWard(ward);
+                        setWardForm({
+                          name: ward.name || "",
+                          department_id: ward.department_id ? String(ward.department_id) : "",
+                          ward_type: ward.ward_type || "general",
+                          daily_bed_rate: String(ward.daily_bed_rate ?? ""),
+                          floor: ward.floor || "",
+                          auto_create_beds: "0",
+                          bed_prefix: "BED",
+                        });
+                        setShowWardModal(true);
+                      }}
+                      style={{
+                        border: "1px solid #cbd5e1",
+                        background: "#fff",
+                        color: "#334155",
+                        borderRadius: 8,
+                        padding: "5px 11px",
+                        fontSize: 12,
+                        fontWeight: 700,
+                        cursor: "pointer",
+                      }}
+                    >
+                      Edit Ward
+                    </button>
                   </div>
 
                   <div
@@ -618,13 +674,33 @@ export default function HospitalDepartmentsWards({ staff = false }) {
                           {d.phone_ext || d.phone_extension ? ` • Ext ${d.phone_ext || d.phone_extension}` : ""}
                         </td>
                         <td style={{ padding: "12px 16px", textAlign: "right" }}>
-                          <button
-                            type="button"
-                            onClick={() => handleDeleteDept(d)}
-                            style={{ border: "1px solid #fecaca", background: "#fff", color: "#b91c1c", borderRadius: 7, padding: "4px 9px", fontSize: 11.5, fontWeight: 700, cursor: "pointer" }}
-                          >
-                            Delete
-                          </button>
+                          <div style={{ display: "inline-flex", gap: 6 }}>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setEditingDept(d);
+                                setDeptForm({
+                                  name: d.name || "",
+                                  code: d.code || "",
+                                  head_of_department: d.head_of_department || d.head_doctor_name || "",
+                                  floor_location: d.floor_location || d.floor_or_location || "",
+                                  phone_ext: d.phone_ext || d.phone_extension || "",
+                                  is_24_7: Boolean(d.is_24_7),
+                                });
+                                setShowDeptModal(true);
+                              }}
+                              style={{ border: "1px solid #cbd5e1", background: "#fff", color: "#0f172a", borderRadius: 7, padding: "4px 9px", fontSize: 11.5, fontWeight: 700, cursor: "pointer" }}
+                            >
+                              Edit
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleDeleteDept(d)}
+                              style={{ border: "1px solid #fecaca", background: "#fff", color: "#b91c1c", borderRadius: 7, padding: "4px 9px", fontSize: 11.5, fontWeight: 700, cursor: "pointer" }}
+                            >
+                              Delete
+                            </button>
+                          </div>
                         </td>
                       </tr>
                     ))}
@@ -747,18 +823,23 @@ export default function HospitalDepartmentsWards({ staff = false }) {
         </div>
       )}
 
-      {/* CREATE WARD MODAL */}
+      {/* CREATE / EDIT WARD MODAL */}
       {showWardModal && (
         <div
-          onClick={() => setShowWardModal(false)}
+          onClick={() => {
+            setShowWardModal(false);
+            setEditingWard(null);
+          }}
           style={{ position: "fixed", inset: 0, background: "rgba(15,23,42,0.48)", zIndex: 1000, display: "grid", placeItems: "center", padding: 16 }}
         >
           <form
             onClick={(e) => e.stopPropagation()}
-            onSubmit={handleCreateWard}
+            onSubmit={handleSaveWard}
             style={{ width: "100%", maxWidth: 460, background: "#fff", borderRadius: 16, padding: 22, display: "grid", gap: 12 }}
           >
-            <h3 style={{ margin: 0, fontSize: 17, fontWeight: 800 }}>🛏️ Create Ward &amp; Auto-Generate Beds</h3>
+            <h3 style={{ margin: 0, fontSize: 17, fontWeight: 800 }}>
+              {editingWard ? "🛏️ Edit Ward" : "🛏️ Create Ward & Auto-Generate Beds"}
+            </h3>
             <input
               required
               placeholder="Ward Name * (e.g., ICU Ward A, General Ward)"
@@ -804,47 +885,61 @@ export default function HospitalDepartmentsWards({ staff = false }) {
                 style={{ padding: "9px 12px", borderRadius: 9, border: "1px solid #cbd5e1", fontSize: 13 }}
               />
             </div>
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
-              <input
-                type="number"
-                min="0"
-                max="100"
-                placeholder="Auto-create beds (e.g. 10)"
-                value={wardForm.auto_create_beds}
-                onChange={(e) => setWardForm({ ...wardForm, auto_create_beds: e.target.value })}
-                style={{ padding: "9px 12px", borderRadius: 9, border: "1px solid #cbd5e1", fontSize: 13 }}
-              />
-              <input
-                placeholder="Bed Prefix (e.g. ICU, GW)"
-                value={wardForm.bed_prefix}
-                onChange={(e) => setWardForm({ ...wardForm, bed_prefix: e.target.value })}
-                style={{ padding: "9px 12px", borderRadius: 9, border: "1px solid #cbd5e1", fontSize: 13 }}
-              />
-            </div>
+            {!editingWard && (
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+                <input
+                  type="number"
+                  min="0"
+                  max="100"
+                  placeholder="Auto-create beds (e.g. 10)"
+                  value={wardForm.auto_create_beds}
+                  onChange={(e) => setWardForm({ ...wardForm, auto_create_beds: e.target.value })}
+                  style={{ padding: "9px 12px", borderRadius: 9, border: "1px solid #cbd5e1", fontSize: 13 }}
+                />
+                <input
+                  placeholder="Bed Prefix (e.g. ICU, GW)"
+                  value={wardForm.bed_prefix}
+                  onChange={(e) => setWardForm({ ...wardForm, bed_prefix: e.target.value })}
+                  style={{ padding: "9px 12px", borderRadius: 9, border: "1px solid #cbd5e1", fontSize: 13 }}
+                />
+              </div>
+            )}
             <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
-              <button type="button" onClick={() => setShowWardModal(false)} style={{ border: "1px solid #cbd5e1", background: "#fff", borderRadius: 9, padding: "8px 14px", fontSize: 12.5, fontWeight: 700, cursor: "pointer" }}>
+              <button
+                type="button"
+                onClick={() => {
+                  setShowWardModal(false);
+                  setEditingWard(null);
+                }}
+                style={{ border: "1px solid #cbd5e1", background: "#fff", borderRadius: 9, padding: "8px 14px", fontSize: 12.5, fontWeight: 700, cursor: "pointer" }}
+              >
                 Cancel
               </button>
               <button type="submit" disabled={saving} style={{ border: "none", background: ACCENT, color: "#240729", borderRadius: 9, padding: "8px 16px", fontSize: 13, fontWeight: 800, cursor: "pointer" }}>
-                {saving ? "Creating..." : "Create Ward"}
+                {saving ? "Saving..." : editingWard ? "Save Changes" : "Create Ward"}
               </button>
             </div>
           </form>
         </div>
       )}
 
-      {/* CREATE DEPARTMENT MODAL */}
+      {/* CREATE / EDIT DEPARTMENT MODAL */}
       {showDeptModal && (
         <div
-          onClick={() => setShowDeptModal(false)}
+          onClick={() => {
+            setShowDeptModal(false);
+            setEditingDept(null);
+          }}
           style={{ position: "fixed", inset: 0, background: "rgba(15,23,42,0.48)", zIndex: 1000, display: "grid", placeItems: "center", padding: 16 }}
         >
           <form
             onClick={(e) => e.stopPropagation()}
-            onSubmit={handleCreateDept}
+            onSubmit={handleSaveDept}
             style={{ width: "100%", maxWidth: 440, background: "#fff", borderRadius: 16, padding: 22, display: "grid", gap: 12 }}
           >
-            <h3 style={{ margin: 0, fontSize: 17, fontWeight: 800 }}>🏥 Add Hospital Department</h3>
+            <h3 style={{ margin: 0, fontSize: 17, fontWeight: 800 }}>
+              {editingDept ? "🏥 Edit Department" : "🏥 Add Hospital Department"}
+            </h3>
             <div style={{ display: "grid", gridTemplateColumns: "2fr 1fr", gap: 10 }}>
               <input
                 required
@@ -889,11 +984,18 @@ export default function HospitalDepartmentsWards({ staff = false }) {
               24/7 Emergency / Critical Care Department
             </label>
             <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
-              <button type="button" onClick={() => setShowDeptModal(false)} style={{ border: "1px solid #cbd5e1", background: "#fff", borderRadius: 9, padding: "8px 14px", fontSize: 12.5, fontWeight: 700, cursor: "pointer" }}>
+              <button
+                type="button"
+                onClick={() => {
+                  setShowDeptModal(false);
+                  setEditingDept(null);
+                }}
+                style={{ border: "1px solid #cbd5e1", background: "#fff", borderRadius: 9, padding: "8px 14px", fontSize: 12.5, fontWeight: 700, cursor: "pointer" }}
+              >
                 Cancel
               </button>
               <button type="submit" disabled={saving} style={{ border: "none", background: ACCENT, color: "#240729", borderRadius: 9, padding: "8px 16px", fontSize: 13, fontWeight: 800, cursor: "pointer" }}>
-                {saving ? "Saving..." : "Save Department"}
+                {saving ? "Saving..." : editingDept ? "Save Changes" : "Save Department"}
               </button>
             </div>
           </form>
