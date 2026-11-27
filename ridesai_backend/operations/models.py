@@ -1850,3 +1850,119 @@ class HospitalAppointment(models.Model):
 
     def __str__(self):
         return f"Token #{self.token_number} — {self.patient_name} ({self.doctor.full_name}, {self.appointment_date})"
+
+
+# ============================================================================
+# Hospital Module 4: Patients Directory (EMR) & Digital Prescriptions
+# ============================================================================
+
+class HospitalPatient(models.Model):
+    GENDER_MALE = "male"
+    GENDER_FEMALE = "female"
+    GENDER_OTHER = "other"
+    GENDER_CHOICES = [
+        (GENDER_MALE, "Male"),
+        (GENDER_FEMALE, "Female"),
+        (GENDER_OTHER, "Other"),
+    ]
+
+    BLOOD_UNKNOWN = "unknown"
+    BLOOD_GROUP_CHOICES = [
+        ("A+", "A+"),
+        ("A-", "A-"),
+        ("B+", "B+"),
+        ("B-", "B-"),
+        ("AB+", "AB+"),
+        ("AB-", "AB-"),
+        ("O+", "O+"),
+        ("O-", "O-"),
+        (BLOOD_UNKNOWN, "Unknown"),
+    ]
+
+    company = models.ForeignKey(
+        "companies.Company",
+        on_delete=models.CASCADE,
+        related_name="hospital_patients",
+        db_index=True,
+    )
+    mrn = models.CharField(max_length=40)
+    full_name = models.CharField(max_length=255)
+    phone = models.CharField(max_length=50)
+    cnic = models.CharField(max_length=30, blank=True, default="")
+    age = models.PositiveIntegerField(null=True, blank=True)
+    gender = models.CharField(max_length=20, choices=GENDER_CHOICES, blank=True, default="")
+    blood_group = models.CharField(max_length=12, choices=BLOOD_GROUP_CHOICES, default=BLOOD_UNKNOWN)
+    allergies = models.TextField(blank=True, default="")
+    chronic_conditions = models.TextField(blank=True, default="")
+    emergency_contact_name = models.CharField(max_length=255, blank=True, default="")
+    emergency_contact_phone = models.CharField(max_length=50, blank=True, default="")
+    address = models.TextField(blank=True, default="")
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ("-created_at", "full_name")
+        indexes = [
+            models.Index(fields=["company", "phone"], name="op_hpat_comp_phone_idx"),
+        ]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["company", "mrn"],
+                name="unique_hospital_patient_mrn_per_company",
+            )
+        ]
+
+    def __str__(self):
+        return f"{self.mrn} — {self.full_name}"
+
+
+class HospitalPrescription(models.Model):
+    company = models.ForeignKey(
+        "companies.Company",
+        on_delete=models.CASCADE,
+        related_name="hospital_prescriptions",
+        db_index=True,
+    )
+    rx_number = models.CharField(max_length=40)
+    patient = models.ForeignKey(
+        HospitalPatient,
+        on_delete=models.CASCADE,
+        related_name="prescriptions",
+    )
+    doctor = models.ForeignKey(
+        HospitalDoctor,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="prescriptions",
+    )
+    appointment = models.ForeignKey(
+        HospitalAppointment,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="prescriptions",
+    )
+    vitals = models.JSONField(default=dict, blank=True)
+    diagnosis = models.TextField()
+    medications = models.JSONField(default=list, blank=True)
+    lab_tests_advised = models.TextField(blank=True, default="")
+    clinical_notes = models.TextField(blank=True, default="")
+    follow_up_date = models.DateField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ("-created_at", "-id")
+        indexes = [
+            models.Index(fields=["company", "-created_at"], name="op_hrx_comp_created_idx"),
+        ]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["company", "rx_number"],
+                name="unique_hospital_rx_per_company",
+            )
+        ]
+
+    def __str__(self):
+        return f"{self.rx_number} — {self.patient.full_name}"

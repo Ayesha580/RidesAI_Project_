@@ -17,6 +17,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from accounts.models import User
+from companies.models import Company
 from operations.models import (
     AgentConversation,
     Appointment,
@@ -27,6 +28,8 @@ from operations.models import (
     HospitalDepartment,
     HospitalDoctor,
     HospitalDoctorSchedule,
+    HospitalPatient,
+    HospitalPrescription,
     HospitalWard,
     LabTestBooking,
     Patient,
@@ -486,6 +489,10 @@ class HospitalDashboardAPIView(HospitalBaseAPIView):
         doctors_available_today = docs_qs.filter(
             availability_status__in=[HospitalDoctor.STATUS_AVAILABLE, HospitalDoctor.STATUS_IN_OPD]
         ).count()
+        total_patients = HospitalPatient.objects.filter(company=company).count()
+        today_prescriptions = HospitalPrescription.objects.filter(
+            company=company, created_at__date=today
+        ).count()
 
         return Response({
             "kpis": {
@@ -507,6 +514,8 @@ class HospitalDashboardAPIView(HospitalBaseAPIView):
                 "active_ai_conversations": active_ai_conversations,
                 "total_doctors": total_doctors,
                 "doctors_available_today": doctors_available_today,
+                "total_patients": total_patients,
+                "today_prescriptions": today_prescriptions,
             },
             "ward_occupancy_summary": ward_summary,
             "recent_admissions": recent_admissions,
@@ -1228,6 +1237,8 @@ class HospitalOpdQueueAPIView(HospitalBaseAPIView):
             "queues": queues,
         }, status=200)
 
+
+
     def delete(self, request, pk: int):
         company = self._get_company(request)
         if not company:
@@ -1694,3 +1705,457 @@ class HospitalOpdQueueAPIView(HospitalBaseAPIView):
             "summary": summary,
             "queues": queues,
         }, status=200)
+
+
+# ============================================================================
+# Hospital Module 4: Patients Directory (EMR) & Digital Prescriptions APIs
+# ============================================================================
+
+def _next_sequential_code(company, model_cls, field_name: str, prefix: str) -> str:
+    """
+    Atomically generates the next sequential code (e.g., MRN-0001, RX-0001) scoped to `company`.
+    Must be called inside transaction.atomic() after locking the parent Company row.
+    """
+    existing = model_cls.objects.filter(company=company).values_list(field_name, flat=True)
+    max_num = 0
+    for code in existing:
+        if not code:
+            continue
+        raw = str(code).strip()
+        if raw.upper().startswith(prefix.upper()):
+            tail = raw[len(prefix):].lstrip("-")
+            if tail.isdigit():
+                max_num = max(max_num, int(tail))
+    return f"{prefix}-{max_num + 1:04d}"
+
+
+def _normalize_phone_digits(phone: str) -> str:
+    digits = "".join(ch for ch in str(phone or "") if ch.isdigit())
+    return digits[-10:] if len(digits) >= 10 else digits
+
+
+def _serialize_hospital_patient(p: HospitalPatient, prescriptions_count: int = None) -> dict:
+    return {
+        "id": p.id,
+        "mrn": p.mrn,
+        "full_name": p.full_name,
+        "phone": p.phone,
+        "cnic": p.cnic or "",
+        "age": p.age,
+        "gender": p.gender or "",
+        "gender_label": p.get_gender_display() if p.gender else "",
+        "blood_group": p.blood_group or HospitalPatient.BLOOD_UNKNOWN,
+        "allergies": p.allergies or "",
+        "chronic_conditions": p.chronic_conditions or "",
+        "emergency_contact_name": p.emergency_contact_name or "",
+        "emergency_contact_phone": p.emergency_contact_phone or "",
+        "address": p.address or "",
+        "prescriptions_count": prescriptions_count if prescriptions_count is not None else p.prescriptions.count(),
+        "created_at": p.created_at.isoformat() if p.created_at else None,
+        "updated_at": p.updated_at.isoformat() if p.updated_at else None,
+    }
+
+
+def _serialize_hospital_prescription(rx: HospitalPrescription, include_print_meta: bool = False) -> dict:
+    meds = rx.medications if isinstance(rx.medications, list) else []
+    vitals = rx.vitals if isinstance(rx.vitals, dict) else {}
+    data = {
+        "id": rx.id,
+        "rx_number": rx.rx_number,
+        "patient_id": rx.patient_id,
+        "patient_name": rx.patient.full_name if rx.patient else "",
+        "patient_mrn": rx.patient.mrn if rx.patient else "",
+        "patient_phone": rx.patient.phone if rx.patient else "",
+        "patient_age": rx.patient.age if rx.patient else None,
+        "patient_gender": rx.patient.gender if rx.patient else "",
+        "patient_blood_group": rx.patient.blood_group if rx.patient else "",
+        "patient_allergies": rx.patient.allergies if rx.patient else "",
+        "doctor_id": rx.doctor_id,
+        "doctor_name": rx.doctor.full_name if rx.doctor else "",
+        "doctor_qualification": rx.doctor.qualification if rx.doctor else "",
+        "doctor_specialization": rx.doctor.specialization if rx.doctor else "",
+        "doctor_department": (
+            rx.doctor.department.name if (rx.doctor and rx.doctor.department) else ""
+        ),
+        "doctor_room": rx.doctor.room_number if rx.doctor else "",
+        "appointment_id": rx.appointment_id,
+        "vitals": vitals,
+        "diagnosis": rx.diagnosis or "",
+        "medications": meds,
+        "medications_count": len(meds),
+        "lab_tests_advised": rx.lab_tests_advised or "",
+        "clinical_notes": rx.clinical_notes or "",
+        "follow_up_date": rx.follow_up_date.isoformat() if rx.follow_up_date else None,
+        "created_at": rx.created_at.isoformat() if rx.created_at else None,
+        "updated_at": rx.updated_at.isoformat() if rx.updated_at else None,
+    }
+    if include_print_meta and rx.company:
+        data["hospital"] = {
+            "name": rx.company.name,
+            "phone": getattr(rx.company, "agent_support_phone", "") or getattr(rx.company, "phone", "") or "",
+            "address": getattr(rx.company, "address", "") or "",
+        }
+    return data
+
+
+def _sanitize_medications(raw_meds):
+    if raw_meds is None:
+        return []
+    if not isinstance(raw_meds, list):
+        raise ValueError("medications must be a list of medicine objects.")
+    cleaned = []
+    for m in raw_meds:
+        if not isinstance(m, dict):
+            continue
+        name = str(m.get("name") or "").strip()
+        if not name:
+            continue
+        cleaned.append({
+            "name": name[:200],
+            "dosage": str(m.get("dosage") or "").strip()[:80],
+            "frequency": str(m.get("frequency") or "").strip()[:80],
+            "duration": str(m.get("duration") or "").strip()[:80],
+            "instructions": str(m.get("instructions") or "").strip()[:200],
+        })
+    return cleaned
+
+
+class HospitalPatientsAPIView(HospitalBaseAPIView):
+    """GET / POST /api/operations/hospital/patients/"""
+
+    def get(self, request):
+        company = self._get_company(request)
+        if not company:
+            return Response({"detail": "No company associated with this account."}, status=403)
+
+        qs = HospitalPatient.objects.filter(company=company)
+        search = str(request.query_params.get("search") or "").strip()
+        if search:
+            qs = qs.filter(
+                Q(mrn__icontains=search)
+                | Q(full_name__icontains=search)
+                | Q(phone__icontains=search)
+                | Q(cnic__icontains=search)
+            )
+
+        blood_group = str(request.query_params.get("blood_group") or "").strip()
+        if blood_group and blood_group.lower() != "all":
+            qs = qs.filter(blood_group=blood_group)
+
+        patients = list(qs.order_by("-created_at", "full_name")[:300])
+        all_patients_qs = HospitalPatient.objects.filter(company=company)
+        total_patients = all_patients_qs.count()
+        with_allergies = all_patients_qs.exclude(allergies="").count()
+        blood_counts = {}
+        for bg in all_patients_qs.values_list("blood_group", flat=True):
+            key = bg or "unknown"
+            blood_counts[key] = blood_counts.get(key, 0) + 1
+
+        return Response({
+            "count": len(patients),
+            "summary": {
+                "total_patients": total_patients,
+                "with_allergies": with_allergies,
+                "blood_groups": blood_counts,
+            },
+            "results": [_serialize_hospital_patient(p) for p in patients],
+        }, status=200)
+
+    def post(self, request):
+        company = self._get_company(request)
+        if not company:
+            return Response({"detail": "No company associated with this account."}, status=403)
+
+        full_name = str(request.data.get("full_name") or "").strip()
+        if not full_name:
+            return Response({"full_name": "Patient full name is required."}, status=400)
+        phone = str(request.data.get("phone") or "").strip()
+        if not phone:
+            return Response({"phone": "Patient phone number is required."}, status=400)
+
+        age_val = request.data.get("age")
+        age = None
+        if age_val not in (None, ""):
+            try:
+                age = max(0, min(150, int(age_val)))
+            except (TypeError, ValueError):
+                age = None
+
+        gender = str(request.data.get("gender") or "").strip().lower()
+        if gender not in {c[0] for c in HospitalPatient.GENDER_CHOICES}:
+            gender = ""
+
+        bg = str(request.data.get("blood_group") or HospitalPatient.BLOOD_UNKNOWN).strip()
+        if bg not in {c[0] for c in HospitalPatient.BLOOD_GROUP_CHOICES}:
+            bg = HospitalPatient.BLOOD_UNKNOWN
+
+        with transaction.atomic():
+            Company.objects.select_for_update().get(pk=company.pk)
+            mrn = _next_sequential_code(company, HospitalPatient, "mrn", "MRN")
+            patient = HospitalPatient.objects.create(
+                company=company,
+                mrn=mrn,
+                full_name=full_name[:255],
+                phone=phone[:50],
+                cnic=str(request.data.get("cnic") or "").strip()[:30],
+                age=age,
+                gender=gender,
+                blood_group=bg,
+                allergies=str(request.data.get("allergies") or "").strip(),
+                chronic_conditions=str(request.data.get("chronic_conditions") or "").strip(),
+                emergency_contact_name=str(request.data.get("emergency_contact_name") or "").strip()[:255],
+                emergency_contact_phone=str(request.data.get("emergency_contact_phone") or "").strip()[:50],
+                address=str(request.data.get("address") or "").strip(),
+            )
+        return Response(_serialize_hospital_patient(patient, prescriptions_count=0), status=201)
+
+
+class HospitalPatientDetailAPIView(HospitalBaseAPIView):
+    """GET / PATCH / DELETE /api/operations/hospital/patients/<pk>/"""
+
+    def get(self, request, pk: int):
+        company = self._get_company(request)
+        if not company:
+            return Response({"detail": "No company associated with this account."}, status=403)
+
+        patient = get_object_or_404(HospitalPatient, pk=pk, company=company)
+        rx_qs = (
+            HospitalPrescription.objects.filter(company=company, patient=patient)
+            .select_related("doctor", "doctor__department", "patient")
+            .order_by("-created_at")[:50]
+        )
+
+        # Match OPD appointments & IPD admissions by phone (exact or last 10 digits)
+        norm_phone = _normalize_phone_digits(patient.phone)
+        appt_qs = HospitalAppointment.objects.filter(company=company).select_related(
+            "doctor", "doctor__department", "department"
+        )
+        adm_qs = HospitalAdmission.objects.filter(company=company).select_related("bed__ward")
+
+        if norm_phone:
+            appts = [
+                a for a in appt_qs.order_by("-appointment_date", "-token_number")[:100]
+                if _normalize_phone_digits(a.patient_phone) == norm_phone or a.patient_phone == patient.phone
+            ][:30]
+            adms = [
+                a for a in adm_qs.order_by("-admitted_at")[:100]
+                if _normalize_phone_digits(a.patient_phone) == norm_phone or a.patient_phone == patient.phone
+            ][:20]
+        else:
+            appts = list(appt_qs.filter(patient_phone=patient.phone).order_by("-appointment_date")[:30])
+            adms = list(adm_qs.filter(patient_phone=patient.phone).order_by("-admitted_at")[:20])
+
+        payload = _serialize_hospital_patient(patient, prescriptions_count=rx_qs.count())
+        payload["prescriptions"] = [_serialize_hospital_prescription(rx, include_print_meta=True) for rx in rx_qs]
+        payload["appointments"] = [_serialize_appointment(a) for a in appts]
+        payload["admissions"] = [_serialize_admission(a) for a in adms]
+        return Response(payload, status=200)
+
+    def patch(self, request, pk: int):
+        company = self._get_company(request)
+        if not company:
+            return Response({"detail": "No company associated with this account."}, status=403)
+
+        patient = get_object_or_404(HospitalPatient, pk=pk, company=company)
+
+        if "full_name" in request.data and str(request.data["full_name"]).strip():
+            patient.full_name = str(request.data["full_name"]).strip()[:255]
+        if "phone" in request.data and str(request.data["phone"]).strip():
+            patient.phone = str(request.data["phone"]).strip()[:50]
+        if "cnic" in request.data:
+            patient.cnic = str(request.data["cnic"] or "").strip()[:30]
+        if "age" in request.data:
+            raw_age = request.data["age"]
+            if raw_age in (None, ""):
+                patient.age = None
+            else:
+                try:
+                    patient.age = max(0, min(150, int(raw_age)))
+                except (TypeError, ValueError):
+                    pass
+        if "gender" in request.data:
+            g = str(request.data["gender"] or "").strip().lower()
+            patient.gender = g if g in {c[0] for c in HospitalPatient.GENDER_CHOICES} else ""
+        if "blood_group" in request.data:
+            bg = str(request.data["blood_group"] or "").strip()
+            if bg in {c[0] for c in HospitalPatient.BLOOD_GROUP_CHOICES}:
+                patient.blood_group = bg
+        if "allergies" in request.data:
+            patient.allergies = str(request.data["allergies"] or "").strip()
+        if "chronic_conditions" in request.data:
+            patient.chronic_conditions = str(request.data["chronic_conditions"] or "").strip()
+        if "emergency_contact_name" in request.data:
+            patient.emergency_contact_name = str(request.data["emergency_contact_name"] or "").strip()[:255]
+        if "emergency_contact_phone" in request.data:
+            patient.emergency_contact_phone = str(request.data["emergency_contact_phone"] or "").strip()[:50]
+        if "address" in request.data:
+            patient.address = str(request.data["address"] or "").strip()
+
+        patient.save()
+        return Response(_serialize_hospital_patient(patient), status=200)
+
+    def delete(self, request, pk: int):
+        company = self._get_company(request)
+        if not company:
+            return Response({"detail": "No company associated with this account."}, status=403)
+        patient = get_object_or_404(HospitalPatient, pk=pk, company=company)
+        patient.delete()
+        return Response(status=204)
+
+
+class HospitalPrescriptionsAPIView(HospitalBaseAPIView):
+    """GET / POST /api/operations/hospital/prescriptions/"""
+
+    def get(self, request):
+        company = self._get_company(request)
+        if not company:
+            return Response({"detail": "No company associated with this account."}, status=403)
+
+        qs = HospitalPrescription.objects.filter(company=company).select_related(
+            "patient", "doctor", "doctor__department", "company"
+        )
+
+        patient_id = request.query_params.get("patient_id")
+        if patient_id:
+            qs = qs.filter(patient_id=patient_id)
+
+        doctor_id = request.query_params.get("doctor_id")
+        if doctor_id:
+            qs = qs.filter(doctor_id=doctor_id)
+
+        search = str(request.query_params.get("search") or "").strip()
+        if search:
+            qs = qs.filter(
+                Q(rx_number__icontains=search)
+                | Q(patient__full_name__icontains=search)
+                | Q(patient__mrn__icontains=search)
+                | Q(diagnosis__icontains=search)
+            )
+
+        items = list(qs.order_by("-created_at", "-id")[:200])
+        return Response({
+            "count": len(items),
+            "results": [_serialize_hospital_prescription(rx, include_print_meta=True) for rx in items],
+        }, status=200)
+
+    def post(self, request):
+        company = self._get_company(request)
+        if not company:
+            return Response({"detail": "No company associated with this account."}, status=403)
+
+        patient_id = request.data.get("patient_id") or request.data.get("patient")
+        if not patient_id:
+            return Response({"patient_id": "Please select a patient."}, status=400)
+        patient = HospitalPatient.objects.filter(company=company, pk=patient_id).first()
+        if not patient:
+            return Response({"patient_id": "Patient not found in your hospital."}, status=404)
+
+        diagnosis = str(request.data.get("diagnosis") or "").strip()
+        if not diagnosis:
+            return Response({"diagnosis": "Diagnosis is required."}, status=400)
+
+        doctor = None
+        doctor_id = request.data.get("doctor_id") or request.data.get("doctor")
+        if doctor_id:
+            doctor = HospitalDoctor.objects.filter(company=company, pk=doctor_id).first()
+
+        appointment = None
+        appt_id = request.data.get("appointment_id") or request.data.get("appointment")
+        if appt_id:
+            appointment = HospitalAppointment.objects.filter(company=company, pk=appt_id).first()
+
+        raw_vitals = request.data.get("vitals") or {}
+        if not isinstance(raw_vitals, dict):
+            raw_vitals = {}
+        vitals = {
+            k: str(v).strip()[:40]
+            for k, v in raw_vitals.items()
+            if k in ("bp", "pulse", "temp", "weight", "spo2", "height") and str(v or "").strip()
+        }
+
+        try:
+            medications = _sanitize_medications(request.data.get("medications"))
+        except ValueError as ve:
+            return Response({"medications": str(ve)}, status=400)
+
+        follow_up_date = _parse_date(request.data.get("follow_up_date"))
+
+        with transaction.atomic():
+            Company.objects.select_for_update().get(pk=company.pk)
+            rx_number = _next_sequential_code(company, HospitalPrescription, "rx_number", "RX")
+            rx = HospitalPrescription.objects.create(
+                company=company,
+                rx_number=rx_number,
+                patient=patient,
+                doctor=doctor,
+                appointment=appointment,
+                vitals=vitals,
+                diagnosis=diagnosis,
+                medications=medications,
+                lab_tests_advised=str(request.data.get("lab_tests_advised") or "").strip(),
+                clinical_notes=str(request.data.get("clinical_notes") or "").strip(),
+                follow_up_date=follow_up_date,
+            )
+
+        rx = HospitalPrescription.objects.select_related(
+            "patient", "doctor", "doctor__department", "company"
+        ).get(pk=rx.pk)
+        return Response(_serialize_hospital_prescription(rx, include_print_meta=True), status=201)
+
+
+class HospitalPrescriptionDetailAPIView(HospitalBaseAPIView):
+    """GET / PATCH / DELETE /api/operations/hospital/prescriptions/<pk>/"""
+
+    def get(self, request, pk: int):
+        company = self._get_company(request)
+        if not company:
+            return Response({"detail": "No company associated with this account."}, status=403)
+        rx = get_object_or_404(
+            HospitalPrescription.objects.select_related("patient", "doctor", "doctor__department", "company"),
+            pk=pk,
+            company=company,
+        )
+        return Response(_serialize_hospital_prescription(rx, include_print_meta=True), status=200)
+
+    def patch(self, request, pk: int):
+        company = self._get_company(request)
+        if not company:
+            return Response({"detail": "No company associated with this account."}, status=403)
+        rx = get_object_or_404(HospitalPrescription, pk=pk, company=company)
+
+        if "diagnosis" in request.data and str(request.data["diagnosis"]).strip():
+            rx.diagnosis = str(request.data["diagnosis"]).strip()
+        if "vitals" in request.data and isinstance(request.data["vitals"], dict):
+            rx.vitals = {
+                k: str(v).strip()[:40]
+                for k, v in request.data["vitals"].items()
+                if k in ("bp", "pulse", "temp", "weight", "spo2", "height") and str(v or "").strip()
+            }
+        if "medications" in request.data:
+            try:
+                rx.medications = _sanitize_medications(request.data.get("medications"))
+            except ValueError as ve:
+                return Response({"medications": str(ve)}, status=400)
+        if "lab_tests_advised" in request.data:
+            rx.lab_tests_advised = str(request.data["lab_tests_advised"] or "").strip()
+        if "clinical_notes" in request.data:
+            rx.clinical_notes = str(request.data["clinical_notes"] or "").strip()
+        if "follow_up_date" in request.data:
+            rx.follow_up_date = _parse_date(request.data.get("follow_up_date"))
+        if "doctor_id" in request.data:
+            d_id = request.data.get("doctor_id")
+            rx.doctor = HospitalDoctor.objects.filter(company=company, pk=d_id).first() if d_id else None
+
+        rx.save()
+        rx = HospitalPrescription.objects.select_related(
+            "patient", "doctor", "doctor__department", "company"
+        ).get(pk=rx.pk)
+        return Response(_serialize_hospital_prescription(rx, include_print_meta=True), status=200)
+
+    def delete(self, request, pk: int):
+        company = self._get_company(request)
+        if not company:
+            return Response({"detail": "No company associated with this account."}, status=403)
+        rx = get_object_or_404(HospitalPrescription, pk=pk, company=company)
+        rx.delete()
+        return Response(status=204)
