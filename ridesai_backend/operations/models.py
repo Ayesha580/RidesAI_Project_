@@ -680,11 +680,13 @@ class HospitalDepartment(models.Model):
         db_index=True,
     )
     name = models.CharField(max_length=150)
+    code = models.CharField(max_length=24, blank=True, default="")
     ward_type = models.CharField(max_length=24, choices=WARD_TYPE_CHOICES, default=WARD_OPD)
     floor_or_location = models.CharField(max_length=120, blank=True, default="")
     total_beds = models.PositiveIntegerField(default=0)
     available_beds = models.PositiveIntegerField(default=0)
     is_24_7 = models.BooleanField(default=False)
+    head_of_department = models.CharField(max_length=160, blank=True, default="")
     head_doctor = models.ForeignKey(
         Doctor,
         null=True,
@@ -1488,3 +1490,160 @@ class RestaurantExpense(models.Model):
 
 
 
+
+
+# ============================================================================
+# Hospital Module 1: Wards, Live Bed Map & IPD Admissions (Multi-Tenant)
+# ============================================================================
+
+class HospitalWard(models.Model):
+    WARD_ICU = "icu"
+    WARD_GENERAL = "general"
+    WARD_PRIVATE = "private"
+    WARD_SEMI_PRIVATE = "semi_private"
+    WARD_EMERGENCY = "emergency"
+    WARD_MATERNITY = "maternity"
+    WARD_PEDIATRIC = "pediatric"
+
+    WARD_TYPE_CHOICES = [
+        (WARD_ICU, "ICU"),
+        (WARD_GENERAL, "General Ward"),
+        (WARD_PRIVATE, "Private Suites"),
+        (WARD_SEMI_PRIVATE, "Semi-Private"),
+        (WARD_EMERGENCY, "Emergency"),
+        (WARD_MATERNITY, "Maternity"),
+        (WARD_PEDIATRIC, "Pediatric"),
+    ]
+
+    company = models.ForeignKey(
+        "companies.Company",
+        on_delete=models.CASCADE,
+        related_name="hospital_wards",
+        db_index=True,
+    )
+    department = models.ForeignKey(
+        HospitalDepartment,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="wards",
+    )
+    name = models.CharField(max_length=160)
+    ward_type = models.CharField(max_length=24, choices=WARD_TYPE_CHOICES, default=WARD_GENERAL)
+    daily_bed_rate = models.DecimalField(max_digits=10, decimal_places=2, default=Decimal("0.00"))
+    floor = models.CharField(max_length=80, blank=True, default="")
+    is_active = models.BooleanField(default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ("name",)
+        indexes = [
+            models.Index(fields=["company", "is_active"], name="op_hward_comp_act_idx"),
+        ]
+
+    def __str__(self):
+        return f"{self.name} ({self.get_ward_type_display()})"
+
+
+class HospitalBed(models.Model):
+    STATUS_AVAILABLE = "available"
+    STATUS_OCCUPIED = "occupied"
+    STATUS_CLEANING = "cleaning"
+    STATUS_MAINTENANCE = "maintenance"
+
+    STATUS_CHOICES = [
+        (STATUS_AVAILABLE, "Available"),
+        (STATUS_OCCUPIED, "Occupied"),
+        (STATUS_CLEANING, "Cleaning"),
+        (STATUS_MAINTENANCE, "Maintenance"),
+    ]
+
+    company = models.ForeignKey(
+        "companies.Company",
+        on_delete=models.CASCADE,
+        related_name="hospital_beds",
+        db_index=True,
+    )
+    ward = models.ForeignKey(
+        HospitalWard,
+        on_delete=models.CASCADE,
+        related_name="beds",
+    )
+    bed_number = models.CharField(max_length=40)
+    status = models.CharField(
+        max_length=20,
+        choices=STATUS_CHOICES,
+        default=STATUS_AVAILABLE,
+        db_index=True,
+    )
+    current_patient_name = models.CharField(max_length=160, blank=True, default="")
+    current_patient_phone = models.CharField(max_length=40, blank=True, default="")
+    admitted_at = models.DateTimeField(null=True, blank=True)
+    attending_doctor = models.CharField(max_length=160, blank=True, default="")
+    admission_notes = models.TextField(blank=True, default="")
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ("bed_number",)
+        constraints = [
+            models.UniqueConstraint(
+                fields=["company", "ward", "bed_number"],
+                name="unique_hospital_bed_per_ward",
+            )
+        ]
+        indexes = [
+            models.Index(fields=["company", "status"], name="op_hbed_comp_st_idx"),
+        ]
+
+    def __str__(self):
+        return f"{self.ward.name} - {self.bed_number} ({self.status})"
+
+
+class HospitalAdmission(models.Model):
+    STATUS_ADMITTED = "admitted"
+    STATUS_DISCHARGED = "discharged"
+
+    STATUS_CHOICES = [
+        (STATUS_ADMITTED, "Admitted"),
+        (STATUS_DISCHARGED, "Discharged"),
+    ]
+
+    company = models.ForeignKey(
+        "companies.Company",
+        on_delete=models.CASCADE,
+        related_name="hospital_admissions",
+        db_index=True,
+    )
+    bed = models.ForeignKey(
+        HospitalBed,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="admissions",
+    )
+    patient_name = models.CharField(max_length=160)
+    patient_phone = models.CharField(max_length=40, blank=True, default="")
+    attending_doctor = models.CharField(max_length=160, blank=True, default="")
+    diagnosis = models.TextField(blank=True, default="")
+    admitted_at = models.DateTimeField(auto_now_add=True)
+    discharged_at = models.DateTimeField(null=True, blank=True)
+    status = models.CharField(
+        max_length=20,
+        choices=STATUS_CHOICES,
+        default=STATUS_ADMITTED,
+        db_index=True,
+    )
+    daily_rate = models.DecimalField(max_digits=10, decimal_places=2, default=Decimal("0.00"))
+    total_bed_charges = models.DecimalField(max_digits=12, decimal_places=2, default=Decimal("0.00"))
+    notes = models.TextField(blank=True, default="")
+
+    class Meta:
+        ordering = ("-admitted_at",)
+        indexes = [
+            models.Index(fields=["company", "status", "-admitted_at"], name="op_hadm_comp_st_idx"),
+        ]
+
+    def __str__(self):
+        return f"{self.patient_name} ({self.status})"

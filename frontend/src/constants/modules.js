@@ -31,7 +31,7 @@ const ICONS = {
   departments: "🏥",
   appointments: "🩺",
   doctors: "👨‍⚕️",
-  patients: "🧑‍⚕️",
+  patients: "👤",
   lab_tests: "🧪",
 
   // ---- legacy ----
