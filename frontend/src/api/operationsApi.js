@@ -104,6 +104,16 @@ export const hospitalApi = {
   deleteDoctor: (id) => api.delete(`/operations/hospital/doctors/${id}/`),
   updateDoctorStatus: (id, availability_status) =>
     api.post(`/operations/hospital/doctors/${id}/status/`, { availability_status }),
+  listAppointments: (params = {}) => api.get("/operations/hospital/appointments/", { params }),
+  createAppointment: (data) => api.post("/operations/hospital/appointments/", data),
+  updateAppointment: (id, data) => api.patch(`/operations/hospital/appointments/${id}/`, data),
+  deleteAppointment: (id) => api.delete(`/operations/hospital/appointments/${id}/`),
+  updateAppointmentStatus: (id, data) =>
+    api.post(
+      `/operations/hospital/appointments/${id}/status/`,
+      typeof data === "string" ? { status: data } : data
+    ),
+  getOpdQueue: (params = {}) => api.get("/operations/hospital/opd-queue/", { params }),
   getLabBookings: (params = {}) => api.get("/operations/hospital/lab-bookings/", { params }),
   createLabBooking: (data) => api.post("/operations/hospital/lab-bookings/", data),
   updateLabBookingStatus: (id, data) => api.patch(`/operations/hospital/lab-bookings/${id}/status/`, data),

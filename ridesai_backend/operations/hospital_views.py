@@ -9,7 +9,7 @@ from decimal import Decimal
 import math
 
 from django.db import IntegrityError, transaction
-from django.db.models import Q, Sum
+from django.db.models import Max, Q, Sum
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
 from rest_framework.permissions import IsAuthenticated
@@ -22,6 +22,7 @@ from operations.models import (
     Appointment,
     Doctor,
     HospitalAdmission,
+    HospitalAppointment,
     HospitalBed,
     HospitalDepartment,
     HospitalDoctor,
@@ -41,6 +42,20 @@ def _parse_date(val):
         return datetime.strptime(str(val).strip()[:10], "%Y-%m-%d").date()
     except ValueError:
         return None
+
+
+def _parse_time(val):
+    if not val:
+        return None
+    if hasattr(val, "hour") and hasattr(val, "minute"):
+        return val
+    raw = str(val).strip()
+    for fmt in ("%H:%M:%S", "%H:%M", "%I:%M %p", "%I:%M%p"):
+        try:
+            return datetime.strptime(raw, fmt).time()
+        except ValueError:
+            continue
+    return None
 
 
 def _serialize_department(dept: HospitalDepartment) -> dict:
@@ -441,11 +456,24 @@ class HospitalDashboardAPIView(HospitalBaseAPIView):
         ).count()
         recent_admissions = [_serialize_admission(a) for a in admissions_qs.order_by("-admitted_at")[:8]]
 
-        appointments_today = 0
-        try:
-            appointments_today = Appointment.objects.filter(company=company, appointment_date=today).count()
-        except Exception:
-            appointments_today = 0
+        hosp_appts_today = HospitalAppointment.objects.filter(company=company, appointment_date=today)
+        today_appointments = hosp_appts_today.exclude(status=HospitalAppointment.STATUS_CANCELLED).count()
+        waiting_in_opd = hosp_appts_today.filter(
+            status__in=[HospitalAppointment.STATUS_BOOKED, HospitalAppointment.STATUS_CHECKED_IN]
+        ).count()
+        today_opd_revenue = float(
+            hosp_appts_today.filter(payment_status=HospitalAppointment.PAYMENT_PAID)
+            .exclude(status=HospitalAppointment.STATUS_CANCELLED)
+            .aggregate(total=Sum("consultation_fee"))
+            .get("total")
+            or Decimal("0.00")
+        )
+        appointments_today = today_appointments
+        if appointments_today == 0:
+            try:
+                appointments_today = Appointment.objects.filter(company=company, appointment_date=today).count()
+            except Exception:
+                appointments_today = 0
 
         active_ai_conversations = 0
         try:
@@ -473,6 +501,9 @@ class HospitalDashboardAPIView(HospitalBaseAPIView):
                 "admissions_today": admissions_today,
                 "discharges_today": discharges_today,
                 "appointments_today": appointments_today,
+                "today_appointments": today_appointments,
+                "waiting_in_opd": waiting_in_opd,
+                "today_opd_revenue": today_opd_revenue,
                 "active_ai_conversations": active_ai_conversations,
                 "total_doctors": total_doctors,
                 "doctors_available_today": doctors_available_today,
@@ -1062,6 +1093,141 @@ class HospitalDoctorDetailAPIView(HospitalBaseAPIView):
         doc = HospitalDoctor.objects.select_related("department").prefetch_related("schedules").get(pk=doc.pk)
         return Response(_serialize_doctor(doc), status=200)
 
+
+    def delete(self, request, pk: int):
+        company = self._get_company(request)
+        if not company:
+            return Response({"detail": "No company associated with this account."}, status=403)
+        appt = get_object_or_404(HospitalAppointment, pk=pk, company=company)
+        appt.delete()
+        return Response(status=204)
+
+
+class HospitalAppointmentStatusAPIView(HospitalBaseAPIView):
+    """POST /api/operations/hospital/appointments/<pk>/status/"""
+
+    def post(self, request, pk: int):
+        company = self._get_company(request)
+        if not company:
+            return Response({"detail": "No company associated with this account."}, status=403)
+
+        appt = get_object_or_404(HospitalAppointment, pk=pk, company=company)
+        next_status = str(request.data.get("status") or "").strip().lower()
+        valid_statuses = {c[0] for c in HospitalAppointment.STATUS_CHOICES}
+
+        update_fields = ["updated_at"]
+        if next_status:
+            if next_status not in valid_statuses:
+                return Response(
+                    {"status": f"Invalid status. Choose from: {', '.join(sorted(valid_statuses))}."},
+                    status=400,
+                )
+            appt.status = next_status
+            update_fields.append("status")
+
+        if "payment_status" in request.data:
+            ps = str(request.data.get("payment_status") or "").strip().lower()
+            if ps in {c[0] for c in HospitalAppointment.PAYMENT_STATUS_CHOICES}:
+                appt.payment_status = ps
+                update_fields.append("payment_status")
+
+        if len(update_fields) == 1:
+            return Response({"detail": "Provide status or payment_status to update."}, status=400)
+
+        appt.save(update_fields=update_fields)
+        appt = HospitalAppointment.objects.select_related("doctor", "doctor__department", "department").get(pk=appt.pk)
+        return Response(_serialize_appointment(appt), status=200)
+
+
+class HospitalOpdQueueAPIView(HospitalBaseAPIView):
+    """GET /api/operations/hospital/opd-queue/"""
+
+    def get(self, request):
+        company = self._get_company(request)
+        if not company:
+            return Response({"detail": "No company associated with this account."}, status=403)
+
+        target_date = _parse_date(request.query_params.get("date")) or timezone.localdate()
+        doctor_id = request.query_params.get("doctor_id")
+
+        doctors_qs = HospitalDoctor.objects.filter(company=company, is_active=True).select_related("department").order_by("full_name")
+        if doctor_id:
+            doctors_qs = doctors_qs.filter(pk=doctor_id)
+        doctors = list(doctors_qs)
+
+        appts_qs = (
+            HospitalAppointment.objects.filter(company=company, appointment_date=target_date)
+            .select_related("doctor", "doctor__department", "department")
+            .order_by("token_number", "id")
+        )
+        if doctor_id:
+            appts_qs = appts_qs.filter(doctor_id=doctor_id)
+        all_appts = list(appts_qs)
+
+        by_doc = {}
+        for a in all_appts:
+            by_doc.setdefault(a.doctor_id, []).append(a)
+
+        queues = []
+        for doc in doctors:
+            doc_appts = by_doc.get(doc.id, [])
+            in_consult = [a for a in doc_appts if a.status == HospitalAppointment.STATUS_IN_CONSULTATION]
+            checked_in = [a for a in doc_appts if a.status == HospitalAppointment.STATUS_CHECKED_IN]
+            booked = [a for a in doc_appts if a.status == HospitalAppointment.STATUS_BOOKED]
+            completed = [a for a in doc_appts if a.status == HospitalAppointment.STATUS_COMPLETED]
+
+            current_appt = in_consult[0] if in_consult else None
+            next_appt = checked_in[0] if checked_in else (booked[0] if booked else None)
+
+            queues.append({
+                "doctor_id": doc.id,
+                "doctor_name": doc.full_name,
+                "specialization": doc.specialization or "",
+                "department_name": doc.department.name if doc.department else "",
+                "room_number": doc.room_number or "",
+                "availability_status": doc.availability_status,
+                "consultation_fee": float(doc.consultation_fee or 0),
+                "current_token": current_appt.token_number if current_appt else None,
+                "current_appointment": _serialize_appointment(current_appt) if current_appt else None,
+                "next_token": next_appt.token_number if next_appt else None,
+                "next_appointment": _serialize_appointment(next_appt) if next_appt else None,
+                "waiting_count": len(checked_in) + len(booked),
+                "completed_count": len(completed),
+                "total_count": len([a for a in doc_appts if a.status != HospitalAppointment.STATUS_CANCELLED]),
+                "queue": [_serialize_appointment(a) for a in doc_appts],
+            })
+
+        # Sort doctors with active appointments first
+        queues.sort(key=lambda q: (-q["total_count"], q["doctor_name"]))
+
+        active_non_cancelled = [a for a in all_appts if a.status != HospitalAppointment.STATUS_CANCELLED]
+        summary = {
+            "today_appointments": len(active_non_cancelled),
+            "waiting_in_opd": sum(
+                1 for a in all_appts
+                if a.status in (HospitalAppointment.STATUS_BOOKED, HospitalAppointment.STATUS_CHECKED_IN)
+            ),
+            "in_consultation": sum(
+                1 for a in all_appts if a.status == HospitalAppointment.STATUS_IN_CONSULTATION
+            ),
+            "completed": sum(
+                1 for a in all_appts if a.status == HospitalAppointment.STATUS_COMPLETED
+            ),
+            "today_opd_revenue": float(
+                sum(
+                    (a.consultation_fee or Decimal("0.00"))
+                    for a in active_non_cancelled
+                    if a.payment_status == HospitalAppointment.PAYMENT_PAID
+                )
+            ),
+        }
+
+        return Response({
+            "date": target_date.isoformat(),
+            "summary": summary,
+            "queues": queues,
+        }, status=200)
+
     def delete(self, request, pk: int):
         company = self._get_company(request)
         if not company:
@@ -1090,3 +1256,441 @@ class HospitalDoctorStatusAPIView(HospitalBaseAPIView):
         doc.save(update_fields=["availability_status", "updated_at"])
         doc = HospitalDoctor.objects.select_related("department").prefetch_related("schedules").get(pk=doc.pk)
         return Response(_serialize_doctor(doc), status=200)
+
+
+# ============================================================================
+# Hospital Module 3: OPD Appointments & Live Token Queue APIs
+# ============================================================================
+
+def _serialize_appointment(appt: HospitalAppointment) -> dict:
+    return {
+        "id": appt.id,
+        "doctor_id": appt.doctor_id,
+        "doctor_name": appt.doctor.full_name if appt.doctor else "",
+        "doctor_specialization": appt.doctor.specialization if appt.doctor else "",
+        "doctor_room": appt.doctor.room_number if appt.doctor else "",
+        "department_id": appt.department_id,
+        "department_name": appt.department.name if appt.department else (
+            appt.doctor.department.name if (appt.doctor and appt.doctor.department) else ""
+        ),
+        "patient_name": appt.patient_name,
+        "patient_phone": appt.patient_phone,
+        "patient_age": appt.patient_age,
+        "patient_gender": appt.patient_gender or "",
+        "appointment_date": appt.appointment_date.isoformat() if appt.appointment_date else None,
+        "appointment_time": appt.appointment_time.strftime("%H:%M") if appt.appointment_time else "",
+        "token_number": appt.token_number,
+        "token_display": f"#{appt.token_number:02d}",
+        "visit_type": appt.visit_type,
+        "visit_type_label": appt.get_visit_type_display(),
+        "status": appt.status,
+        "status_label": appt.get_status_display(),
+        "consultation_fee": float(appt.consultation_fee or 0),
+        "payment_status": appt.payment_status,
+        "payment_status_label": appt.get_payment_status_display(),
+        "booking_source": appt.booking_source,
+        "booking_source_label": appt.get_booking_source_display(),
+        "chief_complaint": appt.chief_complaint or "",
+        "notes": appt.notes or "",
+        "created_at": appt.created_at.isoformat() if appt.created_at else None,
+        "updated_at": appt.updated_at.isoformat() if appt.updated_at else None,
+    }
+
+
+def create_hospital_appointment_atomic(
+    *,
+    company,
+    doctor: HospitalDoctor,
+    patient_name: str,
+    patient_phone: str,
+    appointment_date,
+    appointment_time=None,
+    department=None,
+    patient_age=None,
+    patient_gender: str = "",
+    visit_type: str = HospitalAppointment.VISIT_NEW,
+    consultation_fee=None,
+    payment_status: str = HospitalAppointment.PAYMENT_UNPAID,
+    booking_source: str = HospitalAppointment.SOURCE_WALK_IN,
+    chief_complaint: str = "",
+    notes: str = "",
+) -> HospitalAppointment:
+    """
+    Atomically assigns the next sequential daily token_number for (company, doctor, appointment_date)
+    by locking the parent HospitalDoctor row inside transaction.atomic().
+    """
+    valid_visit = {c[0] for c in HospitalAppointment.VISIT_TYPE_CHOICES}
+    vt = visit_type if visit_type in valid_visit else HospitalAppointment.VISIT_NEW
+
+    valid_pay = {c[0] for c in HospitalAppointment.PAYMENT_STATUS_CHOICES}
+    ps = payment_status if payment_status in valid_pay else HospitalAppointment.PAYMENT_UNPAID
+
+    valid_src = {c[0] for c in HospitalAppointment.BOOKING_SOURCE_CHOICES}
+    src = booking_source if booking_source in valid_src else HospitalAppointment.SOURCE_WALK_IN
+
+    with transaction.atomic():
+        locked_doc = HospitalDoctor.objects.select_for_update().get(
+            pk=doctor.pk, company=company
+        )
+        max_token = (
+            HospitalAppointment.objects.filter(
+                company=company,
+                doctor=locked_doc,
+                appointment_date=appointment_date,
+            )
+            .aggregate(max_tok=Max("token_number"))
+            .get("max_tok")
+            or 0
+        )
+        next_token = int(max_token) + 1
+
+        resolved_dept = department if department is not None else locked_doc.department
+
+        if consultation_fee is not None and str(consultation_fee).strip() != "":
+            try:
+                resolved_fee = max(Decimal("0.00"), Decimal(str(consultation_fee)))
+            except Exception:
+                resolved_fee = locked_doc.consultation_fee or Decimal("0.00")
+        else:
+            if vt == HospitalAppointment.VISIT_FOLLOW_UP and (locked_doc.follow_up_fee or Decimal("0.00")) > 0:
+                resolved_fee = locked_doc.follow_up_fee
+            else:
+                resolved_fee = locked_doc.consultation_fee or Decimal("0.00")
+
+        appt = HospitalAppointment.objects.create(
+            company=company,
+            doctor=locked_doc,
+            department=resolved_dept,
+            patient_name=str(patient_name).strip()[:255],
+            patient_phone=str(patient_phone or "").strip()[:50],
+            patient_age=patient_age,
+            patient_gender=str(patient_gender or "").strip()[:20],
+            appointment_date=appointment_date,
+            appointment_time=appointment_time,
+            token_number=next_token,
+            visit_type=vt,
+            status=HospitalAppointment.STATUS_BOOKED,
+            consultation_fee=resolved_fee,
+            payment_status=ps,
+            booking_source=src,
+            chief_complaint=str(chief_complaint or "").strip(),
+            notes=str(notes or "").strip(),
+        )
+    return HospitalAppointment.objects.select_related("doctor", "doctor__department", "department").get(pk=appt.pk)
+
+
+class HospitalAppointmentsAPIView(HospitalBaseAPIView):
+    """GET / POST /api/operations/hospital/appointments/"""
+
+    def get(self, request):
+        company = self._get_company(request)
+        if not company:
+            return Response({"detail": "No company associated with this account."}, status=403)
+
+        today = timezone.localdate()
+        qs = HospitalAppointment.objects.filter(company=company).select_related(
+            "doctor", "doctor__department", "department"
+        )
+
+        date_param = request.query_params.get("date")
+        today_only = str(request.query_params.get("today_only") or "").strip().lower() in ("1", "true", "yes")
+        if date_param:
+            parsed_dt = _parse_date(date_param)
+            if parsed_dt:
+                qs = qs.filter(appointment_date=parsed_dt)
+        elif today_only:
+            qs = qs.filter(appointment_date=today)
+
+        doctor_id = request.query_params.get("doctor_id")
+        if doctor_id:
+            qs = qs.filter(doctor_id=doctor_id)
+
+        dept_id = request.query_params.get("department_id")
+        if dept_id:
+            qs = qs.filter(Q(department_id=dept_id) | Q(doctor__department_id=dept_id))
+
+        status_param = str(request.query_params.get("status") or "").strip().lower()
+        if status_param and status_param != "all":
+            qs = qs.filter(status=status_param)
+
+        search = str(request.query_params.get("search") or "").strip()
+        if search:
+            q_filter = (
+                Q(patient_name__icontains=search)
+                | Q(patient_phone__icontains=search)
+                | Q(doctor__full_name__icontains=search)
+                | Q(chief_complaint__icontains=search)
+            )
+            digits = search.lstrip("#").strip()
+            if digits.isdigit():
+                q_filter |= Q(token_number=int(digits))
+            qs = qs.filter(q_filter)
+
+        qs = qs.order_by("-appointment_date", "token_number", "id")
+        items = [_serialize_appointment(a) for a in qs[:300]]
+
+        # Today's KPI summary scoped to company
+        today_qs = HospitalAppointment.objects.filter(company=company, appointment_date=today)
+        summary = {
+            "today_appointments": today_qs.exclude(status=HospitalAppointment.STATUS_CANCELLED).count(),
+            "waiting_in_opd": today_qs.filter(
+                status__in=[HospitalAppointment.STATUS_BOOKED, HospitalAppointment.STATUS_CHECKED_IN]
+            ).count(),
+            "in_consultation": today_qs.filter(status=HospitalAppointment.STATUS_IN_CONSULTATION).count(),
+            "completed": today_qs.filter(status=HospitalAppointment.STATUS_COMPLETED).count(),
+            "today_opd_revenue": float(
+                today_qs.filter(payment_status=HospitalAppointment.PAYMENT_PAID)
+                .exclude(status=HospitalAppointment.STATUS_CANCELLED)
+                .aggregate(total=Sum("consultation_fee"))
+                .get("total")
+                or Decimal("0.00")
+            ),
+        }
+
+        return Response({"count": len(items), "summary": summary, "results": items}, status=200)
+
+    def post(self, request):
+        company = self._get_company(request)
+        if not company:
+            return Response({"detail": "No company associated with this account."}, status=403)
+
+        doctor_id = request.data.get("doctor_id") or request.data.get("doctor")
+        if not doctor_id:
+            return Response({"doctor_id": "Please select a doctor."}, status=400)
+
+        doctor = HospitalDoctor.objects.filter(company=company, pk=doctor_id).first()
+        if not doctor:
+            return Response({"doctor_id": "Doctor not found in your hospital."}, status=404)
+
+        patient_name = str(request.data.get("patient_name") or "").strip()
+        if not patient_name:
+            return Response({"patient_name": "Patient name is required."}, status=400)
+
+        patient_phone = str(request.data.get("patient_phone") or "").strip()
+        appt_date = _parse_date(request.data.get("appointment_date")) or timezone.localdate()
+        appt_time = _parse_time(request.data.get("appointment_time"))
+
+        dept = None
+        dept_id = request.data.get("department_id") or request.data.get("department")
+        if dept_id:
+            dept = HospitalDepartment.objects.filter(company=company, pk=dept_id).first()
+
+        age_val = request.data.get("patient_age")
+        patient_age = None
+        if age_val not in (None, ""):
+            try:
+                patient_age = max(0, min(150, int(age_val)))
+            except (TypeError, ValueError):
+                patient_age = None
+
+        appt = create_hospital_appointment_atomic(
+            company=company,
+            doctor=doctor,
+            patient_name=patient_name,
+            patient_phone=patient_phone,
+            appointment_date=appt_date,
+            appointment_time=appt_time,
+            department=dept,
+            patient_age=patient_age,
+            patient_gender=str(request.data.get("patient_gender") or "").strip(),
+            visit_type=str(request.data.get("visit_type") or HospitalAppointment.VISIT_NEW).strip().lower(),
+            consultation_fee=request.data.get("consultation_fee"),
+            payment_status=str(request.data.get("payment_status") or HospitalAppointment.PAYMENT_UNPAID).strip().lower(),
+            booking_source=str(request.data.get("booking_source") or HospitalAppointment.SOURCE_WALK_IN).strip().lower(),
+            chief_complaint=str(request.data.get("chief_complaint") or "").strip(),
+            notes=str(request.data.get("notes") or "").strip(),
+        )
+        return Response(_serialize_appointment(appt), status=201)
+
+
+class HospitalAppointmentDetailAPIView(HospitalBaseAPIView):
+    """PATCH / DELETE /api/operations/hospital/appointments/<pk>/"""
+
+    def patch(self, request, pk: int):
+        company = self._get_company(request)
+        if not company:
+            return Response({"detail": "No company associated with this account."}, status=403)
+
+        appt = get_object_or_404(HospitalAppointment, pk=pk, company=company)
+
+        if "patient_name" in request.data and str(request.data["patient_name"]).strip():
+            appt.patient_name = str(request.data["patient_name"]).strip()[:255]
+        if "patient_phone" in request.data:
+            appt.patient_phone = str(request.data["patient_phone"] or "").strip()[:50]
+        if "patient_age" in request.data:
+            raw_age = request.data["patient_age"]
+            if raw_age in (None, ""):
+                appt.patient_age = None
+            else:
+                try:
+                    appt.patient_age = max(0, min(150, int(raw_age)))
+                except (TypeError, ValueError):
+                    pass
+        if "patient_gender" in request.data:
+            appt.patient_gender = str(request.data["patient_gender"] or "").strip()[:20]
+        if "appointment_time" in request.data:
+            appt.appointment_time = _parse_time(request.data["appointment_time"])
+        if "visit_type" in request.data:
+            vt = str(request.data["visit_type"] or "").strip().lower()
+            if vt in {c[0] for c in HospitalAppointment.VISIT_TYPE_CHOICES}:
+                appt.visit_type = vt
+        if "status" in request.data:
+            st = str(request.data["status"] or "").strip().lower()
+            if st in {c[0] for c in HospitalAppointment.STATUS_CHOICES}:
+                appt.status = st
+        if "consultation_fee" in request.data and request.data["consultation_fee"] not in (None, ""):
+            try:
+                appt.consultation_fee = max(Decimal("0.00"), Decimal(str(request.data["consultation_fee"])))
+            except Exception:
+                pass
+        if "payment_status" in request.data:
+            ps = str(request.data["payment_status"] or "").strip().lower()
+            if ps in {c[0] for c in HospitalAppointment.PAYMENT_STATUS_CHOICES}:
+                appt.payment_status = ps
+        if "chief_complaint" in request.data:
+            appt.chief_complaint = str(request.data["chief_complaint"] or "").strip()
+        if "notes" in request.data:
+            appt.notes = str(request.data["notes"] or "").strip()
+        if "department_id" in request.data:
+            d_id = request.data.get("department_id")
+            appt.department = (
+                HospitalDepartment.objects.filter(company=company, pk=d_id).first() if d_id else None
+            )
+
+        appt.save()
+        appt = HospitalAppointment.objects.select_related("doctor", "doctor__department", "department").get(pk=appt.pk)
+        return Response(_serialize_appointment(appt), status=200)
+
+    def delete(self, request, pk: int):
+        company = self._get_company(request)
+        if not company:
+            return Response({"detail": "No company associated with this account."}, status=403)
+        appt = get_object_or_404(HospitalAppointment, pk=pk, company=company)
+        appt.delete()
+        return Response(status=204)
+
+
+class HospitalAppointmentStatusAPIView(HospitalBaseAPIView):
+    """POST /api/operations/hospital/appointments/<pk>/status/"""
+
+    def post(self, request, pk: int):
+        company = self._get_company(request)
+        if not company:
+            return Response({"detail": "No company associated with this account."}, status=403)
+
+        appt = get_object_or_404(HospitalAppointment, pk=pk, company=company)
+        next_status = str(request.data.get("status") or "").strip().lower()
+        valid_statuses = {c[0] for c in HospitalAppointment.STATUS_CHOICES}
+
+        update_fields = ["updated_at"]
+        if next_status:
+            if next_status not in valid_statuses:
+                return Response(
+                    {"status": f"Invalid status. Choose from: {', '.join(sorted(valid_statuses))}."},
+                    status=400,
+                )
+            appt.status = next_status
+            update_fields.append("status")
+
+        if "payment_status" in request.data:
+            ps = str(request.data.get("payment_status") or "").strip().lower()
+            if ps in {c[0] for c in HospitalAppointment.PAYMENT_STATUS_CHOICES}:
+                appt.payment_status = ps
+                update_fields.append("payment_status")
+
+        if len(update_fields) == 1:
+            return Response({"detail": "Provide status or payment_status to update."}, status=400)
+
+        appt.save(update_fields=update_fields)
+        appt = HospitalAppointment.objects.select_related("doctor", "doctor__department", "department").get(pk=appt.pk)
+        return Response(_serialize_appointment(appt), status=200)
+
+
+class HospitalOpdQueueAPIView(HospitalBaseAPIView):
+    """GET /api/operations/hospital/opd-queue/"""
+
+    def get(self, request):
+        company = self._get_company(request)
+        if not company:
+            return Response({"detail": "No company associated with this account."}, status=403)
+
+        target_date = _parse_date(request.query_params.get("date")) or timezone.localdate()
+        doctor_id = request.query_params.get("doctor_id")
+
+        doctors_qs = HospitalDoctor.objects.filter(company=company, is_active=True).select_related("department").order_by("full_name")
+        if doctor_id:
+            doctors_qs = doctors_qs.filter(pk=doctor_id)
+        doctors = list(doctors_qs)
+
+        appts_qs = (
+            HospitalAppointment.objects.filter(company=company, appointment_date=target_date)
+            .select_related("doctor", "doctor__department", "department")
+            .order_by("token_number", "id")
+        )
+        if doctor_id:
+            appts_qs = appts_qs.filter(doctor_id=doctor_id)
+        all_appts = list(appts_qs)
+
+        by_doc = {}
+        for a in all_appts:
+            by_doc.setdefault(a.doctor_id, []).append(a)
+
+        queues = []
+        for doc in doctors:
+            doc_appts = by_doc.get(doc.id, [])
+            in_consult = [a for a in doc_appts if a.status == HospitalAppointment.STATUS_IN_CONSULTATION]
+            checked_in = [a for a in doc_appts if a.status == HospitalAppointment.STATUS_CHECKED_IN]
+            booked = [a for a in doc_appts if a.status == HospitalAppointment.STATUS_BOOKED]
+            completed = [a for a in doc_appts if a.status == HospitalAppointment.STATUS_COMPLETED]
+
+            current_appt = in_consult[0] if in_consult else None
+            next_appt = checked_in[0] if checked_in else (booked[0] if booked else None)
+
+            queues.append({
+                "doctor_id": doc.id,
+                "doctor_name": doc.full_name,
+                "specialization": doc.specialization or "",
+                "department_name": doc.department.name if doc.department else "",
+                "room_number": doc.room_number or "",
+                "availability_status": doc.availability_status,
+                "consultation_fee": float(doc.consultation_fee or 0),
+                "current_token": current_appt.token_number if current_appt else None,
+                "current_appointment": _serialize_appointment(current_appt) if current_appt else None,
+                "next_token": next_appt.token_number if next_appt else None,
+                "next_appointment": _serialize_appointment(next_appt) if next_appt else None,
+                "waiting_count": len(checked_in) + len(booked),
+                "completed_count": len(completed),
+                "total_count": len([a for a in doc_appts if a.status != HospitalAppointment.STATUS_CANCELLED]),
+                "queue": [_serialize_appointment(a) for a in doc_appts],
+            })
+
+        # Sort doctors with active appointments first
+        queues.sort(key=lambda q: (-q["total_count"], q["doctor_name"]))
+
+        active_non_cancelled = [a for a in all_appts if a.status != HospitalAppointment.STATUS_CANCELLED]
+        summary = {
+            "today_appointments": len(active_non_cancelled),
+            "waiting_in_opd": sum(
+                1 for a in all_appts
+                if a.status in (HospitalAppointment.STATUS_BOOKED, HospitalAppointment.STATUS_CHECKED_IN)
+            ),
+            "in_consultation": sum(
+                1 for a in all_appts if a.status == HospitalAppointment.STATUS_IN_CONSULTATION
+            ),
+            "completed": sum(
+                1 for a in all_appts if a.status == HospitalAppointment.STATUS_COMPLETED
+            ),
+            "today_opd_revenue": float(
+                sum(
+                    (a.consultation_fee or Decimal("0.00"))
+                    for a in active_non_cancelled
+                    if a.payment_status == HospitalAppointment.PAYMENT_PAID
+                )
+            ),
+        }
+
+        return Response({
+            "date": target_date.isoformat(),
+            "summary": summary,
+            "queues": queues,
+        }, status=200)

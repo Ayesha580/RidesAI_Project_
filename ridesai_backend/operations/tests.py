@@ -8845,3 +8845,218 @@ class HospitalModule2Tests(TestCase):
             client_b.patch(f"/api/operations/hospital/doctors/{doc_id}/", {"consultation_fee": 100}, format="json").status_code,
             404,
         )
+
+
+class HospitalModule3Tests(TestCase):
+    """PostgreSQL 16 tests for Hospital Module 3: OPD Appointments, Live Token Queue & AI Booking."""
+
+    def setUp(self):
+        from operations.models import HospitalDepartment, HospitalDoctor
+        self.client = APIClient()
+        self.hospital_a = Company.objects.create(
+            name="HospitalCare OPD Alpha",
+            business_type="hospital",
+            status=Company.STATUS_ACTIVE,
+            payment_status=Company.PAYMENT_OK,
+            subscription_status=Company.SUBSCRIPTION_ACTIVE,
+        )
+        self.owner_a = User.objects.create_user(
+            username="hosp_m3_owner_a",
+            email="hosp_m3_a@test.com",
+            password="Password123!",
+            role=User.ROLE_OWNER,
+            company=self.hospital_a,
+        )
+        self.hospital_b = Company.objects.create(
+            name="HospitalCare OPD Beta",
+            business_type="hospital",
+            status=Company.STATUS_ACTIVE,
+            payment_status=Company.PAYMENT_OK,
+            subscription_status=Company.SUBSCRIPTION_ACTIVE,
+        )
+        self.owner_b = User.objects.create_user(
+            username="hosp_m3_owner_b",
+            email="hosp_m3_b@test.com",
+            password="Password123!",
+            role=User.ROLE_OWNER,
+            company=self.hospital_b,
+        )
+        self.dept_cardio = HospitalDepartment.objects.create(
+            company=self.hospital_a,
+            name="Cardiology",
+            code="CARD",
+            is_active=True,
+        )
+        self.doc_1 = HospitalDoctor.objects.create(
+            company=self.hospital_a,
+            department=self.dept_cardio,
+            full_name="Dr. Ayesha Khan",
+            specialization="Cardiologist",
+            consultation_fee=Decimal("2500.00"),
+            follow_up_fee=Decimal("1200.00"),
+            room_number="OPD Room 4",
+            is_active=True,
+        )
+        self.doc_2 = HospitalDoctor.objects.create(
+            company=self.hospital_a,
+            department=self.dept_cardio,
+            full_name="Dr. Bilal Tariq",
+            specialization="Pediatrician",
+            consultation_fee=Decimal("1800.00"),
+            follow_up_fee=Decimal("900.00"),
+            room_number="OPD Room 7",
+            is_active=True,
+        )
+        self.client.force_authenticate(user=self.owner_a)
+
+    def test_atomic_tokens_queue_status_revenue_ai_booking_and_isolation(self):
+        from datetime import timedelta
+        from operations.models import HospitalAppointment
+        from operations.whatsapp_agent import book_hospital_appointment
+
+        today = timezone.localdate()
+        tomorrow = today + timedelta(days=1)
+
+        # 1. Atomic sequential token assignment (#1, #2) for doc_1 today
+        r1 = self.client.post(
+            "/api/operations/hospital/appointments/",
+            {
+                "doctor_id": self.doc_1.id,
+                "patient_name": "Ali Raza",
+                "patient_phone": "03001112233",
+                "appointment_date": today.isoformat(),
+                "visit_type": "new",
+                "chief_complaint": "Chest discomfort",
+            },
+            format="json",
+        )
+        self.assertEqual(r1.status_code, 201)
+        a1 = r1.json()
+        self.assertEqual(a1["token_number"], 1)
+        self.assertEqual(a1["consultation_fee"], 2500.0)
+        self.assertEqual(a1["department_name"], "Cardiology")
+
+        r2 = self.client.post(
+            "/api/operations/hospital/appointments/",
+            {
+                "doctor_id": self.doc_1.id,
+                "patient_name": "Sara Ahmed",
+                "patient_phone": "03004445566",
+                "appointment_date": today.isoformat(),
+                "visit_type": "follow_up",
+            },
+            format="json",
+        )
+        self.assertEqual(r2.status_code, 201)
+        a2 = r2.json()
+        self.assertEqual(a2["token_number"], 2)
+        self.assertEqual(a2["consultation_fee"], 1200.0)  # auto follow_up_fee
+
+        # Token resets to #1 for a different doctor on the same date
+        r_doc2 = self.client.post(
+            "/api/operations/hospital/appointments/",
+            {
+                "doctor_id": self.doc_2.id,
+                "patient_name": "Hamza Kid",
+                "patient_phone": "03112223344",
+                "appointment_date": today.isoformat(),
+            },
+            format="json",
+        )
+        self.assertEqual(r_doc2.status_code, 201)
+        self.assertEqual(r_doc2.json()["token_number"], 1)
+
+        # Token resets to #1 for doc_1 on a different date (tomorrow)
+        r_tom = self.client.post(
+            "/api/operations/hospital/appointments/",
+            {
+                "doctor_id": self.doc_1.id,
+                "patient_name": "Zainab Tomorrow",
+                "patient_phone": "03219998877",
+                "appointment_date": tomorrow.isoformat(),
+            },
+            format="json",
+        )
+        self.assertEqual(r_tom.status_code, 201)
+        self.assertEqual(r_tom.json()["token_number"], 1)
+
+        # 2. Workflow transitions + payment_status='paid' reflected in dashboard today_opd_revenue
+        s1 = self.client.post(
+            f"/api/operations/hospital/appointments/{a1['id']}/status/",
+            {"status": "checked_in", "payment_status": "paid"},
+            format="json",
+        )
+        self.assertEqual(s1.status_code, 200)
+        self.assertEqual(s1.json()["status"], "checked_in")
+        self.assertEqual(s1.json()["payment_status"], "paid")
+
+        s2 = self.client.post(
+            f"/api/operations/hospital/appointments/{a1['id']}/status/",
+            {"status": "in_consultation"},
+            format="json",
+        )
+        self.assertEqual(s2.status_code, 200)
+        self.assertEqual(s2.json()["status"], "in_consultation")
+
+        # 3. Live OPD Queue shows current_token=1, next_token=2 for doc_1
+        q_res = self.client.get(f"/api/operations/hospital/opd-queue/?date={today.isoformat()}")
+        self.assertEqual(q_res.status_code, 200)
+        q_data = q_res.json()
+        doc1_queue = next(q for q in q_data["queues"] if q["doctor_id"] == self.doc_1.id)
+        self.assertEqual(doc1_queue["current_token"], 1)
+        self.assertEqual(doc1_queue["next_token"], 2)
+        self.assertEqual(doc1_queue["waiting_count"], 1)
+
+        # Complete token 1 -> completed_count becomes 1
+        s3 = self.client.post(
+            f"/api/operations/hospital/appointments/{a1['id']}/status/",
+            {"status": "completed"},
+            format="json",
+        )
+        self.assertEqual(s3.status_code, 200)
+        self.assertEqual(s3.json()["status"], "completed")
+
+        # Dashboard KPIs include today_appointments, waiting_in_opd, today_opd_revenue
+        dash = self.client.get("/api/operations/hospital/dashboard/").json()
+        self.assertEqual(dash["kpis"]["today_appointments"], 3)
+        self.assertEqual(dash["kpis"]["waiting_in_opd"], 2)
+        self.assertEqual(dash["kpis"]["today_opd_revenue"], 2500.0)
+
+        # 4. AI booking helper creates HospitalAppointment with booking_source='whatsapp_ai' & plain text
+        ai_res = book_hospital_appointment(
+            company=self.hospital_a,
+            doctor_name="Cardiology",
+            patient_name="Usman Tariq",
+            patient_phone="03335556677",
+            appointment_date=today.isoformat(),
+            visit_type="new",
+            chief_complaint="Routine heart check",
+            booking_source="whatsapp_ai",
+        )
+        self.assertTrue(ai_res["success"])
+        self.assertEqual(ai_res["token_number"], 3)
+        self.assertEqual(ai_res["booking_source"], "whatsapp_ai")
+        msg = ai_res["confirmation_message"]
+        self.assertIn("Token Number is 3", msg)
+        self.assertIn("Dr. Ayesha Khan", msg)
+        self.assertNotIn("*", msg)
+        self.assertNotIn("_", msg)
+        self.assertTrue(
+            HospitalAppointment.objects.filter(
+                company=self.hospital_a, pk=ai_res["appointment_id"], booking_source="whatsapp_ai"
+            ).exists()
+        )
+
+        # 5. Multi-tenant isolation: Hospital B cannot view or modify Hospital A's appointments
+        client_b = APIClient()
+        client_b.force_authenticate(user=self.owner_b)
+        b_list = client_b.get("/api/operations/hospital/appointments/").json()
+        self.assertEqual(b_list["count"], 0)
+        self.assertEqual(
+            client_b.patch(f"/api/operations/hospital/appointments/{a1['id']}/", {"payment_status": "unpaid"}, format="json").status_code,
+            404,
+        )
+        self.assertEqual(
+            client_b.post(f"/api/operations/hospital/appointments/{a1['id']}/status/", {"status": "cancelled"}, format="json").status_code,
+            404,
+        )

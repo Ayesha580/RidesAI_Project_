@@ -1749,3 +1749,104 @@ class HospitalDoctorSchedule(models.Model):
 
     def __str__(self):
         return f"{self.doctor.full_name} — {self.day_of_week} {self.start_time}-{self.end_time}"
+
+
+# ============================================================================
+# Hospital Module 3: OPD Appointments & Live Token Queue (Multi-Tenant)
+# ============================================================================
+
+class HospitalAppointment(models.Model):
+    VISIT_NEW = "new"
+    VISIT_FOLLOW_UP = "follow_up"
+    VISIT_EMERGENCY = "emergency"
+    VISIT_TYPE_CHOICES = [
+        (VISIT_NEW, "New Visit"),
+        (VISIT_FOLLOW_UP, "Follow-up"),
+        (VISIT_EMERGENCY, "Emergency"),
+    ]
+
+    STATUS_BOOKED = "booked"
+    STATUS_CHECKED_IN = "checked_in"
+    STATUS_IN_CONSULTATION = "in_consultation"
+    STATUS_COMPLETED = "completed"
+    STATUS_CANCELLED = "cancelled"
+    STATUS_NO_SHOW = "no_show"
+    STATUS_CHOICES = [
+        (STATUS_BOOKED, "Booked"),
+        (STATUS_CHECKED_IN, "Checked In"),
+        (STATUS_IN_CONSULTATION, "In Consultation"),
+        (STATUS_COMPLETED, "Completed"),
+        (STATUS_CANCELLED, "Cancelled"),
+        (STATUS_NO_SHOW, "No Show"),
+    ]
+
+    PAYMENT_UNPAID = "unpaid"
+    PAYMENT_PAID = "paid"
+    PAYMENT_STATUS_CHOICES = [
+        (PAYMENT_UNPAID, "Unpaid"),
+        (PAYMENT_PAID, "Paid"),
+    ]
+
+    SOURCE_WALK_IN = "walk_in"
+    SOURCE_PHONE = "phone"
+    SOURCE_WHATSAPP_AI = "whatsapp_ai"
+    SOURCE_WEB_VOICE_AI = "web_voice_ai"
+    BOOKING_SOURCE_CHOICES = [
+        (SOURCE_WALK_IN, "Walk-in"),
+        (SOURCE_PHONE, "Phone"),
+        (SOURCE_WHATSAPP_AI, "WhatsApp AI"),
+        (SOURCE_WEB_VOICE_AI, "Website Voice AI"),
+    ]
+
+    company = models.ForeignKey(
+        "companies.Company",
+        on_delete=models.CASCADE,
+        related_name="hospital_appointments",
+        db_index=True,
+    )
+    doctor = models.ForeignKey(
+        HospitalDoctor,
+        on_delete=models.CASCADE,
+        related_name="appointments",
+    )
+    department = models.ForeignKey(
+        HospitalDepartment,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="hospital_appointments",
+    )
+    patient_name = models.CharField(max_length=255)
+    patient_phone = models.CharField(max_length=50)
+    patient_age = models.PositiveIntegerField(null=True, blank=True)
+    patient_gender = models.CharField(max_length=20, blank=True, default="")
+    appointment_date = models.DateField(db_index=True)
+    appointment_time = models.TimeField(null=True, blank=True)
+    token_number = models.PositiveIntegerField()
+    visit_type = models.CharField(max_length=20, choices=VISIT_TYPE_CHOICES, default=VISIT_NEW)
+    status = models.CharField(max_length=24, choices=STATUS_CHOICES, default=STATUS_BOOKED, db_index=True)
+    consultation_fee = models.DecimalField(max_digits=10, decimal_places=2, default=Decimal("0.00"))
+    payment_status = models.CharField(max_length=16, choices=PAYMENT_STATUS_CHOICES, default=PAYMENT_UNPAID)
+    booking_source = models.CharField(max_length=24, choices=BOOKING_SOURCE_CHOICES, default=SOURCE_WALK_IN)
+    chief_complaint = models.TextField(blank=True, default="")
+    notes = models.TextField(blank=True, default="")
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ("appointment_date", "token_number", "id")
+        indexes = [
+            models.Index(
+                fields=["company", "appointment_date", "doctor", "status"],
+                name="op_hapt_comp_dt_doc_st_idx",
+            ),
+        ]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["company", "doctor", "appointment_date", "token_number"],
+                name="unique_hospital_appt_token_per_doc_day",
+            )
+        ]
+
+    def __str__(self):
+        return f"Token #{self.token_number} — {self.patient_name} ({self.doctor.full_name}, {self.appointment_date})"

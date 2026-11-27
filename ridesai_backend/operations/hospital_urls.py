@@ -15,6 +15,10 @@ from operations.hospital_views import (
     HospitalDoctorsAPIView,
     HospitalDoctorDetailAPIView,
     HospitalDoctorStatusAPIView,
+    HospitalAppointmentsAPIView,
+    HospitalAppointmentDetailAPIView,
+    HospitalAppointmentStatusAPIView,
+    HospitalOpdQueueAPIView,
     HospitalLabBookingsAPIView,
     HospitalLabBookingStatusAPIView,
 )
@@ -33,6 +37,10 @@ urlpatterns = [
     path("doctors/", HospitalDoctorsAPIView.as_view(), name="hospital-doctors"),
     path("doctors/<int:pk>/", HospitalDoctorDetailAPIView.as_view(), name="hospital-doctor-detail"),
     path("doctors/<int:pk>/status/", HospitalDoctorStatusAPIView.as_view(), name="hospital-doctor-status"),
+    path("appointments/", HospitalAppointmentsAPIView.as_view(), name="hospital-appointments"),
+    path("appointments/<int:pk>/", HospitalAppointmentDetailAPIView.as_view(), name="hospital-appointment-detail"),
+    path("appointments/<int:pk>/status/", HospitalAppointmentStatusAPIView.as_view(), name="hospital-appointment-status"),
+    path("opd-queue/", HospitalOpdQueueAPIView.as_view(), name="hospital-opd-queue"),
     path("lab-bookings/", HospitalLabBookingsAPIView.as_view(), name="hospital-lab-bookings"),
     path("lab-bookings/<int:pk>/status/", HospitalLabBookingStatusAPIView.as_view(), name="hospital-lab-booking-status"),
 ]

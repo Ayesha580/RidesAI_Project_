@@ -345,6 +345,42 @@ TOOL_BOOK_LAB_TEST = {
     },
 }
 
+TOOL_BOOK_HOSPITAL_APPOINTMENT = {
+    "type": "function",
+    "function": {
+        "name": "book_hospital_appointment",
+        "description": (
+            "Books a Hospital OPD appointment with a specialist doctor, atomically assigns a daily Token Number, "
+            "and returns a plain-text confirmation with token number, doctor name, date, consultation fee in Rs., and room."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "doctor_name": {
+                    "type": "string",
+                    "description": "Doctor's name or medical specialty/department (e.g., 'Dr. Ayesha Khan' or 'Cardiology').",
+                },
+                "patient_name": {"type": "string", "description": "Full name of the patient."},
+                "patient_phone": {"type": "string", "description": "Patient's phone number."},
+                "appointment_date": {
+                    "type": "string",
+                    "description": "Preferred date in YYYY-MM-DD format, 'today', or 'tomorrow'. Defaults to today.",
+                },
+                "visit_type": {
+                    "type": "string",
+                    "enum": ["new", "follow_up", "emergency"],
+                    "description": "Type of visit: 'new', 'follow_up', or 'emergency'.",
+                },
+                "chief_complaint": {
+                    "type": "string",
+                    "description": "Brief reason for visit or main symptom.",
+                },
+            },
+            "required": ["doctor_name", "patient_name", "patient_phone"],
+        },
+    },
+}
+
 TOOL_LOG_UNANSWERED_QUESTION = {
     "type": "function",
     "function": {
@@ -484,7 +520,7 @@ CATEGORY_AGENT_PROFILES = {
             "specialist doctors, OPD timings, consultation fees in Rs., OPD appointment bookings, and lab/diagnostic test bookings.\n"
             "- DEPARTMENTS & BEDS: Call `get_hospital_departments` when a patient asks about departments, emergency, ICU, wards, or bed availability.\n"
             "- DOCTORS & OPD: Call `get_clinic_doctors` to share active specialist doctors, qualifications, OPD hours, and fees in Rs.\n"
-            "- OPD APPOINTMENTS: Collect patient's full name, phone number, preferred doctor/department, date, time, and reason, then call `book_appointment`.\n"
+            "- OPD APPOINTMENTS: Collect patient's full name, phone number, preferred doctor/department, date, and reason, then call `book_hospital_appointment` to issue an official OPD Token Number.\n"
             "- LAB / DIAGNOSTIC TESTS: Collect patient's name, phone, test name, and preferred date/time, then call `book_lab_test`.\n"
             "- PREVENTIVE CHECKUP / LAB CROSS-SELL (when upselling is enabled): Before confirming an OPD appointment or lab test, "
             "politely suggest 1 relevant preventive health checkup package or complementary diagnostic test from THIS hospital's active catalog with its exact Rs. price (ask only once; respect declines immediately).\n"
@@ -494,6 +530,7 @@ CATEGORY_AGENT_PROFILES = {
         "tools": [
             TOOL_GET_HOSPITAL_DEPARTMENTS,
             TOOL_GET_CLINIC_DOCTORS,
+            TOOL_BOOK_HOSPITAL_APPOINTMENT,
             TOOL_BOOK_APPOINTMENT,
             TOOL_BOOK_LAB_TEST,
             TOOL_GET_CATALOG_ITEMS,
@@ -799,6 +836,115 @@ def execute_get_hospital_departments(company: Company, ward_type: Optional[str] 
     except Exception as e:
         logger.error(f"[Hospital Agent] get_hospital_departments error: {e}", exc_info=True)
         return {"success": False, "error": "Could not load hospital departments right now."}
+
+
+def book_hospital_appointment(
+    company: Company,
+    doctor_name: str,
+    patient_name: str,
+    patient_phone: str,
+    appointment_date: Optional[str] = None,
+    visit_type: str = "new",
+    chief_complaint: str = "",
+    booking_source: str = "whatsapp_ai",
+) -> Dict[str, Any]:
+    """
+    Matches an active HospitalDoctor by name/specialization/department (strictly scoped to `company`),
+    atomically creates a HospitalAppointment with the next daily token_number, and returns a clean
+    plain-text confirmation (no * or _ markdown).
+    """
+    try:
+        from datetime import datetime as _dt, timedelta as _td
+        from operations.models import HospitalDoctor, HospitalAppointment
+        from operations.hospital_views import create_hospital_appointment_atomic
+
+        if not company:
+            return {"success": False, "error": "Hospital tenant context is missing."}
+
+        clean_patient = str(patient_name or "").strip()
+        clean_phone = str(patient_phone or "").strip()
+        if not clean_patient or not clean_phone:
+            return {"success": False, "error": "Patient full name and phone number are required to book an OPD appointment."}
+
+        today = timezone.localdate()
+        raw_date = str(appointment_date or "").strip().lower()
+        if not raw_date or raw_date == "today":
+            target_date = today
+        elif raw_date == "tomorrow":
+            target_date = today + _td(days=1)
+        else:
+            try:
+                target_date = _dt.strptime(raw_date[:10], "%Y-%m-%d").date()
+            except ValueError:
+                target_date = today
+
+        doctors = list(
+            HospitalDoctor.objects.filter(company=company, is_active=True).select_related("department")
+        )
+        if not doctors:
+            return {"success": False, "error": "No active doctors are currently listed in this hospital."}
+
+        q = str(doctor_name or "").strip().lower()
+        matched_doc = None
+        if q:
+            for d in doctors:
+                if q in (d.full_name or "").lower():
+                    matched_doc = d
+                    break
+            if not matched_doc:
+                for d in doctors:
+                    spec = (d.specialization or "").lower()
+                    dept = (d.department.name if d.department else "").lower()
+                    if q in spec or q in dept or any(tok[:5] in q for tok in re.findall(r"[a-z]{5,}", f"{spec} {dept}")):
+                        matched_doc = d
+                        break
+        if not matched_doc:
+            available_names = ", ".join(d.full_name for d in doctors[:6])
+            return {
+                "success": False,
+                "error": f"Could not find a doctor matching {doctor_name}. Available doctors: {available_names}.",
+            }
+
+        src = booking_source if booking_source in (
+            HospitalAppointment.SOURCE_WHATSAPP_AI,
+            HospitalAppointment.SOURCE_WEB_VOICE_AI,
+            HospitalAppointment.SOURCE_PHONE,
+            HospitalAppointment.SOURCE_WALK_IN,
+        ) else HospitalAppointment.SOURCE_WHATSAPP_AI
+
+        appt = create_hospital_appointment_atomic(
+            company=company,
+            doctor=matched_doc,
+            patient_name=clean_patient,
+            patient_phone=clean_phone,
+            appointment_date=target_date,
+            visit_type=str(visit_type or "new").strip().lower(),
+            booking_source=src,
+            chief_complaint=str(chief_complaint or "").strip(),
+        )
+
+        fee_val = int(appt.consultation_fee) if appt.consultation_fee == int(appt.consultation_fee) else float(appt.consultation_fee)
+        room_part = f" in {matched_doc.room_number}" if matched_doc.room_number else ""
+        confirmation = (
+            f"Appointment confirmed for {appt.patient_name} with {matched_doc.full_name} on "
+            f"{appt.appointment_date.isoformat()}. Your Token Number is {appt.token_number}, "
+            f"consultation fee is Rs. {fee_val}{room_part}."
+        )
+        return {
+            "success": True,
+            "appointment_id": appt.id,
+            "token_number": appt.token_number,
+            "doctor_name": matched_doc.full_name,
+            "department_name": appt.department.name if appt.department else "",
+            "appointment_date": appt.appointment_date.isoformat(),
+            "consultation_fee": fee_val,
+            "room_number": matched_doc.room_number or "",
+            "booking_source": appt.booking_source,
+            "confirmation_message": confirmation,
+        }
+    except Exception as e:
+        logger.error(f"[Hospital Agent] book_hospital_appointment error: {e}", exc_info=True)
+        return {"success": False, "error": "Could not complete hospital appointment booking right now."}
 
 
 def execute_book_lab_test(
@@ -2702,6 +2848,18 @@ def _generate_agent_reply(
                             preferred_date=fn_args.get("preferred_date"),
                             preferred_time=fn_args.get("preferred_time"),
                             reason=fn_args.get("reason"),
+                        )
+                    elif fn_name == "book_hospital_appointment":
+                        src_channel = "web_voice_ai" if conversation_obj else "whatsapp_ai"
+                        tool_result = book_hospital_appointment(
+                            company=company,
+                            doctor_name=fn_args.get("doctor_name", ""),
+                            patient_name=fn_args.get("patient_name") or customer_name,
+                            patient_phone=fn_args.get("patient_phone") or sender_phone,
+                            appointment_date=fn_args.get("appointment_date"),
+                            visit_type=fn_args.get("visit_type") or "new",
+                            chief_complaint=fn_args.get("chief_complaint", ""),
+                            booking_source=src_channel,
                         )
                     elif fn_name == "get_hospital_departments":
                         tool_result = execute_get_hospital_departments(
