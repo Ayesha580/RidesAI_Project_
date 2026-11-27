@@ -248,13 +248,34 @@ export default function PublicAgentPage() {
     }
   };
 
+  const cleanTextForSpeech = (text) => {
+    if (!text) return "";
+    return String(text)
+      .replace(/\[([^\]]+)\]\([^)]+\)/g, "$1")
+      .replace(/#+\s*/g, "")
+      .replace(/[*_~`]+/g, "")
+      .replace(/[•\u2022]/g, " ")
+      .replace(/^\s*[-*]\s+/gm, "")
+      .replace(/!{2,}/g, "!")
+      .replace(/\b([01]?\d|2[0-3]):([0-5]\d)(?!\s*(?:am|pm)\b)/gi, (_, hStr, mStr) => {
+        const h = parseInt(hStr, 10);
+        const ampm = h >= 12 ? "PM" : "AM";
+        const h12 = h % 12 || 12;
+        return `${h12}:${mStr} ${ampm}`;
+      })
+      .replace(/\bRs\.?\s*(\d+)/gi, "$1 rupees")
+      .replace(/\s+/g, " ")
+      .trim();
+  };
+
   const fallbackSpeak = (text) => {
-    if (!canSynthesize || !text) {
+    const cleaned = cleanTextForSpeech(text);
+    if (!canSynthesize || !cleaned) {
       setVoiceState("idle");
       return;
     }
     window.speechSynthesis.cancel();
-    const utterance = new SpeechSynthesisUtterance(text);
+    const utterance = new SpeechSynthesisUtterance(cleaned);
     utterance.lang = "en-US";
     utterance.rate = 0.95;
     utterance.onend = () => setVoiceState("idle");

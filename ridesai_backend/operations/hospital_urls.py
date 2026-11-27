@@ -12,6 +12,9 @@ from operations.hospital_views import (
     HospitalBedDetailAPIView,
     HospitalBedAdmitAPIView,
     HospitalBedDischargeAPIView,
+    HospitalDoctorsAPIView,
+    HospitalDoctorDetailAPIView,
+    HospitalDoctorStatusAPIView,
     HospitalLabBookingsAPIView,
     HospitalLabBookingStatusAPIView,
 )
@@ -27,6 +30,9 @@ urlpatterns = [
     path("beds/<int:bed_id>/", HospitalBedDetailAPIView.as_view(), name="hospital-bed-detail"),
     path("beds/<int:bed_id>/admit/", HospitalBedAdmitAPIView.as_view(), name="hospital-bed-admit"),
     path("beds/<int:bed_id>/discharge/", HospitalBedDischargeAPIView.as_view(), name="hospital-bed-discharge"),
+    path("doctors/", HospitalDoctorsAPIView.as_view(), name="hospital-doctors"),
+    path("doctors/<int:pk>/", HospitalDoctorDetailAPIView.as_view(), name="hospital-doctor-detail"),
+    path("doctors/<int:pk>/status/", HospitalDoctorStatusAPIView.as_view(), name="hospital-doctor-status"),
     path("lab-bookings/", HospitalLabBookingsAPIView.as_view(), name="hospital-lab-bookings"),
     path("lab-bookings/<int:pk>/status/", HospitalLabBookingStatusAPIView.as_view(), name="hospital-lab-booking-status"),
 ]

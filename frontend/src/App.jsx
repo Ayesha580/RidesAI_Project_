@@ -55,6 +55,7 @@ import ClinicDoctors from "./operations/ClinicDoctors";
 import ClinicPatients from "./operations/ClinicPatients";
 import HospitalDashboard from "./operations/HospitalDashboard";
 import HospitalDepartmentsWards from "./operations/HospitalDepartmentsWards";
+import HospitalDoctorsDirectory from "./operations/HospitalDoctorsDirectory";
 import AnalyticsReports from "./operations/AnalyticsReports";
 import NotificationSettings from "./operations/NotificationSettings";
 import TablesFloorPlan from "./operations/TablesFloorPlan";
@@ -83,6 +84,12 @@ function isRestaurantUser(user) {
   );
 }
 
+function isHospitalUser(user) {
+  const t = String(user?.business_type || "").toLowerCase();
+  const l = String(user?.business_label || "").toLowerCase();
+  return t.includes("hospital") || l.includes("hospital");
+}
+
 function OwnerModulePage() {
   const { user } = useAuth();
   const { moduleKey } = useParams();
@@ -103,7 +110,9 @@ function OwnerModulePage() {
   if (moduleKey === "attendance") return <StaffAttendance />;
   if (moduleKey === "suppliers") return <SuppliersManagement />;
   if (moduleKey === "appointments") return <ClinicAppointments />;
-  if (moduleKey === "doctors") return <ClinicDoctors />;
+  if (moduleKey === "doctors") {
+    return isHospitalUser(user) ? <HospitalDoctorsDirectory /> : <ClinicDoctors />;
+  }
   if (moduleKey === "patients") return <ClinicPatients />;
   if (moduleKey === "fulfillment") return <RetailFulfillment />;
   if (moduleKey === "returns") return <RetailReturns />;
@@ -148,7 +157,9 @@ function StaffModulePage() {
   if (moduleKey === "attendance") return <StaffAttendance staff />;
   if (moduleKey === "suppliers") return <SuppliersManagement staff />;
   if (moduleKey === "appointments") return <ClinicAppointments staff />;
-  if (moduleKey === "doctors") return <ClinicDoctors staff />;
+  if (moduleKey === "doctors") {
+    return isHospitalUser(user) ? <HospitalDoctorsDirectory staff /> : <ClinicDoctors staff />;
+  }
   if (moduleKey === "patients") return <ClinicPatients staff />;
   if (moduleKey === "fulfillment") return <RetailFulfillment staff />;
   if (moduleKey === "returns") return <RetailReturns staff />;

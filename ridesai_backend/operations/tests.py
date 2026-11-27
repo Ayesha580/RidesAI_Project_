@@ -8730,3 +8730,118 @@ class HospitalModule1Tests(TestCase):
             format="json",
         )
         self.assertEqual(admit_cross.status_code, 404)
+
+
+class HospitalModule2Tests(TestCase):
+    """Hospital Module 2: Doctors Directory, Weekly OPD Schedules & Live AI Sync."""
+
+    def setUp(self):
+        from companies.models import Company
+        from accounts.models import User
+        from operations.models import HospitalDepartment
+
+        self.hospital_a = Company.objects.create(
+            name="Shifa City Hospital",
+            business_type="hospital",
+            subscription_status="active",
+        )
+        self.hospital_b = Company.objects.create(
+            name="Other General Hospital",
+            business_type="hospital",
+            subscription_status="active",
+        )
+        self.owner_a = User.objects.create_user(
+            username="doc_owner_a",
+            email="doc_a@test.com",
+            password="pass",
+            role=User.ROLE_OWNER,
+            company=self.hospital_a,
+            is_active=True,
+        )
+        self.owner_b = User.objects.create_user(
+            username="doc_owner_b",
+            email="doc_b@test.com",
+            password="pass",
+            role=User.ROLE_OWNER,
+            company=self.hospital_b,
+            is_active=True,
+        )
+        self.cardio_dept = HospitalDepartment.objects.create(
+            company=self.hospital_a,
+            name="Cardiology",
+            code="CARD",
+            is_24_7=True,
+        )
+        self.client = APIClient()
+        self.client.force_authenticate(user=self.owner_a)
+
+    def test_doctor_crud_weekly_schedules_status_toggle_and_ai_sync(self):
+        from operations.whatsapp_agent import (
+            _build_system_prompt,
+            build_hospital_doctors_ai_context,
+            get_business_context_for_company,
+        )
+
+        # 1. Create doctor with department & mon/wed/fri OPD schedules
+        res = self.client.post(
+            "/api/operations/hospital/doctors/",
+            {
+                "full_name": "Dr. Ayesha Khan",
+                "department_id": self.cardio_dept.id,
+                "specialization": "Cardiologist",
+                "qualification": "MBBS, FCPS",
+                "consultation_fee": "3000.00",
+                "room_number": "OPD Room 4",
+                "schedules": [
+                    {"day_of_week": "mon", "start_time": "09:00", "end_time": "14:00", "max_patients": 20},
+                    {"day_of_week": "wed", "start_time": "09:00", "end_time": "14:00", "max_patients": 20},
+                    {"day_of_week": "fri", "start_time": "10:00", "end_time": "13:00", "max_patients": 15},
+                ],
+            },
+            format="json",
+        )
+        self.assertEqual(res.status_code, 201)
+        doc_data = res.json()
+        doc_id = doc_data["id"]
+        self.assertEqual(doc_data["department_name"], "Cardiology")
+        self.assertEqual(doc_data["consultation_fee"], 3000.0)
+        self.assertEqual(len(doc_data["schedules"]), 3)
+
+        # Dashboard KPIs include total_doctors & doctors_available_today
+        dash = self.client.get("/api/operations/hospital/dashboard/").json()
+        self.assertEqual(dash["kpis"]["total_doctors"], 1)
+        self.assertEqual(dash["kpis"]["doctors_available_today"], 1)
+
+        # 2. Live AI context & system prompt contain doctor details & timings
+        ai_block = build_hospital_doctors_ai_context(self.hospital_a)
+        self.assertIn("Dr. Ayesha Khan", ai_block)
+        self.assertIn("Cardiologist", ai_block)
+        self.assertIn("Rs. 3000", ai_block)
+        self.assertIn("Mon 09:00-14:00", ai_block)
+
+        ctx = get_business_context_for_company(self.hospital_a)
+        prompt = _build_system_prompt(customer_name="Patient", context=ctx)
+        self.assertIn("HOSPITAL DOCTORS & OPD SCHEDULE", prompt)
+        self.assertIn("Dr. Ayesha Khan", prompt)
+
+        # 3. Quick status toggle: available -> on_leave
+        st_res = self.client.post(
+            f"/api/operations/hospital/doctors/{doc_id}/status/",
+            {"availability_status": "on_leave"},
+            format="json",
+        )
+        self.assertEqual(st_res.status_code, 200)
+        self.assertEqual(st_res.json()["availability_status"], "on_leave")
+
+        # AI context now flags [ON LEAVE]
+        ai_block_leave = build_hospital_doctors_ai_context(self.hospital_a)
+        self.assertIn("[ON LEAVE]", ai_block_leave)
+
+        # 4. Multi-tenant isolation: Hospital B cannot see or edit Hospital A's doctor
+        client_b = APIClient()
+        client_b.force_authenticate(user=self.owner_b)
+        self.assertEqual(len(client_b.get("/api/operations/hospital/doctors/").json()), 0)
+        self.assertEqual(
+            client_b.patch(f"/api/operations/hospital/doctors/{doc_id}/", {"consultation_fee": 100}, format="json").status_code,
+            404,
+        )

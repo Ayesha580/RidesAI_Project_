@@ -199,6 +199,8 @@ def clean_text_for_tts(text: str) -> str:
     cleaned = re.sub(r'(?m)^\s*[\-\*]\s*', '', cleaned)
     # Strip markdown links [label](url) -> label
     cleaned = re.sub(r'\[(.*?)\]\(.*?\)', r'\1', cleaned)
+    # Collapse excessive exclamation marks
+    cleaned = re.sub(r'!{2,}', '!', cleaned)
 
     # 3. Collapse extra whitespace
     cleaned = re.sub(r'\s+', ' ', cleaned).strip()

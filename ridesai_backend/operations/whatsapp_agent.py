@@ -1864,6 +1864,108 @@ def _get_business_context(phone_number_id: str) -> Dict[str, Any]:
         return get_business_context_for_company(None)
 
 
+_DAY_FULL_NAMES = {
+    "mon": "Monday",
+    "tue": "Tuesday",
+    "wed": "Wednesday",
+    "thu": "Thursday",
+    "fri": "Friday",
+    "sat": "Saturday",
+    "sun": "Sunday",
+}
+
+
+def _format_time_12h(time_obj) -> str:
+    """Formats a datetime.time (e.g. 09:00 -> '9:00 AM', 14:00 -> '2:00 PM') cross-platform."""
+    if not time_obj:
+        return ""
+    hour = time_obj.hour
+    minute = time_obj.minute
+    ampm = "PM" if hour >= 12 else "AM"
+    hour12 = hour % 12 or 12
+    return f"{hour12}:{minute:02d} {ampm}"
+
+
+def _format_opd_schedules_natural(scheds) -> str:
+    """Groups days sharing identical start/end times into natural spoken English."""
+    if not scheds:
+        return "by appointment"
+    from collections import OrderedDict
+    grouped = OrderedDict()
+    for s in scheds:
+        slot = f"{_format_time_12h(s.start_time)} to {_format_time_12h(s.end_time)}"
+        day_name = _DAY_FULL_NAMES.get(str(s.day_of_week).lower()[:3], str(s.day_of_week).capitalize())
+        grouped.setdefault(slot, [])
+        if day_name not in grouped[slot]:
+            grouped[slot].append(day_name)
+
+    chunks = []
+    for slot, days in grouped.items():
+        if len(days) == 1:
+            day_phrase = days[0]
+        elif len(days) == 2:
+            day_phrase = f"{days[0]} and {days[1]}"
+        else:
+            day_phrase = ", ".join(days[:-1]) + f", and {days[-1]}"
+        chunks.append(f"{day_phrase} from {slot}")
+    return "; ".join(chunks)
+
+
+def build_hospital_doctors_ai_context(company) -> str:
+    """
+    Formats active HospitalDoctor records & weekly OPD schedules for `company`
+    into a concise live prompt section for WhatsApp & Website Voice AI.
+    """
+    if not company:
+        return ""
+    try:
+        from operations.models import HospitalDoctor
+        from operations.hospital_views import DAY_ORDER
+
+        docs = list(
+            HospitalDoctor.objects.filter(company=company, is_active=True)
+            .select_related("department")
+            .prefetch_related("schedules")
+            .order_by("full_name")[:40]
+        )
+        if not docs:
+            return ""
+        lines = []
+        for doc in docs:
+            dept_str = f" | Dept: {doc.department.name}" if doc.department else ""
+            qual_str = f" ({doc.qualification})" if doc.qualification else ""
+            spec_str = f" — {doc.specialization}" if doc.specialization else ""
+            fee_str = f" | Fee: Rs. {float(doc.consultation_fee or 0):.0f}"
+            room_str = f" | Room: {doc.room_number}" if doc.room_number else ""
+            status_tag = (
+                " [ON LEAVE]"
+                if doc.availability_status == HospitalDoctor.STATUS_ON_LEAVE
+                else f" [{doc.get_availability_status_display()}]"
+            )
+            scheds = sorted(
+                list(doc.schedules.filter(is_active=True)),
+                key=lambda s: (DAY_ORDER.get(s.day_of_week, 9), s.start_time),
+            )
+            if scheds:
+                sched_str = ", ".join(
+                    f"{_DAY_FULL_NAMES.get(str(s.day_of_week).lower()[:3], s.day_of_week.title())} "
+                    f"{_format_time_12h(s.start_time)}-{_format_time_12h(s.end_time)}"
+                    for s in scheds
+                )
+                timing_part = f" | OPD: {sched_str}"
+            else:
+                timing_part = ""
+            lines.append(f"• {doc.full_name}{qual_str}{spec_str}{dept_str}{fee_str}{room_str}{status_tag}{timing_part}")
+        return (
+            "\nHOSPITAL DOCTORS & OPD SCHEDULE (LIVE DIRECTORY):\n"
+            + "\n".join(lines)
+            + "\n- Answer doctor availability, consultation fees (in Rs.), rooms, and OPD timings strictly from this live directory. "
+            "If a doctor is marked [ON LEAVE], clearly inform the patient.\n"
+        )
+    except Exception:
+        return ""
+
+
 def _build_system_prompt(
     customer_name: str,
     context: Dict[str, Any],
@@ -2022,6 +2124,10 @@ def _build_system_prompt(
             dept_lines.append(f"• {d['name']} ({d.get('ward_type', 'opd').upper()}){tag}{beds}")
         hospital_dept_section = "\nHOSPITAL DEPARTMENTS, WARDS & BED AVAILABILITY:\n" + "\n".join(dept_lines) + "\n"
 
+    hospital_doctors_section = ""
+    if cat_cfg.get("key") == "hospital" and context.get("company"):
+        hospital_doctors_section = build_hospital_doctors_ai_context(context["company"])
+
     now_local = timezone.localtime()
     current_date_str = now_local.strftime("%Y-%m-%d")
     tomorrow_date_str = (now_local + timedelta(days=1)).strftime("%Y-%m-%d")
@@ -2124,7 +2230,7 @@ OPERATING HOURS:
 
 AVAILABLE {catalog_header}:
 {catalog_str}
-{hospital_dept_section}
+{hospital_dept_section}{hospital_doctors_section}
 FREQUENTLY ASKED QUESTIONS & POLICIES:
 {kb_str}
 
@@ -2181,23 +2287,114 @@ CRITICAL COST-SAVING RULES:
 {voice_end_reminder}"""
 
 
-def _build_fallback_reply(message_text: str, customer_name: str, context: Dict[str, Any]) -> str:
+def _build_hospital_live_fallback(message_text: str, context: Dict[str, Any]) -> Optional[str]:
+    """
+    When the LLM provider is unavailable (e.g., 401/429/timeout), answer HospitalCare
+    doctor, fee, OPD schedule, and department/bed inquiries directly from PostgreSQL
+    in clean spoken plain text (no markdown symbols).
+    """
+    company = context.get("company")
+    if not company:
+        return None
+    if get_category_agent_config(context.get("business_type")).get("key") != "hospital":
+        return None
+
+    q = str(message_text or "").strip().lower()
+    if not q:
+        return None
+
+    doctor_keywords = (
+        "doctor", "dr ", "dr.", "cardiolog", "pediatr", "orthoped", "neurol", "gyne", "gynae",
+        "dermat", "ent", "surgeon", "physician", "specialist", "opd", "fee", "fees", "charges",
+        "timing", "timings", "schedule", "time", "available", "kaun", "kon", "kitni", "kya hai",
+    )
+    dept_keywords = ("department", "ward", "bed", "beds", "icu", "emergency", "admit", "room")
+
+    try:
+        from operations.models import HospitalDoctor, HospitalDepartment
+        from operations.hospital_views import DAY_ORDER
+
+        if any(k in q for k in doctor_keywords):
+            doctors = list(
+                HospitalDoctor.objects.filter(company=company, is_active=True)
+                .select_related("department")
+                .prefetch_related("schedules")
+                .order_by("full_name")
+            )
+            if doctors:
+                # Match by specialization, department name, or doctor name tokens
+                matched = []
+                for doc in doctors:
+                    dept_name = (doc.department.name if doc.department else "").lower()
+                    spec = (doc.specialization or "").lower()
+                    dname = (doc.full_name or "").lower()
+                    # Check prefix/stem match (e.g. "cardiologist" <-> "cardiology")
+                    stem_match = False
+                    for field_val in (dept_name, spec, dname):
+                        for tok in re.findall(r"[a-z]{4,}", field_val):
+                            if tok[:6] in q or (len(tok) >= 5 and tok[:5] in q):
+                                stem_match = True
+                                break
+                        if stem_match:
+                            break
+                    if stem_match:
+                        matched.append(doc)
+
+                target_docs = matched if matched else doctors[:5]
+                parts = []
+                for doc in target_docs:
+                    dept_label = doc.department.name if doc.department else (doc.specialization or "General")
+                    fee = int(doc.consultation_fee) if doc.consultation_fee == int(doc.consultation_fee) else float(doc.consultation_fee)
+                    scheds = sorted(
+                        [s for s in doc.schedules.all() if s.is_active],
+                        key=lambda s: (DAY_ORDER.get(s.day_of_week, 9), s.start_time),
+                    )
+                    sched_str = _format_opd_schedules_natural(scheds)
+                    room_part = f" in {doc.room_number}" if doc.room_number else ""
+                    status_part = " (currently on leave)" if doc.availability_status == "on_leave" else ""
+                    parts.append(
+                        f"{doc.full_name} ({dept_label}){status_part}: consultation fee is Rs. {fee}, "
+                        f"available {sched_str}{room_part}."
+                    )
+                if parts:
+                    return " ".join(parts)
+
+        if any(k in q for k in dept_keywords):
+            depts = list(HospitalDepartment.objects.filter(company=company, is_active=True).order_by("name")[:10])
+            if depts:
+                dept_names = ", ".join(d.name for d in depts)
+                return f"{context.get('business_name') or 'Our hospital'} offers the following departments: {dept_names}. Please let us know which department or doctor you would like to book."
+    except Exception as e:
+        logger.warning(f"[Hospital Fallback] Failed to build live hospital fallback: {e}")
+    return None
+
+
+def _build_fallback_reply(
+    message_text: str,
+    customer_name: str,
+    context: Dict[str, Any],
+    is_voice_note: bool = False,
+) -> str:
     """
     Polite fallback response if LLM API call fails or times out.
+    For Hospital tenants, answers live doctor/fee/OPD/department queries directly from DB.
+    Uses clean plain text without markdown symbols (* or _) so voice TTS never reads symbols aloud.
     """
+    hospital_answer = _build_hospital_live_fallback(message_text, context)
+    if hospital_answer:
+        return hospital_answer
+
     biz_name = context.get("business_name") or "our store"
     phone = context.get("phone")
-    support_line = f"\n\nFor immediate assistance, please call us directly at *{phone}*." if phone else ""
+    support_line = f" For immediate assistance, please call us directly at {phone}." if phone else ""
 
     if context.get("has_prior_history"):
-        return f"Thank you! We received your message: '_{message_text}_'. Our team will assist you shortly.{support_line}"
+        return f"Thank you! We received your message: {message_text}. Our team will assist you shortly.{support_line}"
 
-    greeting = context.get("greeting") or f"Hello {customer_name}! Welcome to *{biz_name}*."
+    greeting = context.get("greeting") or f"Hello {customer_name}! Welcome to {biz_name}."
     return (
-        f"{greeting}\n\n"
-        f"Thank you for contacting *{biz_name}*! We have received your message:\n"
-        f"_{message_text}_\n\n"
-        f"Our team is currently reviewing your inquiry and will reply shortly.{support_line}"
+        f"{greeting} "
+        f"Thank you for contacting {biz_name}. We have received your inquiry and our team will assist you shortly.{support_line}"
     )
 
 
@@ -2357,9 +2554,9 @@ def _generate_agent_reply(
                 messages.append({
                     "role": "system",
                     "content": (
-                        "CRITICAL VOICE RULE: Your reply will be spoken aloud by an English TTS engine. "
-                        "You MUST reply strictly in simple, plain English ONLY (no Urdu script, no Hindi, no Roman Urdu). "
-                        "Keep it under 2 short sentences."
+                        "CRITICAL VOICE RULE: Your reply will be spoken aloud by a TTS engine. "
+                        "You MUST reply in clean, natural spoken plain text ONLY — NEVER use markdown symbols "
+                        "(*, _, ~, #, backticks, or bullet lists). Keep it under 2 short sentences."
                     ),
                 })
             messages.append({"role": "user", "content": message_text})
@@ -2582,8 +2779,48 @@ def _generate_agent_reply(
             logger.error(f"[WhatsApp Agent] OpenAI tool-calling execution error: {e}", exc_info=True)
             print(f"[WhatsApp Agent ERROR] Tool calling failed: {e}")
 
-    # Fallback when OpenAI key is missing, invalid, or request fails
-    fallback_reply = _build_fallback_reply(message_text, customer_name, context)
+    # Secondary LLM fallback via Groq (if GROQ_API_KEY is configured and OpenAI failed/unavailable)
+    groq_api_key = getattr(settings, "GROQ_API_KEY", "") or os.environ.get("GROQ_API_KEY", "")
+    if groq_api_key and len(groq_api_key.strip()) > 5:
+        try:
+            from groq import Groq
+            groq_client = Groq(api_key=groq_api_key.strip(), timeout=20.0)
+            groq_system_prompt = _build_system_prompt(
+                customer_name=customer_name,
+                context=context,
+                is_voice_note=is_voice_note,
+                has_prior_history=has_prior_history,
+                sender_phone=sender_phone,
+                customer_address=context.get("customer_address", ""),
+            )
+            groq_messages: List[Dict[str, Any]] = [{"role": "system", "content": groq_system_prompt}]
+            groq_messages.extend(history_messages)
+            if is_voice_note:
+                groq_messages.append({
+                    "role": "system",
+                    "content": (
+                        "CRITICAL VOICE RULE: Your reply will be spoken aloud by a TTS engine. "
+                        "Reply in clean, natural spoken plain text ONLY with NO markdown symbols (*, _, ~, #, backticks)."
+                    ),
+                })
+            groq_messages.append({"role": "user", "content": message_text})
+            groq_model = getattr(settings, "GROQ_CHAT_MODEL", "") or "llama-3.3-70b-versatile"
+            groq_res = groq_client.chat.completions.create(
+                model=groq_model,
+                messages=groq_messages,
+                temperature=0.3,
+                max_tokens=int(getattr(settings, "OPENAI_MAX_TOKENS", 220)),
+            )
+            groq_reply = (groq_res.choices[0].message.content or "").strip()
+            if groq_reply:
+                if record_turn:
+                    record_conversation_turn(company, sender_phone, customer_name, message_text, groq_reply, is_voice=is_voice_note)
+                return groq_reply
+        except Exception as ge:
+            logger.warning(f"[WhatsApp Agent] Groq fallback failed: {ge}")
+
+    # Fallback when LLM providers are missing, invalid, or request fails
+    fallback_reply = _build_fallback_reply(message_text, customer_name, context, is_voice_note=is_voice_note)
     if record_turn:
         record_conversation_turn(company, sender_phone, customer_name, message_text, fallback_reply, is_voice=is_voice_note)
     return fallback_reply

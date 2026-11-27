@@ -101,6 +101,7 @@ def _business_info(user):
         "stripe_customer_id": c.stripe_customer_id,
         "stripe_subscription_id": c.stripe_subscription_id,
         "grace_period_ends_at": c.grace_period_ends_at,
+        "agent_public_id": str(c.agent_public_id) if getattr(c, "agent_public_id", None) else "",
     }
 
 
