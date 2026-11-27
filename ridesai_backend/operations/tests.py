@@ -9060,3 +9060,162 @@ class HospitalModule3Tests(TestCase):
             client_b.post(f"/api/operations/hospital/appointments/{a1['id']}/status/", {"status": "cancelled"}, format="json").status_code,
             404,
         )
+
+
+class HospitalModule4Tests(TestCase):
+    """PostgreSQL 16 tests for Hospital Module 4: Patients Directory (EMR) & Digital Prescriptions."""
+
+    def setUp(self):
+        from operations.models import HospitalDepartment, HospitalDoctor
+        self.client = APIClient()
+        self.hospital_a = Company.objects.create(
+            name="HospitalCare EMR Alpha",
+            business_type="hospital",
+            status=Company.STATUS_ACTIVE,
+            payment_status=Company.PAYMENT_OK,
+            subscription_status=Company.SUBSCRIPTION_ACTIVE,
+        )
+        self.owner_a = User.objects.create_user(
+            username="hosp_m4_owner_a",
+            email="hosp_m4_a@test.com",
+            password="Password123!",
+            role=User.ROLE_OWNER,
+            company=self.hospital_a,
+        )
+        self.hospital_b = Company.objects.create(
+            name="HospitalCare EMR Beta",
+            business_type="hospital",
+            status=Company.STATUS_ACTIVE,
+            payment_status=Company.PAYMENT_OK,
+            subscription_status=Company.SUBSCRIPTION_ACTIVE,
+        )
+        self.owner_b = User.objects.create_user(
+            username="hosp_m4_owner_b",
+            email="hosp_m4_b@test.com",
+            password="Password123!",
+            role=User.ROLE_OWNER,
+            company=self.hospital_b,
+        )
+        self.dept = HospitalDepartment.objects.create(
+            company=self.hospital_a,
+            name="Cardiology",
+            code="CARD",
+            is_active=True,
+        )
+        self.doc = HospitalDoctor.objects.create(
+            company=self.hospital_a,
+            department=self.dept,
+            full_name="Dr. Ayesha Khan",
+            specialization="Cardiologist",
+            qualification="MBBS, FCPS",
+            consultation_fee=Decimal("2500.00"),
+            room_number="OPD Room 4",
+            is_active=True,
+        )
+        self.client.force_authenticate(user=self.owner_a)
+
+    def test_mrn_generation_patient_360_prescriptions_kpis_and_isolation(self):
+        # 1. Sequential atomic MRN generation: MRN-0001, MRN-0002
+        p1_res = self.client.post(
+            "/api/operations/hospital/patients/",
+            {
+                "full_name": "Ali Raza",
+                "phone": "03001112233",
+                "age": 42,
+                "gender": "male",
+                "blood_group": "B+",
+                "allergies": "Penicillin",
+                "chronic_conditions": "Hypertension",
+            },
+            format="json",
+        )
+        self.assertEqual(p1_res.status_code, 201)
+        p1 = p1_res.json()
+        self.assertEqual(p1["mrn"], "MRN-0001")
+        self.assertEqual(p1["blood_group"], "B+")
+
+        p2_res = self.client.post(
+            "/api/operations/hospital/patients/",
+            {
+                "full_name": "Fatima Noor",
+                "phone": "03009998877",
+                "age": 31,
+                "gender": "female",
+                "blood_group": "O+",
+            },
+            format="json",
+        )
+        self.assertEqual(p2_res.status_code, 201)
+        self.assertEqual(p2_res.json()["mrn"], "MRN-0002")
+
+        # 2. Create OPD appointment matching patient 1's phone so Patient 360° picks it up
+        appt_res = self.client.post(
+            "/api/operations/hospital/appointments/",
+            {
+                "doctor_id": self.doc.id,
+                "patient_name": "Ali Raza",
+                "patient_phone": "03001112233",
+                "chief_complaint": "Elevated BP",
+            },
+            format="json",
+        )
+        self.assertEqual(appt_res.status_code, 201)
+
+        # 3. Prescription creation with RX-0001, vitals, and structured medications
+        rx_res = self.client.post(
+            "/api/operations/hospital/prescriptions/",
+            {
+                "patient_id": p1["id"],
+                "doctor_id": self.doc.id,
+                "appointment_id": appt_res.json()["id"],
+                "vitals": {"bp": "140/90", "pulse": "78", "temp": "98.6 F", "weight": "74 kg"},
+                "diagnosis": "Stage 1 Essential Hypertension",
+                "medications": [
+                    {
+                        "name": "Amlodipine 5mg",
+                        "dosage": "1 tab",
+                        "frequency": "1+0+0",
+                        "duration": "30 days",
+                        "instructions": "Morning after breakfast",
+                    },
+                    {
+                        "name": "Panadol 500mg",
+                        "dosage": "1 tab",
+                        "frequency": "1+0+1",
+                        "duration": "5 days",
+                        "instructions": "If headache",
+                    },
+                ],
+                "lab_tests_advised": "ECG, Lipid Profile",
+                "clinical_notes": "Low sodium diet and daily walk.",
+            },
+            format="json",
+        )
+        self.assertEqual(rx_res.status_code, 201)
+        rx = rx_res.json()
+        self.assertEqual(rx["rx_number"], "RX-0001")
+        self.assertEqual(rx["vitals"]["bp"], "140/90")
+        self.assertEqual(len(rx["medications"]), 2)
+        self.assertEqual(rx["hospital"]["name"], "HospitalCare EMR Alpha")
+
+        # Patient 360° EMR detail includes prescriptions + matched appointments
+        emr_res = self.client.get(f"/api/operations/hospital/patients/{p1['id']}/")
+        self.assertEqual(emr_res.status_code, 200)
+        emr = emr_res.json()
+        self.assertEqual(emr["mrn"], "MRN-0001")
+        self.assertEqual(len(emr["prescriptions"]), 1)
+        self.assertEqual(emr["prescriptions"][0]["rx_number"], "RX-0001")
+        self.assertEqual(len(emr["appointments"]), 1)
+
+        # 4. Dashboard KPIs reflect total_patients and today_prescriptions
+        dash = self.client.get("/api/operations/hospital/dashboard/").json()
+        self.assertEqual(dash["kpis"]["total_patients"], 2)
+        self.assertEqual(dash["kpis"]["today_prescriptions"], 1)
+
+        # 5. Strict multi-tenant isolation: Hospital B cannot access Hospital A's patients or prescriptions
+        client_b = APIClient()
+        client_b.force_authenticate(user=self.owner_b)
+        self.assertEqual(client_b.get("/api/operations/hospital/patients/").json()["count"], 0)
+        self.assertEqual(client_b.get(f"/api/operations/hospital/patients/{p1['id']}/").status_code, 404)
+        self.assertEqual(client_b.get("/api/operations/hospital/prescriptions/").json()["count"], 0)
+        self.assertEqual(client_b.get(f"/api/operations/hospital/prescriptions/{rx['id']}/").status_code, 404)

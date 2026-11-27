@@ -57,6 +57,8 @@ import HospitalDashboard from "./operations/HospitalDashboard";
 import HospitalDepartmentsWards from "./operations/HospitalDepartmentsWards";
 import HospitalDoctorsDirectory from "./operations/HospitalDoctorsDirectory";
 import HospitalAppointments from "./operations/HospitalAppointments";
+import HospitalPatients from "./operations/HospitalPatients";
+import HospitalPrescriptions from "./operations/HospitalPrescriptions";
 import AnalyticsReports from "./operations/AnalyticsReports";
 import NotificationSettings from "./operations/NotificationSettings";
 import TablesFloorPlan from "./operations/TablesFloorPlan";
@@ -99,7 +101,9 @@ function OwnerModulePage() {
   if (moduleKey === "orders" || moduleKey === "deliveries") return <OrdersDashboard />;
   if (moduleKey === "inventory" && isRestaurantUser(user)) return <RestaurantInventoryRecipes />;
   if (moduleKey === "calls") return <CallsDashboard />;
-  if (moduleKey === "prescriptions") return <PharmacyPrescriptions />;
+  if (moduleKey === "prescriptions") {
+    return isHospitalUser(user) ? <HospitalPrescriptions /> : <PharmacyPrescriptions />;
+  }
   if (moduleKey === "expiry_tracking") return <PharmacyBatches />;
   if (moduleKey === "departments") return <HospitalDepartmentsWards />;
   if (moduleKey === "lab_tests") return <HospitalDashboard defaultTab="lab_tests" />;
@@ -116,7 +120,9 @@ function OwnerModulePage() {
   if (moduleKey === "doctors") {
     return isHospitalUser(user) ? <HospitalDoctorsDirectory /> : <ClinicDoctors />;
   }
-  if (moduleKey === "patients") return <ClinicPatients />;
+  if (moduleKey === "patients") {
+    return isHospitalUser(user) ? <HospitalPatients /> : <ClinicPatients />;
+  }
   if (moduleKey === "fulfillment") return <RetailFulfillment />;
   if (moduleKey === "returns") return <RetailReturns />;
   return (
@@ -148,7 +154,9 @@ function StaffModulePage() {
   }
   if (moduleKey === "customers" && isRestaurantUser(user)) return <RestaurantCustomersCRM staff />;
   if (moduleKey === "my_deliveries") return <RiderDeliveries />;
-  if (moduleKey === "prescriptions") return <PharmacyPrescriptions staff />;
+  if (moduleKey === "prescriptions") {
+    return isHospitalUser(user) ? <HospitalPrescriptions staff /> : <PharmacyPrescriptions staff />;
+  }
   if (moduleKey === "expiry_tracking") return <PharmacyBatches staff />;
   if (moduleKey === "departments") return <HospitalDepartmentsWards staff />;
   if (moduleKey === "lab_tests") return <HospitalDashboard staff defaultTab="lab_tests" />;
@@ -165,7 +173,9 @@ function StaffModulePage() {
   if (moduleKey === "doctors") {
     return isHospitalUser(user) ? <HospitalDoctorsDirectory staff /> : <ClinicDoctors staff />;
   }
-  if (moduleKey === "patients") return <ClinicPatients staff />;
+  if (moduleKey === "patients") {
+    return isHospitalUser(user) ? <HospitalPatients staff /> : <ClinicPatients staff />;
+  }
   if (moduleKey === "fulfillment") return <RetailFulfillment staff />;
   if (moduleKey === "returns") return <RetailReturns staff />;
   if (["products", "menu", "medicines", "services"].includes(moduleKey)) return <StaffLayout title={moduleLabel(moduleKey)}><Catalog moduleKey={moduleKey} /></StaffLayout>;
