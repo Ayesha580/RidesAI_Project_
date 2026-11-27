@@ -7,6 +7,7 @@ import { isUserOverrideOrActive } from "../../components/Guards";
 import { billingApi, roleApi, staffApi } from "../../api/staffApi";
 import ConversationsAndOrdersDashboard from "../../operations/components/ConversationsAndOrdersDashboard";
 import RestaurantExecutiveDashboard from "./RestaurantExecutiveDashboard";
+import HospitalExecutiveDashboard from "../../operations/HospitalExecutiveDashboard";
 
 const RESTAURANT_VERTICAL_HINTS = ["restaurant", "cafe", "café", "food", "bakery", "fast food", "hotel"];
 
@@ -16,6 +17,12 @@ function isRestaurantVertical(user) {
   return RESTAURANT_VERTICAL_HINTS.some(
     (hint) => rawType === hint || rawType.includes(hint) || rawLabel.includes(hint)
   );
+}
+
+function isHospitalVertical(user) {
+  const rawType = String(user?.business_type || "").trim().toLowerCase();
+  const rawLabel = String(user?.business_label || "").trim().toLowerCase();
+  return rawType.includes("hospital") || rawLabel.includes("hospital");
 }
 
 const PALETTE = ["#ff77ff", "#8054d9", "#3a0a3a", "#f4a6d7", "#a78bfa", "#f5b942", "#38b99a"];
@@ -104,6 +111,9 @@ export default function OwnerDashboard() {
   const { user } = useAuth();
   if (isRestaurantVertical(user)) {
     return <RestaurantExecutiveDashboard />;
+  }
+  if (isHospitalVertical(user)) {
+    return <HospitalExecutiveDashboard />;
   }
   return <DefaultOwnerDashboard />;
 }

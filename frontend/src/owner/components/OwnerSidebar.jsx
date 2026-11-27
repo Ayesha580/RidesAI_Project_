@@ -156,8 +156,11 @@ const css = `
   background:#ff77ff;
 }
 .ol-nav-icon{
-  width:20px;
-  min-width:20px;
+  width:22px;
+  min-width:22px;
+  flex-shrink:0;
+  overflow:hidden;
+  line-height:1;
   display:grid;
   place-items:center;
   font-size:15px;

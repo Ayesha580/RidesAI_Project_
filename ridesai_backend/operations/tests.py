@@ -8568,3 +8568,165 @@ class RestaurantProductionHardeningTests(TestCase):
         rep = self.client.get("/api/operations/restaurant/reports/?range=all").json()
         self.assertEqual(rep["kpis"]["total_expenses"], 7000.0)
         self.assertEqual(rep["kpis"]["net_profit"], -5800.0)
+
+
+class HospitalModule1Tests(TestCase):
+    """Hospital Module 1: Executive Dashboard, Departments, Wards, Live Bed Map & Atomic IPD Admissions."""
+
+    def setUp(self):
+        from companies.models import Company
+        from accounts.models import User
+
+        self.hospital_a = Company.objects.create(
+            name="City Care Hospital",
+            business_type="hospital",
+            subscription_status="active",
+        )
+        self.hospital_b = Company.objects.create(
+            name="Other Medical Center",
+            business_type="hospital",
+            subscription_status="active",
+        )
+        self.owner_a = User.objects.create_user(
+            username="hosp_owner_a",
+            email="hosp_a@test.com",
+            password="pass",
+            role=User.ROLE_OWNER,
+            company=self.hospital_a,
+            is_active=True,
+        )
+        self.owner_b = User.objects.create_user(
+            username="hosp_owner_b",
+            email="hosp_b@test.com",
+            password="pass",
+            role=User.ROLE_OWNER,
+            company=self.hospital_b,
+            is_active=True,
+        )
+        self.client = APIClient()
+        self.client.force_authenticate(user=self.owner_a)
+
+    def test_department_ward_auto_beds_atomic_admit_discharge_and_dashboard_kpis(self):
+        from operations.models import HospitalAdmission, HospitalBed
+
+        # 1. Create Department
+        dept_res = self.client.post(
+            "/api/operations/hospital/departments/",
+            {
+                "name": "Cardiology",
+                "code": "CARD",
+                "head_of_department": "Dr. Salman",
+                "floor_location": "3rd Floor",
+                "phone_ext": "301",
+                "is_24_7": True,
+            },
+            format="json",
+        )
+        self.assertEqual(dept_res.status_code, 201)
+        dept_id = dept_res.json()["id"]
+        self.assertEqual(dept_res.json()["code"], "CARD")
+
+        # 2. Create Ward with auto_create_beds=4
+        ward_res = self.client.post(
+            "/api/operations/hospital/wards/",
+            {
+                "name": "ICU Ward A",
+                "department_id": dept_id,
+                "ward_type": "icu",
+                "daily_bed_rate": "5000.00",
+                "floor": "3rd Floor",
+                "auto_create_beds": 4,
+                "bed_prefix": "ICU",
+            },
+            format="json",
+        )
+        self.assertEqual(ward_res.status_code, 201)
+        ward_data = ward_res.json()
+        self.assertEqual(ward_data["total_beds"], 4)
+        self.assertEqual(ward_data["available_beds"], 4)
+        bed_numbers = [b["bed_number"] for b in ward_data["beds"]]
+        self.assertEqual(bed_numbers, ["ICU-01", "ICU-02", "ICU-03", "ICU-04"])
+        bed_1_id = ward_data["beds"][0]["id"]
+
+        # 3. Atomic Bed Admission (available -> occupied)
+        adm_res = self.client.post(
+            f"/api/operations/hospital/beds/{bed_1_id}/admit/",
+            {
+                "patient_name": "Bilal Ahmed",
+                "patient_phone": "+923001112222",
+                "attending_doctor": "Dr. Salman",
+                "diagnosis": "Chest Pain Observation",
+            },
+            format="json",
+        )
+        self.assertEqual(adm_res.status_code, 201)
+        self.assertEqual(adm_res.json()["bed"]["status"], HospitalBed.STATUS_OCCUPIED)
+        self.assertEqual(adm_res.json()["admission"]["status"], HospitalAdmission.STATUS_ADMITTED)
+
+        # 4. Double-admission guard returns 409 Conflict
+        dup_res = self.client.post(
+            f"/api/operations/hospital/beds/{bed_1_id}/admit/",
+            {"patient_name": "Another Patient"},
+            format="json",
+        )
+        self.assertEqual(dup_res.status_code, 409)
+
+        # 5. Dashboard KPI accuracy while 1/4 beds occupied
+        dash = self.client.get("/api/operations/hospital/dashboard/").json()
+        self.assertEqual(dash["kpis"]["total_departments"], 1)
+        self.assertEqual(dash["kpis"]["total_wards"], 1)
+        self.assertEqual(dash["kpis"]["total_beds"], 4)
+        self.assertEqual(dash["kpis"]["occupied_beds"], 1)
+        self.assertEqual(dash["kpis"]["available_beds"], 3)
+        self.assertEqual(dash["kpis"]["bed_occupancy_pct"], 25.0)
+        self.assertEqual(dash["kpis"]["active_admissions_count"], 1)
+        self.assertEqual(dash["kpis"]["admissions_today"], 1)
+
+        # 6. Discharge calculates total_bed_charges (>= 1 day * 5000 = 5000) & moves bed to cleaning
+        dis_res = self.client.post(
+            f"/api/operations/hospital/beds/{bed_1_id}/discharge/",
+            {"notes": "Stable, discharged with medication"},
+            format="json",
+        )
+        self.assertEqual(dis_res.status_code, 200)
+        self.assertEqual(dis_res.json()["bed"]["status"], HospitalBed.STATUS_CLEANING)
+        self.assertEqual(dis_res.json()["stay_days"], 1)
+        self.assertEqual(dis_res.json()["total_bed_charges"], 5000.0)
+        self.assertEqual(dis_res.json()["admission"]["status"], HospitalAdmission.STATUS_DISCHARGED)
+
+        # 7. Mark cleaning bed back to available
+        ready_res = self.client.patch(
+            f"/api/operations/hospital/beds/{bed_1_id}/",
+            {"status": "available"},
+            format="json",
+        )
+        self.assertEqual(ready_res.status_code, 200)
+        self.assertEqual(ready_res.json()["status"], HospitalBed.STATUS_AVAILABLE)
+
+    def test_multi_tenant_isolation_between_hospitals(self):
+        # Create ward + beds in Hospital A
+        w_res = self.client.post(
+            "/api/operations/hospital/wards/",
+            {"name": "Private Wing", "ward_type": "private", "auto_create_beds": 2, "bed_prefix": "PVT"},
+            format="json",
+        )
+        self.assertEqual(w_res.status_code, 201)
+        bed_id = w_res.json()["beds"][0]["id"]
+
+        # Hospital B cannot see Hospital A's wards/beds or admit into Hospital A's bed
+        client_b = APIClient()
+        client_b.force_authenticate(user=self.owner_b)
+
+        dash_b = client_b.get("/api/operations/hospital/dashboard/").json()
+        self.assertEqual(dash_b["kpis"]["total_wards"], 0)
+        self.assertEqual(dash_b["kpis"]["total_beds"], 0)
+
+        wards_b = client_b.get("/api/operations/hospital/wards/").json()
+        self.assertEqual(len(wards_b), 0)
+
+        admit_cross = client_b.post(
+            f"/api/operations/hospital/beds/{bed_id}/admit/",
+            {"patient_name": "Unauthorized"},
+            format="json",
+        )
+        self.assertEqual(admit_cross.status_code, 404)
