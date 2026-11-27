@@ -9415,3 +9415,95 @@ class HospitalModule5Tests(TestCase):
         self.assertEqual(client_b.get(f"/api/operations/hospital/lab-orders/{o1['id']}/").status_code, 404)
         rep_b = client_b.get("/api/operations/hospital/reports/summary/?days=30").json()
         self.assertEqual(rep_b["revenue"]["total_revenue"], 0.0)
+
+
+class HospitalEvolutionWebhookTests(TestCase):
+    """Tests Evolution API WhatsApp webhook routing & auto-reply for Hospital tenants."""
+
+    def setUp(self):
+        from operations.models import HospitalDepartment, HospitalDoctor, HospitalDoctorSchedule
+        from datetime import time as _time
+        self.client = APIClient()
+        self.hospital = Company.objects.create(
+            name="HospitalCare Webhook Test",
+            business_type="hospital",
+            status=Company.STATUS_ACTIVE,
+            payment_status=Company.PAYMENT_OK,
+            subscription_status=Company.SUBSCRIPTION_ACTIVE,
+            agent_enabled=False,  # Simulates brand-new tenant before QR connection
+            whatsapp_instance_name="",
+        )
+        dept = HospitalDepartment.objects.create(
+            company=self.hospital, name="Cardiology", code="CARD", is_active=True
+        )
+        doc = HospitalDoctor.objects.create(
+            company=self.hospital,
+            department=dept,
+            full_name="Dr. Ayesha Khan",
+            specialization="Cardiologist",
+            consultation_fee=Decimal("2500.00"),
+            room_number="OPD Room 4",
+            is_active=True,
+        )
+        HospitalDoctorSchedule.objects.create(
+            company=self.hospital,
+            doctor=doc,
+            day_of_week="mon",
+            start_time=_time(9, 0),
+            end_time=_time(14, 0),
+            is_active=True,
+        )
+
+    @patch("operations.evolution_client.send_text_message")
+    @patch("operations.whatsapp_agent.synthesize_speech", return_value=None)
+    @patch("operations.evolution_client.configure_instance_settings")
+    def test_hospital_evolution_webhook_auto_enables_and_replies(self, mock_cfg, mock_tts, mock_send):
+        mock_send.return_value = {"status": "SUCCESS", "key": {"id": "msg_123"}}
+        instance_name = f"company_{self.hospital.id}"
+
+        # 1. Connection update (open) resolves company_<id> fallback and auto-enables agent_enabled
+        conn_res = self.client.post(
+            "/api/operations/whatsapp/evolution-webhook/connection-update",
+            {
+                "event": "connection.update",
+                "instance": instance_name,
+                "data": {"state": "open"},
+            },
+            format="json",
+        )
+        self.assertEqual(conn_res.status_code, 200)
+        self.hospital.refresh_from_db()
+        self.assertEqual(self.hospital.whatsapp_connection_status, "connected")
+        self.assertEqual(self.hospital.whatsapp_instance_name, instance_name)
+        self.assertTrue(self.hospital.agent_enabled)
+
+        # 2. Incoming patient message via messages-upsert slug triggers Hospital AI reply & Evolution send
+        msg_res = self.client.post(
+            "/api/operations/whatsapp/evolution-webhook/messages-upsert",
+            {
+                "event": "messages-upsert",
+                "instance": instance_name,
+                "data": {
+                    "key": {
+                        "remoteJid": "923001112233@s.whatsapp.net",
+                        "fromMe": False,
+                        "id": "WA_MSG_001",
+                    },
+                    "pushName": "Ali Raza",
+                    "message": {
+                        "conversation": "cardiologist kon hai aur unki fee kitni hai?",
+                    },
+                },
+            },
+            format="json",
+        )
+        self.assertEqual(msg_res.status_code, 200)
+        body = msg_res.json()
+        self.assertEqual(body["status"], "processed")
+        self.assertTrue(body["result"]["success"])
+        mock_send.assert_called_once()
+        call_kwargs = mock_send.call_args[1]
+        self.assertEqual(call_kwargs["instance_name"], instance_name)
+        self.assertEqual(call_kwargs["phone"], "923001112233")
+        self.assertIn("Dr. Ayesha Khan", call_kwargs["text"])
+        self.assertIn("2500", call_kwargs["text"])

@@ -1,8 +1,43 @@
 import React, { useState, useEffect, useRef } from "react";
 import { operationsApi } from "../../../api/operationsApi";
 import { errorText } from "../../../api/axiosClient";
+import { useAuth } from "../../../context/AuthContext";
+
+function getVerticalLiveCopy(businessType, businessLabel) {
+  const b = `${businessType || ""} ${businessLabel || ""}`.toLowerCase();
+  if (b.includes("hospital")) {
+    return {
+      title: "Your WhatsApp AI Agent is live!",
+      desc: "Patient messages sent to this WhatsApp account will be handled automatically by your Hospital AI Assistant (doctors, OPD appointments, consultation fees, and lab inquiries).",
+    };
+  }
+  if (b.includes("clinic")) {
+    return {
+      title: "Your WhatsApp AI Agent is live!",
+      desc: "Patient messages sent to this WhatsApp account will be handled automatically by your Clinic AI Receptionist for doctor schedules and appointment bookings.",
+    };
+  }
+  if (b.includes("pharmacy")) {
+    return {
+      title: "Your WhatsApp AI Agent is live!",
+      desc: "Customer medicine inquiries and prescription requests sent to this WhatsApp account will be handled automatically by your Pharmacy AI Assistant.",
+    };
+  }
+  if (["restaurant", "cafe", "café", "food", "bakery", "fast food", "hotel"].some((k) => b.includes(k))) {
+    return {
+      title: "Your WhatsApp AI Agent is live and taking orders!",
+      desc: "Customer messages sent to this WhatsApp account will be automatically parsed, confirmed, and entered into your kitchen dashboard.",
+    };
+  }
+  return {
+    title: "Your WhatsApp AI Agent is live!",
+    desc: "Customer messages sent to this WhatsApp account will be handled automatically by your Business AI Assistant and synced to your dashboard.",
+  };
+}
 
 export default function WhatsAppConnectCard() {
+  const { user } = useAuth();
+  const liveCopy = getVerticalLiveCopy(user?.business_type, user?.business_label);
   const [status, setStatus] = useState("disconnected");
   const [instanceName, setInstanceName] = useState("");
   const [qrcodeBase64, setQrcodeBase64] = useState(null);
@@ -482,9 +517,9 @@ export default function WhatsAppConnectCard() {
         <div className="wa-banner-success">
           <span style={{ fontSize: 20 }}>✅</span>
           <div>
-            <strong>Your WhatsApp AI Agent is live and taking orders!</strong>
+            <strong>{liveCopy.title}</strong>
             <div style={{ fontSize: 12.5, color: "#15803d", marginTop: 2 }}>
-              Customer messages sent to this WhatsApp account will be automatically parsed, confirmed, and entered into your kitchen dashboard.
+              {liveCopy.desc}
             </div>
           </div>
         </div>
