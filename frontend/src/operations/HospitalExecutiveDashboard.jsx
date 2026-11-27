@@ -94,6 +94,37 @@ export default function HospitalExecutiveDashboard() {
     },
   ];
 
+  const clinicalKpiCards = [
+    {
+      label: "Total Patients (EMR)",
+      value: kpis.total_patients ?? 0,
+      sub: "Registered MRN profiles",
+      to: "/owner/m/patients",
+      color: "#0f172a",
+    },
+    {
+      label: "Today's Prescriptions",
+      value: kpis.today_prescriptions ?? 0,
+      sub: "Digital Rx issued today",
+      to: "/owner/m/prescriptions",
+      color: "#86198f",
+    },
+    {
+      label: "Pending Lab Orders",
+      value: kpis.pending_lab_orders ?? 0,
+      sub: "Awaiting sample / report",
+      to: "/owner/m/lab_tests",
+      color: "#b45309",
+    },
+    {
+      label: "Today's Total Revenue",
+      value: formatMoney(kpis.today_total_revenue ?? ((kpis.today_opd_revenue || 0) + (kpis.today_lab_revenue || 0))),
+      sub: `OPD ${formatMoney(kpis.today_opd_revenue || 0)} • Lab ${formatMoney(kpis.today_lab_revenue || 0)}`,
+      to: "/owner/m/reports",
+      color: "#047857",
+    },
+  ];
+
   return (
     <OwnerLayout
       title="Hospital Executive Dashboard"
@@ -220,6 +251,37 @@ export default function HospitalExecutiveDashboard() {
                 {card.sub}
               </div>
             </div>
+          ))}
+        </div>
+
+        {/* Clinical & Revenue KPI Row (Modules 3-5 Live) */}
+        <div
+          style={{
+            display: "grid",
+            gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))",
+            gap: 12,
+          }}
+        >
+          {clinicalKpiCards.map((card) => (
+            <Link
+              key={card.label}
+              to={card.to}
+              style={{
+                textDecoration: "none",
+                background: "#ffffff",
+                borderRadius: 12,
+                padding: "14px 16px",
+                border: "1px solid #e2e8f0",
+                boxShadow: "0 1px 2px rgba(15, 23, 42, 0.03)",
+                display: "block",
+              }}
+            >
+              <div style={{ fontSize: 11.5, fontWeight: 700, color: "#64748b" }}>{card.label}</div>
+              <div style={{ fontSize: 21, fontWeight: 800, color: card.color, marginTop: 4 }}>
+                {loading ? "—" : card.value}
+              </div>
+              <div style={{ fontSize: 11.5, color: "#64748b", marginTop: 3 }}>{card.sub}</div>
+            </Link>
           ))}
         </div>
 
