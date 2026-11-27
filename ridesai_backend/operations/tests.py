@@ -9219,3 +9219,199 @@ class HospitalModule4Tests(TestCase):
         self.assertEqual(client_b.get(f"/api/operations/hospital/patients/{p1['id']}/").status_code, 404)
         self.assertEqual(client_b.get("/api/operations/hospital/prescriptions/").json()["count"], 0)
         self.assertEqual(client_b.get(f"/api/operations/hospital/prescriptions/{rx['id']}/").status_code, 404)
+
+
+class HospitalModule5Tests(TestCase):
+    """PostgreSQL 16 tests for Hospital Module 5: Lab Tests, Diagnostic Reports & Hospital Analytics."""
+
+    def setUp(self):
+        from operations.models import (
+            HospitalDepartment,
+            HospitalDoctor,
+            HospitalPatient,
+            HospitalWard,
+            HospitalBed,
+            HospitalAdmission,
+        )
+        self.client = APIClient()
+        self.hospital_a = Company.objects.create(
+            name="HospitalCare Lab Alpha",
+            business_type="hospital",
+            status=Company.STATUS_ACTIVE,
+            payment_status=Company.PAYMENT_OK,
+            subscription_status=Company.SUBSCRIPTION_ACTIVE,
+        )
+        self.owner_a = User.objects.create_user(
+            username="hosp_m5_owner_a",
+            email="hosp_m5_a@test.com",
+            password="Password123!",
+            role=User.ROLE_OWNER,
+            company=self.hospital_a,
+        )
+        self.hospital_b = Company.objects.create(
+            name="HospitalCare Lab Beta",
+            business_type="hospital",
+            status=Company.STATUS_ACTIVE,
+            payment_status=Company.PAYMENT_OK,
+            subscription_status=Company.SUBSCRIPTION_ACTIVE,
+        )
+        self.owner_b = User.objects.create_user(
+            username="hosp_m5_owner_b",
+            email="hosp_m5_b@test.com",
+            password="Password123!",
+            role=User.ROLE_OWNER,
+            company=self.hospital_b,
+        )
+        self.dept = HospitalDepartment.objects.create(
+            company=self.hospital_a, name="Cardiology", code="CARD", is_active=True
+        )
+        self.doc = HospitalDoctor.objects.create(
+            company=self.hospital_a,
+            department=self.dept,
+            full_name="Dr. Ayesha Khan",
+            specialization="Cardiologist",
+            consultation_fee=Decimal("2500.00"),
+            is_active=True,
+        )
+        self.patient = HospitalPatient.objects.create(
+            company=self.hospital_a,
+            mrn="MRN-0001",
+            full_name="Ali Raza",
+            phone="03001112233",
+            age=42,
+            gender="male",
+            blood_group="B+",
+        )
+        self.ward = HospitalWard.objects.create(
+            company=self.hospital_a,
+            department=self.dept,
+            name="ICU Ward A",
+            ward_type=HospitalWard.WARD_ICU,
+            daily_bed_rate=Decimal("10000.00"),
+        )
+        self.bed = HospitalBed.objects.create(
+            company=self.hospital_a,
+            ward=self.ward,
+            bed_number="ICU-01",
+            status=HospitalBed.STATUS_AVAILABLE,
+        )
+        # Discharged IPD admission with Rs. 10,000 bed charges
+        HospitalAdmission.objects.create(
+            company=self.hospital_a,
+            bed=self.bed,
+            patient_name="Ali Raza",
+            patient_phone="03001112233",
+            attending_doctor="Dr. Ayesha Khan",
+            status=HospitalAdmission.STATUS_DISCHARGED,
+            discharged_at=timezone.now(),
+            daily_rate=Decimal("10000.00"),
+            total_bed_charges=Decimal("10000.00"),
+        )
+        self.client.force_authenticate(user=self.owner_a)
+
+    def test_lab_catalog_orders_results_reports_and_isolation(self):
+        # 1. Lab Test Catalog CRUD
+        cat_res = self.client.post(
+            "/api/operations/hospital/lab-catalog/",
+            {
+                "test_code": "cbc",
+                "name": "Complete Blood Count",
+                "category": "hematology",
+                "price": 1200,
+                "normal_range": "4.5 - 11.0 x10^9/L",
+                "unit": "x10^9/L",
+                "turnaround_hours": 6,
+            },
+            format="json",
+        )
+        self.assertEqual(cat_res.status_code, 201)
+        cat_item = cat_res.json()
+        self.assertEqual(cat_item["test_code"], "CBC")
+        self.assertEqual(cat_item["price"], 1200.0)
+
+        # 2. Atomic LAB-0001 and LAB-0002 order creation
+        o1_res = self.client.post(
+            "/api/operations/hospital/lab-orders/",
+            {
+                "patient_id": self.patient.id,
+                "doctor_id": self.doc.id,
+                "test_id": cat_item["id"],
+            },
+            format="json",
+        )
+        self.assertEqual(o1_res.status_code, 201)
+        o1 = o1_res.json()
+        self.assertEqual(o1["order_number"], "LAB-0001")
+        self.assertEqual(o1["test_name"], "Complete Blood Count")
+        self.assertEqual(o1["fee"], 1200.0)
+
+        o2_res = self.client.post(
+            "/api/operations/hospital/lab-orders/",
+            {
+                "patient_id": self.patient.id,
+                "test_name": "ECG 12-Lead",
+                "category": "cardiology",
+                "fee": 800,
+            },
+            format="json",
+        )
+        self.assertEqual(o2_res.status_code, 201)
+        self.assertEqual(o2_res.json()["order_number"], "LAB-0002")
+
+        # 3. Submit lab result -> completed_at auto-set, flag=abnormal, payment=paid
+        res_post = self.client.post(
+            f"/api/operations/hospital/lab-orders/{o1['id']}/result/",
+            {
+                "status": "completed",
+                "result_value": "WBC 14.2 x10^9/L",
+                "result_flag": "abnormal",
+                "payment_status": "paid",
+                "technician_notes": "Mild leukocytosis noted.",
+            },
+            format="json",
+        )
+        self.assertEqual(res_post.status_code, 200)
+        res_data = res_post.json()
+        self.assertEqual(res_data["status"], "completed")
+        self.assertEqual(res_data["result_flag"], "abnormal")
+        self.assertEqual(res_data["payment_status"], "paid")
+        self.assertIsNotNone(res_data["completed_at"])
+
+        # Add a paid OPD appointment (Rs. 2500) so Reports Summary aggregates OPD + IPD + Lab
+        appt = self.client.post(
+            "/api/operations/hospital/appointments/",
+            {
+                "doctor_id": self.doc.id,
+                "patient_name": "Ali Raza",
+                "patient_phone": "03001112233",
+                "payment_status": "paid",
+            },
+            format="json",
+        )
+        self.assertEqual(appt.status_code, 201)
+
+        # 4. Hospital Reports Summary accurately aggregates opd + ipd + lab revenue
+        rep_res = self.client.get("/api/operations/hospital/reports/summary/?days=30")
+        self.assertEqual(rep_res.status_code, 200)
+        rep = rep_res.json()
+        self.assertEqual(rep["revenue"]["opd_revenue"], 2500.0)
+        self.assertEqual(rep["revenue"]["ipd_revenue"], 10000.0)
+        self.assertEqual(rep["revenue"]["lab_revenue"], 1200.0)
+        self.assertEqual(rep["revenue"]["total_revenue"], 13700.0)
+        self.assertEqual(rep["operational"]["completed_lab_orders"], 1)
+        self.assertEqual(len(rep["top_doctors"]), 1)
+
+        # Dashboard KPIs include pending_lab_orders=1, today_lab_revenue=1200, today_total_revenue=3700
+        dash = self.client.get("/api/operations/hospital/dashboard/").json()
+        self.assertEqual(dash["kpis"]["pending_lab_orders"], 1)
+        self.assertEqual(dash["kpis"]["today_lab_revenue"], 1200.0)
+        self.assertEqual(dash["kpis"]["today_total_revenue"], 3700.0)
+
+        # 5. Strict multi-tenant isolation: Hospital B cannot see A's lab catalog, orders, or reports
+        client_b = APIClient()
+        client_b.force_authenticate(user=self.owner_b)
+        self.assertEqual(client_b.get("/api/operations/hospital/lab-catalog/").json()["count"], 0)
+        self.assertEqual(client_b.get("/api/operations/hospital/lab-orders/").json()["count"], 0)
+        self.assertEqual(client_b.get(f"/api/operations/hospital/lab-orders/{o1['id']}/").status_code, 404)
+        rep_b = client_b.get("/api/operations/hospital/reports/summary/?days=30").json()
+        self.assertEqual(rep_b["revenue"]["total_revenue"], 0.0)

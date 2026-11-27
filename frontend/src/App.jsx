@@ -59,6 +59,8 @@ import HospitalDoctorsDirectory from "./operations/HospitalDoctorsDirectory";
 import HospitalAppointments from "./operations/HospitalAppointments";
 import HospitalPatients from "./operations/HospitalPatients";
 import HospitalPrescriptions from "./operations/HospitalPrescriptions";
+import HospitalLabTests from "./operations/HospitalLabTests";
+import HospitalReports from "./operations/HospitalReports";
 import AnalyticsReports from "./operations/AnalyticsReports";
 import NotificationSettings from "./operations/NotificationSettings";
 import TablesFloorPlan from "./operations/TablesFloorPlan";
@@ -106,8 +108,11 @@ function OwnerModulePage() {
   }
   if (moduleKey === "expiry_tracking") return <PharmacyBatches />;
   if (moduleKey === "departments") return <HospitalDepartmentsWards />;
-  if (moduleKey === "lab_tests") return <HospitalDashboard defaultTab="lab_tests" />;
+  if (moduleKey === "lab_tests" || moduleKey === "lab-tests") {
+    return isHospitalUser(user) ? <HospitalLabTests /> : <HospitalDashboard defaultTab="lab_tests" />;
+  }
   if (moduleKey === "reports") {
+    if (isHospitalUser(user)) return <HospitalReports />;
     return isRestaurantUser(user) ? <RestaurantReportsAnalytics /> : <AnalyticsReports />;
   }
   if (moduleKey === "tables") return <TablesFloorPlan />;
@@ -159,8 +164,11 @@ function StaffModulePage() {
   }
   if (moduleKey === "expiry_tracking") return <PharmacyBatches staff />;
   if (moduleKey === "departments") return <HospitalDepartmentsWards staff />;
-  if (moduleKey === "lab_tests") return <HospitalDashboard staff defaultTab="lab_tests" />;
+  if (moduleKey === "lab_tests" || moduleKey === "lab-tests") {
+    return isHospitalUser(user) ? <HospitalLabTests staff /> : <HospitalDashboard staff defaultTab="lab_tests" />;
+  }
   if (moduleKey === "reports") {
+    if (isHospitalUser(user)) return <HospitalReports staff />;
     return isRestaurantUser(user) ? <RestaurantReportsAnalytics staff /> : <AnalyticsReports staff />;
   }
   if (moduleKey === "tables") return <TablesFloorPlan staff />;

@@ -1966,3 +1966,140 @@ class HospitalPrescription(models.Model):
 
     def __str__(self):
         return f"{self.rx_number} — {self.patient.full_name}"
+
+
+# ============================================================================
+# Hospital Module 5: Lab Tests Catalog & Diagnostic Orders / Reports
+# ============================================================================
+
+class HospitalLabTestCatalog(models.Model):
+    CAT_HEMATOLOGY = "hematology"
+    CAT_BIOCHEMISTRY = "biochemistry"
+    CAT_RADIOLOGY = "radiology"
+    CAT_CARDIOLOGY = "cardiology"
+    CAT_MICROBIOLOGY = "microbiology"
+    CAT_OTHER = "other"
+    CATEGORY_CHOICES = [
+        (CAT_HEMATOLOGY, "Hematology"),
+        (CAT_BIOCHEMISTRY, "Biochemistry"),
+        (CAT_RADIOLOGY, "Radiology"),
+        (CAT_CARDIOLOGY, "Cardiology"),
+        (CAT_MICROBIOLOGY, "Microbiology"),
+        (CAT_OTHER, "Other"),
+    ]
+
+    company = models.ForeignKey(
+        "companies.Company",
+        on_delete=models.CASCADE,
+        related_name="hospital_lab_catalog",
+        db_index=True,
+    )
+    test_code = models.CharField(max_length=40)
+    name = models.CharField(max_length=255)
+    category = models.CharField(max_length=40, choices=CATEGORY_CHOICES, default=CAT_HEMATOLOGY)
+    price = models.DecimalField(max_digits=10, decimal_places=2, default=Decimal("0.00"))
+    normal_range = models.CharField(max_length=255, blank=True, default="")
+    unit = models.CharField(max_length=50, blank=True, default="")
+    turnaround_hours = models.PositiveIntegerField(default=24)
+    is_active = models.BooleanField(default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ("category", "name")
+        constraints = [
+            models.UniqueConstraint(
+                fields=["company", "test_code"],
+                name="unique_hospital_lab_test_code_per_company",
+            )
+        ]
+
+    def __str__(self):
+        return f"{self.test_code} — {self.name}"
+
+
+class HospitalLabOrder(models.Model):
+    PAYMENT_UNPAID = "unpaid"
+    PAYMENT_PAID = "paid"
+    PAYMENT_STATUS_CHOICES = [
+        (PAYMENT_UNPAID, "Unpaid"),
+        (PAYMENT_PAID, "Paid"),
+    ]
+
+    STATUS_ORDERED = "ordered"
+    STATUS_SAMPLE_COLLECTED = "sample_collected"
+    STATUS_IN_PROGRESS = "in_progress"
+    STATUS_COMPLETED = "completed"
+    STATUS_CANCELLED = "cancelled"
+    STATUS_CHOICES = [
+        (STATUS_ORDERED, "Ordered"),
+        (STATUS_SAMPLE_COLLECTED, "Sample Collected"),
+        (STATUS_IN_PROGRESS, "In Progress"),
+        (STATUS_COMPLETED, "Completed"),
+        (STATUS_CANCELLED, "Cancelled"),
+    ]
+
+    FLAG_NORMAL = "normal"
+    FLAG_ABNORMAL = "abnormal"
+    FLAG_CRITICAL = "critical"
+    FLAG_PENDING = "pending"
+    RESULT_FLAG_CHOICES = [
+        (FLAG_NORMAL, "Normal"),
+        (FLAG_ABNORMAL, "Abnormal"),
+        (FLAG_CRITICAL, "Critical"),
+        (FLAG_PENDING, "Pending"),
+    ]
+
+    company = models.ForeignKey(
+        "companies.Company",
+        on_delete=models.CASCADE,
+        related_name="hospital_lab_orders",
+        db_index=True,
+    )
+    order_number = models.CharField(max_length=40)
+    patient = models.ForeignKey(
+        HospitalPatient,
+        on_delete=models.CASCADE,
+        related_name="lab_orders",
+    )
+    doctor = models.ForeignKey(
+        HospitalDoctor,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="lab_orders",
+    )
+    test = models.ForeignKey(
+        HospitalLabTestCatalog,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="orders",
+    )
+    test_name = models.CharField(max_length=255)
+    category = models.CharField(max_length=40, default="other")
+    fee = models.DecimalField(max_digits=10, decimal_places=2, default=Decimal("0.00"))
+    payment_status = models.CharField(max_length=16, choices=PAYMENT_STATUS_CHOICES, default=PAYMENT_UNPAID)
+    status = models.CharField(max_length=24, choices=STATUS_CHOICES, default=STATUS_ORDERED, db_index=True)
+    result_value = models.TextField(blank=True, default="")
+    normal_range = models.CharField(max_length=255, blank=True, default="")
+    result_flag = models.CharField(max_length=20, choices=RESULT_FLAG_CHOICES, default=FLAG_PENDING)
+    technician_notes = models.TextField(blank=True, default="")
+    completed_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ("-created_at", "-id")
+        indexes = [
+            models.Index(fields=["company", "status", "created_at"], name="op_hlab_comp_st_dt_idx"),
+        ]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["company", "order_number"],
+                name="unique_hospital_lab_order_num_per_company",
+            )
+        ]
+
+    def __str__(self):
+        return f"{self.order_number} — {self.test_name} ({self.patient.full_name})"

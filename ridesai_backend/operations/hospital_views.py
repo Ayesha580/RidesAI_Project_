@@ -4,7 +4,7 @@ Provides CRUD endpoints for Hospital Departments & Ward Bed Availability,
 Lab / Diagnostic Test Bookings, and real-time Hospital Operations Summary.
 """
 
-from datetime import datetime
+from datetime import datetime, timedelta
 from decimal import Decimal
 import math
 
@@ -28,6 +28,8 @@ from operations.models import (
     HospitalDepartment,
     HospitalDoctor,
     HospitalDoctorSchedule,
+    HospitalLabOrder,
+    HospitalLabTestCatalog,
     HospitalPatient,
     HospitalPrescription,
     HospitalWard,
@@ -493,6 +495,26 @@ class HospitalDashboardAPIView(HospitalBaseAPIView):
         today_prescriptions = HospitalPrescription.objects.filter(
             company=company, created_at__date=today
         ).count()
+        pending_lab_orders = HospitalLabOrder.objects.filter(
+            company=company,
+            status__in=[
+                HospitalLabOrder.STATUS_ORDERED,
+                HospitalLabOrder.STATUS_SAMPLE_COLLECTED,
+                HospitalLabOrder.STATUS_IN_PROGRESS,
+            ],
+        ).count()
+        today_lab_revenue = float(
+            HospitalLabOrder.objects.filter(
+                company=company,
+                created_at__date=today,
+                payment_status=HospitalLabOrder.PAYMENT_PAID,
+            )
+            .exclude(status=HospitalLabOrder.STATUS_CANCELLED)
+            .aggregate(total=Sum("fee"))
+            .get("total")
+            or Decimal("0.00")
+        )
+        today_total_revenue = round(today_opd_revenue + today_lab_revenue, 2)
 
         return Response({
             "kpis": {
@@ -516,6 +538,9 @@ class HospitalDashboardAPIView(HospitalBaseAPIView):
                 "doctors_available_today": doctors_available_today,
                 "total_patients": total_patients,
                 "today_prescriptions": today_prescriptions,
+                "pending_lab_orders": pending_lab_orders,
+                "today_lab_revenue": today_lab_revenue,
+                "today_total_revenue": today_total_revenue,
             },
             "ward_occupancy_summary": ward_summary,
             "recent_admissions": recent_admissions,
@@ -2159,3 +2184,569 @@ class HospitalPrescriptionDetailAPIView(HospitalBaseAPIView):
         rx = get_object_or_404(HospitalPrescription, pk=pk, company=company)
         rx.delete()
         return Response(status=204)
+
+
+# ============================================================================
+# Hospital Module 5: Lab Tests Catalog, Diagnostic Orders & Analytics Reports
+# ============================================================================
+
+def _serialize_lab_catalog(item: HospitalLabTestCatalog) -> dict:
+    return {
+        "id": item.id,
+        "test_code": item.test_code,
+        "name": item.name,
+        "category": item.category,
+        "category_label": item.get_category_display(),
+        "price": float(item.price or 0),
+        "normal_range": item.normal_range or "",
+        "unit": item.unit or "",
+        "turnaround_hours": item.turnaround_hours,
+        "is_active": bool(item.is_active),
+        "created_at": item.created_at.isoformat() if item.created_at else None,
+        "updated_at": item.updated_at.isoformat() if item.updated_at else None,
+    }
+
+
+def _serialize_lab_order(order: HospitalLabOrder, include_print_meta: bool = False) -> dict:
+    data = {
+        "id": order.id,
+        "order_number": order.order_number,
+        "patient_id": order.patient_id,
+        "patient_name": order.patient.full_name if order.patient else "",
+        "patient_mrn": order.patient.mrn if order.patient else "",
+        "patient_phone": order.patient.phone if order.patient else "",
+        "patient_age": order.patient.age if order.patient else None,
+        "patient_gender": order.patient.gender if order.patient else "",
+        "doctor_id": order.doctor_id,
+        "doctor_name": order.doctor.full_name if order.doctor else "",
+        "doctor_department": (
+            order.doctor.department.name if (order.doctor and order.doctor.department) else ""
+        ),
+        "test_id": order.test_id,
+        "test_code": order.test.test_code if order.test else "",
+        "test_name": order.test_name,
+        "category": order.category or "other",
+        "fee": float(order.fee or 0),
+        "payment_status": order.payment_status,
+        "payment_status_label": order.get_payment_status_display(),
+        "status": order.status,
+        "status_label": order.get_status_display(),
+        "result_value": order.result_value or "",
+        "normal_range": order.normal_range or (order.test.normal_range if order.test else ""),
+        "unit": order.test.unit if order.test else "",
+        "result_flag": order.result_flag,
+        "result_flag_label": order.get_result_flag_display(),
+        "technician_notes": order.technician_notes or "",
+        "completed_at": order.completed_at.isoformat() if order.completed_at else None,
+        "created_at": order.created_at.isoformat() if order.created_at else None,
+        "updated_at": order.updated_at.isoformat() if order.updated_at else None,
+    }
+    if include_print_meta and order.company:
+        data["hospital"] = {
+            "name": order.company.name,
+            "phone": getattr(order.company, "agent_support_phone", "") or getattr(order.company, "phone", "") or "",
+            "address": getattr(order.company, "address", "") or "",
+        }
+    return data
+
+
+class HospitalLabCatalogAPIView(HospitalBaseAPIView):
+    """GET / POST /api/operations/hospital/lab-catalog/"""
+
+    def get(self, request):
+        company = self._get_company(request)
+        if not company:
+            return Response({"detail": "No company associated with this account."}, status=403)
+
+        qs = HospitalLabTestCatalog.objects.filter(company=company)
+        search = str(request.query_params.get("search") or "").strip()
+        if search:
+            qs = qs.filter(Q(name__icontains=search) | Q(test_code__icontains=search))
+        cat = str(request.query_params.get("category") or "").strip().lower()
+        if cat and cat != "all":
+            qs = qs.filter(category=cat)
+
+        items = [_serialize_lab_catalog(t) for t in qs.order_by("category", "name")[:200]]
+        return Response({"count": len(items), "results": items}, status=200)
+
+    def post(self, request):
+        company = self._get_company(request)
+        if not company:
+            return Response({"detail": "No company associated with this account."}, status=403)
+
+        test_code = str(request.data.get("test_code") or "").strip().upper()[:40]
+        name = str(request.data.get("name") or "").strip()[:255]
+        if not test_code:
+            return Response({"test_code": "Test code (e.g., CBC, LFT) is required."}, status=400)
+        if not name:
+            return Response({"name": "Test name is required."}, status=400)
+
+        cat = str(request.data.get("category") or HospitalLabTestCatalog.CAT_HEMATOLOGY).strip().lower()
+        if cat not in {c[0] for c in HospitalLabTestCatalog.CATEGORY_CHOICES}:
+            cat = HospitalLabTestCatalog.CAT_OTHER
+
+        try:
+            price = max(Decimal("0.00"), Decimal(str(request.data.get("price") or "0")))
+        except Exception:
+            price = Decimal("0.00")
+
+        try:
+            tat = max(1, min(720, int(request.data.get("turnaround_hours") or 24)))
+        except (TypeError, ValueError):
+            tat = 24
+
+        try:
+            item = HospitalLabTestCatalog.objects.create(
+                company=company,
+                test_code=test_code,
+                name=name,
+                category=cat,
+                price=price,
+                normal_range=str(request.data.get("normal_range") or "").strip()[:255],
+                unit=str(request.data.get("unit") or "").strip()[:50],
+                turnaround_hours=tat,
+                is_active=bool(request.data.get("is_active", True)),
+            )
+        except IntegrityError:
+            return Response({"test_code": f"Test code '{test_code}' already exists."}, status=400)
+
+        return Response(_serialize_lab_catalog(item), status=201)
+
+
+class HospitalLabCatalogDetailAPIView(HospitalBaseAPIView):
+    """PATCH / DELETE /api/operations/hospital/lab-catalog/<pk>/"""
+
+    def patch(self, request, pk: int):
+        company = self._get_company(request)
+        if not company:
+            return Response({"detail": "No company associated with this account."}, status=403)
+
+        item = get_object_or_404(HospitalLabTestCatalog, pk=pk, company=company)
+        if "test_code" in request.data and str(request.data["test_code"]).strip():
+            item.test_code = str(request.data["test_code"]).strip().upper()[:40]
+        if "name" in request.data and str(request.data["name"]).strip():
+            item.name = str(request.data["name"]).strip()[:255]
+        if "category" in request.data:
+            cat = str(request.data["category"] or "").strip().lower()
+            if cat in {c[0] for c in HospitalLabTestCatalog.CATEGORY_CHOICES}:
+                item.category = cat
+        if "price" in request.data and request.data["price"] not in (None, ""):
+            try:
+                item.price = max(Decimal("0.00"), Decimal(str(request.data["price"])))
+            except Exception:
+                pass
+        if "normal_range" in request.data:
+            item.normal_range = str(request.data["normal_range"] or "").strip()[:255]
+        if "unit" in request.data:
+            item.unit = str(request.data["unit"] or "").strip()[:50]
+        if "turnaround_hours" in request.data:
+            try:
+                item.turnaround_hours = max(1, min(720, int(request.data["turnaround_hours"] or 24)))
+            except (TypeError, ValueError):
+                pass
+        if "is_active" in request.data:
+            item.is_active = bool(request.data["is_active"])
+
+        try:
+            item.save()
+        except IntegrityError:
+            return Response({"test_code": f"Test code '{item.test_code}' already exists."}, status=400)
+        return Response(_serialize_lab_catalog(item), status=200)
+
+    def delete(self, request, pk: int):
+        company = self._get_company(request)
+        if not company:
+            return Response({"detail": "No company associated with this account."}, status=403)
+        item = get_object_or_404(HospitalLabTestCatalog, pk=pk, company=company)
+        item.delete()
+        return Response(status=204)
+
+
+class HospitalLabOrdersAPIView(HospitalBaseAPIView):
+    """GET / POST /api/operations/hospital/lab-orders/"""
+
+    def get(self, request):
+        company = self._get_company(request)
+        if not company:
+            return Response({"detail": "No company associated with this account."}, status=403)
+
+        qs = HospitalLabOrder.objects.filter(company=company).select_related(
+            "patient", "doctor", "doctor__department", "test", "company"
+        )
+        status_param = str(request.query_params.get("status") or "").strip().lower()
+        if status_param and status_param != "all":
+            qs = qs.filter(status=status_param)
+        patient_id = request.query_params.get("patient_id")
+        if patient_id:
+            qs = qs.filter(patient_id=patient_id)
+        flag_param = str(request.query_params.get("result_flag") or "").strip().lower()
+        if flag_param and flag_param != "all":
+            qs = qs.filter(result_flag=flag_param)
+        search = str(request.query_params.get("search") or "").strip()
+        if search:
+            qs = qs.filter(
+                Q(order_number__icontains=search)
+                | Q(patient__full_name__icontains=search)
+                | Q(patient__mrn__icontains=search)
+                | Q(test_name__icontains=search)
+            )
+
+        items = list(qs.order_by("-created_at", "-id")[:250])
+
+        today = timezone.localdate()
+        all_orders = HospitalLabOrder.objects.filter(company=company)
+        summary = {
+            "total_orders": all_orders.exclude(status=HospitalLabOrder.STATUS_CANCELLED).count(),
+            "pending_orders": all_orders.filter(
+                status__in=[
+                    HospitalLabOrder.STATUS_ORDERED,
+                    HospitalLabOrder.STATUS_SAMPLE_COLLECTED,
+                    HospitalLabOrder.STATUS_IN_PROGRESS,
+                ]
+            ).count(),
+            "completed_today": all_orders.filter(
+                status=HospitalLabOrder.STATUS_COMPLETED, completed_at__date=today
+            ).count(),
+            "abnormal_alerts": all_orders.filter(
+                result_flag__in=[HospitalLabOrder.FLAG_ABNORMAL, HospitalLabOrder.FLAG_CRITICAL]
+            ).count(),
+            "lab_revenue": float(
+                all_orders.filter(payment_status=HospitalLabOrder.PAYMENT_PAID)
+                .exclude(status=HospitalLabOrder.STATUS_CANCELLED)
+                .aggregate(total=Sum("fee"))
+                .get("total")
+                or Decimal("0.00")
+            ),
+        }
+
+        return Response({
+            "count": len(items),
+            "summary": summary,
+            "results": [_serialize_lab_order(o, include_print_meta=True) for o in items],
+        }, status=200)
+
+    def post(self, request):
+        company = self._get_company(request)
+        if not company:
+            return Response({"detail": "No company associated with this account."}, status=403)
+
+        patient_id = request.data.get("patient_id") or request.data.get("patient")
+        if not patient_id:
+            return Response({"patient_id": "Please select a registered patient."}, status=400)
+        patient = HospitalPatient.objects.filter(company=company, pk=patient_id).first()
+        if not patient:
+            return Response({"patient_id": "Patient not found in your hospital."}, status=404)
+
+        doctor = None
+        doctor_id = request.data.get("doctor_id") or request.data.get("doctor")
+        if doctor_id:
+            doctor = HospitalDoctor.objects.filter(company=company, pk=doctor_id).first()
+
+        test_obj = None
+        test_id = request.data.get("test_id") or request.data.get("test")
+        if test_id:
+            test_obj = HospitalLabTestCatalog.objects.filter(company=company, pk=test_id).first()
+
+        test_name = str(request.data.get("test_name") or (test_obj.name if test_obj else "")).strip()[:255]
+        if not test_name:
+            return Response({"test_name": "Select a catalog test or enter a test name."}, status=400)
+
+        category = str(request.data.get("category") or (test_obj.category if test_obj else "other")).strip().lower()[:40]
+        normal_range = str(request.data.get("normal_range") or (test_obj.normal_range if test_obj else "")).strip()[:255]
+
+        raw_fee = request.data.get("fee")
+        if raw_fee not in (None, ""):
+            try:
+                fee = max(Decimal("0.00"), Decimal(str(raw_fee)))
+            except Exception:
+                fee = test_obj.price if test_obj else Decimal("0.00")
+        else:
+            fee = test_obj.price if test_obj else Decimal("0.00")
+
+        ps = str(request.data.get("payment_status") or HospitalLabOrder.PAYMENT_UNPAID).strip().lower()
+        if ps not in {c[0] for c in HospitalLabOrder.PAYMENT_STATUS_CHOICES}:
+            ps = HospitalLabOrder.PAYMENT_UNPAID
+
+        with transaction.atomic():
+            Company.objects.select_for_update().get(pk=company.pk)
+            order_number = _next_sequential_code(company, HospitalLabOrder, "order_number", "LAB")
+            order = HospitalLabOrder.objects.create(
+                company=company,
+                order_number=order_number,
+                patient=patient,
+                doctor=doctor,
+                test=test_obj,
+                test_name=test_name,
+                category=category,
+                fee=fee,
+                payment_status=ps,
+                status=HospitalLabOrder.STATUS_ORDERED,
+                normal_range=normal_range,
+                technician_notes=str(request.data.get("technician_notes") or "").strip(),
+            )
+
+        order = HospitalLabOrder.objects.select_related(
+            "patient", "doctor", "doctor__department", "test", "company"
+        ).get(pk=order.pk)
+        return Response(_serialize_lab_order(order, include_print_meta=True), status=201)
+
+
+class HospitalLabOrderDetailAPIView(HospitalBaseAPIView):
+    """GET / PATCH / DELETE /api/operations/hospital/lab-orders/<pk>/"""
+
+    def get(self, request, pk: int):
+        company = self._get_company(request)
+        if not company:
+            return Response({"detail": "No company associated with this account."}, status=403)
+        order = get_object_or_404(
+            HospitalLabOrder.objects.select_related("patient", "doctor", "doctor__department", "test", "company"),
+            pk=pk,
+            company=company,
+        )
+        return Response(_serialize_lab_order(order, include_print_meta=True), status=200)
+
+    def patch(self, request, pk: int):
+        company = self._get_company(request)
+        if not company:
+            return Response({"detail": "No company associated with this account."}, status=403)
+        order = get_object_or_404(HospitalLabOrder, pk=pk, company=company)
+
+        if "test_name" in request.data and str(request.data["test_name"]).strip():
+            order.test_name = str(request.data["test_name"]).strip()[:255]
+        if "fee" in request.data and request.data["fee"] not in (None, ""):
+            try:
+                order.fee = max(Decimal("0.00"), Decimal(str(request.data["fee"])))
+            except Exception:
+                pass
+        if "payment_status" in request.data:
+            ps = str(request.data["payment_status"] or "").strip().lower()
+            if ps in {c[0] for c in HospitalLabOrder.PAYMENT_STATUS_CHOICES}:
+                order.payment_status = ps
+        if "status" in request.data:
+            st = str(request.data["status"] or "").strip().lower()
+            if st in {c[0] for c in HospitalLabOrder.STATUS_CHOICES}:
+                order.status = st
+                if st == HospitalLabOrder.STATUS_COMPLETED and not order.completed_at:
+                    order.completed_at = timezone.now()
+        if "normal_range" in request.data:
+            order.normal_range = str(request.data["normal_range"] or "").strip()[:255]
+        if "technician_notes" in request.data:
+            order.technician_notes = str(request.data["technician_notes"] or "").strip()
+
+        order.save()
+        order = HospitalLabOrder.objects.select_related(
+            "patient", "doctor", "doctor__department", "test", "company"
+        ).get(pk=order.pk)
+        return Response(_serialize_lab_order(order, include_print_meta=True), status=200)
+
+    def delete(self, request, pk: int):
+        company = self._get_company(request)
+        if not company:
+            return Response({"detail": "No company associated with this account."}, status=403)
+        order = get_object_or_404(HospitalLabOrder, pk=pk, company=company)
+        order.delete()
+        return Response(status=204)
+
+
+class HospitalLabOrderResultAPIView(HospitalBaseAPIView):
+    """POST /api/operations/hospital/lab-orders/<pk>/result/"""
+
+    def post(self, request, pk: int):
+        company = self._get_company(request)
+        if not company:
+            return Response({"detail": "No company associated with this account."}, status=403)
+        order = get_object_or_404(HospitalLabOrder, pk=pk, company=company)
+
+        if "status" in request.data:
+            st = str(request.data["status"] or "").strip().lower()
+            if st not in {c[0] for c in HospitalLabOrder.STATUS_CHOICES}:
+                return Response({"status": "Invalid lab order status."}, status=400)
+            order.status = st
+            if st == HospitalLabOrder.STATUS_COMPLETED:
+                order.completed_at = timezone.now()
+        if "result_value" in request.data:
+            order.result_value = str(request.data["result_value"] or "").strip()
+        if "normal_range" in request.data:
+            order.normal_range = str(request.data["normal_range"] or "").strip()[:255]
+        if "result_flag" in request.data:
+            rf = str(request.data["result_flag"] or "").strip().lower()
+            if rf in {c[0] for c in HospitalLabOrder.RESULT_FLAG_CHOICES}:
+                order.result_flag = rf
+        if "technician_notes" in request.data:
+            order.technician_notes = str(request.data["technician_notes"] or "").strip()
+        if "payment_status" in request.data:
+            ps = str(request.data["payment_status"] or "").strip().lower()
+            if ps in {c[0] for c in HospitalLabOrder.PAYMENT_STATUS_CHOICES}:
+                order.payment_status = ps
+
+        order.save()
+        order = HospitalLabOrder.objects.select_related(
+            "patient", "doctor", "doctor__department", "test", "company"
+        ).get(pk=order.pk)
+        return Response(_serialize_lab_order(order, include_print_meta=True), status=200)
+
+
+class HospitalReportsSummaryAPIView(HospitalBaseAPIView):
+    """GET /api/operations/hospital/reports/summary/?days=30"""
+
+    def get(self, request):
+        company = self._get_company(request)
+        if not company:
+            return Response({"detail": "No company associated with this account."}, status=403)
+
+        try:
+            days = int(request.query_params.get("days") or 30)
+        except (TypeError, ValueError):
+            days = 30
+        if days not in (7, 30, 90):
+            days = 30
+
+        today = timezone.localdate()
+        start_date = today - timedelta(days=days - 1)
+
+        # Filtered querysets strictly scoped to company
+        appts_qs = HospitalAppointment.objects.filter(
+            company=company, appointment_date__gte=start_date, appointment_date__lte=today
+        ).select_related("doctor", "department")
+        adms_qs = HospitalAdmission.objects.filter(
+            company=company, admitted_at__date__gte=start_date, admitted_at__date__lte=today
+        )
+        discharged_qs = HospitalAdmission.objects.filter(
+            company=company,
+            status=HospitalAdmission.STATUS_DISCHARGED,
+            discharged_at__date__gte=start_date,
+            discharged_at__date__lte=today,
+        )
+        rx_qs = HospitalPrescription.objects.filter(
+            company=company, created_at__date__gte=start_date, created_at__date__lte=today
+        )
+        lab_qs = HospitalLabOrder.objects.filter(
+            company=company, created_at__date__gte=start_date, created_at__date__lte=today
+        )
+
+        # 1. Revenue Breakdown (Rs.)
+        opd_revenue = float(
+            appts_qs.filter(payment_status=HospitalAppointment.PAYMENT_PAID)
+            .exclude(status=HospitalAppointment.STATUS_CANCELLED)
+            .aggregate(total=Sum("consultation_fee"))
+            .get("total")
+            or Decimal("0.00")
+        )
+        ipd_revenue = float(
+            discharged_qs.aggregate(total=Sum("total_bed_charges")).get("total")
+            or Decimal("0.00")
+        )
+        lab_revenue = float(
+            lab_qs.filter(payment_status=HospitalLabOrder.PAYMENT_PAID)
+            .exclude(status=HospitalLabOrder.STATUS_CANCELLED)
+            .aggregate(total=Sum("fee"))
+            .get("total")
+            or Decimal("0.00")
+        )
+        total_revenue = round(opd_revenue + ipd_revenue + lab_revenue, 2)
+
+        # 2. Operational Counts & Occupancy
+        total_beds = HospitalBed.objects.filter(company=company).count()
+        occupied_beds = HospitalBed.objects.filter(
+            company=company, status=HospitalBed.STATUS_OCCUPIED
+        ).count()
+        bed_occupancy_rate = round((occupied_beds / total_beds) * 100.0, 1) if total_beds > 0 else 0.0
+
+        operational = {
+            "total_appointments": appts_qs.exclude(status=HospitalAppointment.STATUS_CANCELLED).count(),
+            "completed_appointments": appts_qs.filter(status=HospitalAppointment.STATUS_COMPLETED).count(),
+            "total_admissions": adms_qs.count(),
+            "total_discharges": discharged_qs.count(),
+            "total_patients": HospitalPatient.objects.filter(company=company).count(),
+            "total_prescriptions": rx_qs.count(),
+            "total_lab_orders": lab_qs.exclude(status=HospitalLabOrder.STATUS_CANCELLED).count(),
+            "completed_lab_orders": lab_qs.filter(status=HospitalLabOrder.STATUS_COMPLETED).count(),
+            "bed_occupancy_rate": bed_occupancy_rate,
+        }
+
+        # 3. Department-wise Breakdown
+        depts = list(HospitalDepartment.objects.filter(company=company, is_active=True).order_by("name"))
+        appts_list = list(appts_qs.exclude(status=HospitalAppointment.STATUS_CANCELLED))
+        dept_rows = []
+        for d in depts:
+            doc_cnt = HospitalDoctor.objects.filter(company=company, department=d, is_active=True).count()
+            d_appts = [a for a in appts_list if a.department_id == d.id or (a.doctor and a.doctor.department_id == d.id)]
+            d_rev = sum(
+                float(a.consultation_fee or 0)
+                for a in d_appts
+                if a.payment_status == HospitalAppointment.PAYMENT_PAID
+            )
+            dept_rows.append({
+                "department_id": d.id,
+                "department_name": d.name,
+                "doctor_count": doc_cnt,
+                "appointment_count": len(d_appts),
+                "opd_revenue": round(d_rev, 2),
+            })
+        dept_rows.sort(key=lambda r: (-r["opd_revenue"], -r["appointment_count"], r["department_name"]))
+
+        # 4. Top 5 Doctors by OPD Volume & Revenue
+        doc_stats = {}
+        for a in appts_list:
+            if not a.doctor_id:
+                continue
+            entry = doc_stats.setdefault(a.doctor_id, {
+                "doctor_id": a.doctor_id,
+                "doctor_name": a.doctor.full_name if a.doctor else "",
+                "department_name": a.department.name if a.department else "",
+                "appointment_count": 0,
+                "opd_revenue": 0.0,
+            })
+            entry["appointment_count"] += 1
+            if a.payment_status == HospitalAppointment.PAYMENT_PAID:
+                entry["opd_revenue"] = round(entry["opd_revenue"] + float(a.consultation_fee or 0), 2)
+        top_doctors = sorted(
+            doc_stats.values(),
+            key=lambda x: (-x["opd_revenue"], -x["appointment_count"], x["doctor_name"]),
+        )[:5]
+
+        # 5. Daily Revenue Trend
+        daily_map = {}
+        for offset in range(days):
+            d_iso = (start_date + timedelta(days=offset)).isoformat()
+            daily_map[d_iso] = {"date": d_iso, "opd": 0.0, "ipd": 0.0, "lab": 0.0, "total": 0.0}
+
+        for a in appts_list:
+            if a.payment_status == HospitalAppointment.PAYMENT_PAID and a.appointment_date:
+                k = a.appointment_date.isoformat()
+                if k in daily_map:
+                    daily_map[k]["opd"] = round(daily_map[k]["opd"] + float(a.consultation_fee or 0), 2)
+
+        for adm in discharged_qs:
+            if adm.discharged_at:
+                k = timezone.localdate(adm.discharged_at).isoformat()
+                if k in daily_map:
+                    daily_map[k]["ipd"] = round(daily_map[k]["ipd"] + float(adm.total_bed_charges or 0), 2)
+
+        for lo in lab_qs.filter(payment_status=HospitalLabOrder.PAYMENT_PAID).exclude(status=HospitalLabOrder.STATUS_CANCELLED):
+            if lo.created_at:
+                k = timezone.localdate(lo.created_at).isoformat()
+                if k in daily_map:
+                    daily_map[k]["lab"] = round(daily_map[k]["lab"] + float(lo.fee or 0), 2)
+
+        daily_trend = []
+        for k in sorted(daily_map.keys()):
+            row = daily_map[k]
+            row["total"] = round(row["opd"] + row["ipd"] + row["lab"], 2)
+            daily_trend.append(row)
+
+        return Response({
+            "days": days,
+            "start_date": start_date.isoformat(),
+            "end_date": today.isoformat(),
+            "revenue": {
+                "opd_revenue": round(opd_revenue, 2),
+                "ipd_revenue": round(ipd_revenue, 2),
+                "lab_revenue": round(lab_revenue, 2),
+                "total_revenue": total_revenue,
+            },
+            "operational": operational,
+            "departments": dept_rows,
+            "top_doctors": top_doctors,
+            "daily_trend": daily_trend,
+        }, status=200)
