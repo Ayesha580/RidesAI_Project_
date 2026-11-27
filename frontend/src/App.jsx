@@ -56,6 +56,7 @@ import ClinicPatients from "./operations/ClinicPatients";
 import HospitalDashboard from "./operations/HospitalDashboard";
 import HospitalDepartmentsWards from "./operations/HospitalDepartmentsWards";
 import HospitalDoctorsDirectory from "./operations/HospitalDoctorsDirectory";
+import HospitalAppointments from "./operations/HospitalAppointments";
 import AnalyticsReports from "./operations/AnalyticsReports";
 import NotificationSettings from "./operations/NotificationSettings";
 import TablesFloorPlan from "./operations/TablesFloorPlan";
@@ -109,7 +110,9 @@ function OwnerModulePage() {
   if (moduleKey === "reservations") return <RestaurantReservations />;
   if (moduleKey === "attendance") return <StaffAttendance />;
   if (moduleKey === "suppliers") return <SuppliersManagement />;
-  if (moduleKey === "appointments") return <ClinicAppointments />;
+  if (moduleKey === "appointments") {
+    return isHospitalUser(user) ? <HospitalAppointments /> : <ClinicAppointments />;
+  }
   if (moduleKey === "doctors") {
     return isHospitalUser(user) ? <HospitalDoctorsDirectory /> : <ClinicDoctors />;
   }
@@ -156,7 +159,9 @@ function StaffModulePage() {
   if (moduleKey === "reservations") return <RestaurantReservations staff />;
   if (moduleKey === "attendance") return <StaffAttendance staff />;
   if (moduleKey === "suppliers") return <SuppliersManagement staff />;
-  if (moduleKey === "appointments") return <ClinicAppointments staff />;
+  if (moduleKey === "appointments") {
+    return isHospitalUser(user) ? <HospitalAppointments staff /> : <ClinicAppointments staff />;
+  }
   if (moduleKey === "doctors") {
     return isHospitalUser(user) ? <HospitalDoctorsDirectory staff /> : <ClinicDoctors staff />;
   }
