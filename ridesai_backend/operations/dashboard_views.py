@@ -49,51 +49,175 @@ def _get_request_company(request) -> Optional[Company]:
     return None
 
 
+def _get_vertical_demo_conversations(company: Company):
+    """Returns vertical-aware sample conversations tailored to company.business_type."""
+    btype = str(getattr(company, "business_type", "") or "").strip().lower()
+    name = company.name or "our business"
+
+    if any(k in btype for k in ("hospital", "medical center", "medical centre", "trauma")):
+        return [
+            {
+                "name": "Ayesha Siddiqui",
+                "phone": "+923001234567",
+                "status": "bot",
+                "messages": [
+                    ("user", "Assalam o Alaikum, is a Cardiologist available today and what is the consultation fee?"),
+                    ("assistant", f"Wa Alaikum Assalam! Welcome to {name}. Dr. Ayesha Khan (Cardiology) is available Monday, Wednesday, and Friday from 9:00 AM to 2:00 PM in OPD Room 4. The consultation fee is Rs. 2,500."),
+                    ("user", "Please book an OPD appointment for today."),
+                    ("assistant", "Your OPD appointment with Dr. Ayesha Khan has been confirmed! Token #04 has been issued for today in OPD Room 4."),
+                ],
+            },
+            {
+                "name": "Bilal Mahmood",
+                "phone": "+923219876543",
+                "status": "bot",
+                "messages": [
+                    ("user", "Do you offer CBC and Lipid Profile lab tests? Is fasting required?"),
+                    ("assistant", f"Hello Bilal! Yes, {name} Diagnostics offers both CBC and Lipid Profile. For a Lipid Profile, 10 to 12 hours of fasting is recommended before sample collection."),
+                    ("user", "Great, I will visit the lab counter at 9:30 AM tomorrow."),
+                    ("assistant", "Wonderful! Our diagnostic lab opens at 8:00 AM daily. Please bring your MRN or phone number at reception."),
+                ],
+            },
+            {
+                "name": "Hamza Farooq",
+                "phone": "+923334567890",
+                "status": "human",
+                "messages": [
+                    ("user", "Hello, I had a blood test yesterday morning. Is my lab report ready?"),
+                    ("assistant", "Let me connect you with our Hospital Diagnostics Desk to check your report status."),
+                    ("human", "Hi Hamza, reception desk here. Your CBC diagnostic report is ready for pickup or printing at the Lab Counter."),
+                    ("user", "Thank you so much for confirming!"),
+                ],
+            },
+        ]
+
+    if "clinic" in btype:
+        return [
+            {
+                "name": "Sana Tariq",
+                "phone": "+923001234567",
+                "status": "bot",
+                "messages": [
+                    ("user", "Hi! What are the doctor consultation timings today?"),
+                    ("assistant", f"Hello Sana! Welcome to {name}. Morning consultations run from 9:00 AM to 2:00 PM and evening clinic is from 5:00 PM to 9:00 PM."),
+                    ("user", "Can I book a 6:00 PM slot?"),
+                    ("assistant", "Your consultation slot at 6:00 PM today is confirmed. Please arrive 10 minutes early."),
+                ],
+            },
+            {
+                "name": "Kamran Ali",
+                "phone": "+923334567890",
+                "status": "human",
+                "messages": [
+                    ("user", "I need to reschedule my follow-up visit to tomorrow afternoon."),
+                    ("assistant", "Connecting you with our clinic receptionist to update your booking."),
+                    ("human", "Hi Kamran, your follow-up has been moved to tomorrow at 4:00 PM. See you then!"),
+                    ("user", "Thanks a lot!"),
+                ],
+            },
+        ]
+
+    if "pharmacy" in btype:
+        return [
+            {
+                "name": "Nadia Imran",
+                "phone": "+923001234567",
+                "status": "bot",
+                "messages": [
+                    ("user", "Assalam o Alaikum, do you have Panadol 500mg and Augmentin 625mg in stock?"),
+                    ("assistant", f"Wa Alaikum Assalam! Welcome to {name}. Both medicines are available. Please share your doctor's prescription for antibiotics so our pharmacist can verify it."),
+                    ("user", "Sending the prescription photo now."),
+                    ("assistant", "Thank you! Our pharmacist is verifying your prescription and will confirm your order shortly."),
+                ],
+            },
+            {
+                "name": "Zainab Raza",
+                "phone": "+923334567890",
+                "status": "human",
+                "messages": [
+                    ("user", "Can I refill my monthly blood pressure prescription?"),
+                    ("assistant", "Transferring your refill request to our licensed pharmacist."),
+                    ("human", "Hi Zainab, your refill is ready for pickup at the pharmacy counter."),
+                    ("user", "Great, thank you!"),
+                ],
+            },
+        ]
+
+    if any(k in btype for k in ("restaurant", "cafe", "café", "food", "bakery", "fast food", "hotel")):
+        return [
+            {
+                "name": "Ali Khan",
+                "phone": "+923001234567",
+                "status": "bot",
+                "messages": [
+                    ("user", "Menu mein kya kya available hai aur prices kya hain?"),
+                    ("assistant", f"Welcome to {name}! 😊\n\nHere's our menu:\n• Zinger Burger: Rs. 550.00\n• Crispy Fries: Rs. 220.00\n• Cold Drink: Rs. 120.00\n\nWhat can I get for you today?"),
+                    ("user", "Mujhe 2 Zinger Burger aur 1 Crispy Fries bhej do, address House #45, Street 2, Johar Town, Lahore hai."),
+                    ("assistant", "🎉 Your order has been successfully placed, Ali Khan!\n\n*Order Number:* *RA-261117-B81503C3*\n*Items:* 2x Zinger Burger, 1x Crispy Fries\n*Total:* Rs. 1320.00\n*Estimated Delivery:* 30-45 minutes. 🍔"),
+                ],
+            },
+            {
+                "name": "Sarah Ahmed",
+                "phone": "+923219876543",
+                "status": "bot",
+                "messages": [
+                    ("user", "Hi! Do you have any vegetarian or cheese burger options?"),
+                    ("assistant", f"Hello Sarah! Welcome to {name}. We have delicious Crispy Fries (Rs. 220.00) and Cold Drinks (Rs. 120.00). Our main burger is the signature Zinger Burger. Would you like fries with that?"),
+                    ("user", "Yes please! 2 large fries to Gulberg III, Main Market."),
+                    ("assistant", "Excellent! Your order has been recorded for 2x Crispy Fries. Total: Rs. 440.00. We will dispatch it shortly! 🍟"),
+                ],
+            },
+            {
+                "name": "Usman Tariq",
+                "phone": "+923334567890",
+                "status": "human",
+                "messages": [
+                    ("user", "Hello, I placed an order 40 minutes ago. Where is my rider?"),
+                    ("assistant", "I am checking your order status right now! Please hold on a moment..."),
+                    ("human", "Hi Usman, our manager here. Your rider is just 2 minutes away at your gate. Thank you for your patience!"),
+                    ("user", "Received! Thank you so much for the quick help."),
+                ],
+            },
+        ]
+
+    # General / Retail / Grocery / Other
+    return [
+        {
+            "name": "Omar Farooq",
+            "phone": "+923001234567",
+            "status": "bot",
+            "messages": [
+                ("user", "Hi! What are your business hours and available products?"),
+                ("assistant", f"Hello Omar! Welcome to {name}. We are open daily from 9:00 AM to 9:00 PM. Let me know which item or service you are looking for!"),
+                ("user", "Thanks! I will check your catalog shortly."),
+                ("assistant", "Sounds great! Feel free to message anytime if you need help."),
+            ],
+        },
+        {
+            "name": "Hina Salman",
+            "phone": "+923334567890",
+            "status": "human",
+            "messages": [
+                ("user", "Hello, I have a question about my recent inquiry."),
+                ("assistant", "I am connecting you with a team member right away."),
+                ("human", "Hi Hina, our support team is here to assist you. How can we help today?"),
+                ("user", "Thanks for the quick response!"),
+            ],
+        },
+    ]
+
+
 def _seed_demo_conversations_if_empty(company: Company):
     """
-    Populates sample customer conversation threads if database has zero conversations,
-    ensuring immediate visual feedback on the frontend dashboard.
+    Populates vertical-aware sample customer conversation threads if this company has
+    zero conversations, ensuring relevant immediate feedback on the Conversations dashboard.
     """
     if not company:
         return
     if AgentConversation.objects.filter(company=company).exists():
         return
 
-    demos = [
-        {
-            "name": "Ali Khan",
-            "phone": "+923001234567",
-            "status": "bot",
-            "messages": [
-                ("user", "Menu mein kya kya available hai aur prices kya hain?"),
-                ("assistant", f"Welcome to {company.name}! 😊\n\nHere's our menu:\n• Zinger Burger: Rs. 550.00\n• Crispy Fries: Rs. 220.00\n• Cold Drink: Rs. 120.00\n\nWhat can I get for you today?"),
-                ("user", "Mujhe 2 Zinger Burger aur 1 Crispy Fries bhej do, address House #45, Street 2, Johar Town, Lahore hai."),
-                ("assistant", "🎉 Your order has been successfully placed, Ali Khan!\n\n*Order Number:* *RA-261117-B81503C3*\n*Items:* 2x Zinger Burger, 1x Crispy Fries\n*Total:* Rs. 1320.00\n*Estimated Delivery:* 30-45 minutes. 🍔"),
-            ]
-        },
-        {
-            "name": "Sarah Ahmed",
-            "phone": "+923219876543",
-            "status": "bot",
-            "messages": [
-                ("user", "Hi! Do you have any vegetarian or cheese burger options?"),
-                ("assistant", f"Hello Sarah! Welcome to {company.name}. We have delicious Crispy Fries (Rs. 220.00) and Cold Drinks (Rs. 120.00). Our main burger is the signature Zinger Burger. Would you like fries with that?"),
-                ("user", "Yes please! 2 large fries to Gulberg III, Main Market."),
-                ("assistant", "Excellent! Your order has been recorded for 2x Crispy Fries. Total: Rs. 440.00. We will dispatch it shortly! 🍟"),
-            ]
-        },
-        {
-            "name": "Usman Tariq",
-            "phone": "+923334567890",
-            "status": "human",
-            "messages": [
-                ("user", "Hello, I placed an order 40 minutes ago. Where is my rider?"),
-                ("assistant", "I am checking your order status right now! Please hold on a moment..."),
-                ("human", "Hi Usman, our manager here. Your rider is just 2 minutes away at your gate. Thank you for your patience!"),
-                ("user", "Received! Thank you so much for the quick help."),
-            ]
-        },
-    ]
+    demos = _get_vertical_demo_conversations(company)
 
     for d in demos:
         conv = AgentConversation.objects.create(
