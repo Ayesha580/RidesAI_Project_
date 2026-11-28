@@ -12,9 +12,14 @@ Provides:
 """
 
 import logging
-from typing import Dict, Any
+import re
+import threading
+import time
+from typing import Dict, Any, Optional
 
 from django.conf import settings
+from django.core.cache import cache
+from django.db import close_old_connections
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated, AllowAny
@@ -25,17 +30,148 @@ from operations.whatsapp_agent import process_incoming_whatsapp_message
 
 logger = logging.getLogger("operations.evolution")
 
+EVOLUTION_DEDUP_TTL_SECONDS = 600   # 10 minutes
+EVOLUTION_STALE_MAX_AGE_SECONDS = 120
+
+
+def _resolve_company_for_instance(instance: str) -> Optional[Company]:
+    """
+    Resolves a Company tenant from an Evolution instance name:
+    1. Exact / case-insensitive match on whatsapp_instance_name
+    2. Fallback for standard 'company_<id>' instance naming (auto-persisting the field)
+    """
+    clean = str(instance or "").strip()
+    if not clean:
+        return None
+    company = (
+        Company.objects.filter(whatsapp_instance_name=clean).first()
+        or Company.objects.filter(whatsapp_instance_name__iexact=clean).first()
+    )
+    if company:
+        return company
+    m = re.match(r"^company_(\d+)$", clean, flags=re.IGNORECASE)
+    if m:
+        company = Company.objects.filter(pk=int(m.group(1))).first()
+        if company and not company.whatsapp_instance_name:
+            company.whatsapp_instance_name = clean
+            company.save(update_fields=["whatsapp_instance_name"])
+        return company
+    return None
+
+
+def _parse_message_timestamp(raw_ts: Any) -> Optional[float]:
+    """Parses Evolution/Baileys messageTimestamp (int/str/ms or Long dict {'low': ...}) into UNIX seconds."""
+    if raw_ts is None or raw_ts == "":
+        return None
+    val = raw_ts
+    if isinstance(val, dict):
+        val = val.get("low") or val.get("seconds")
+    try:
+        ts = float(val)
+    except (TypeError, ValueError):
+        return None
+    if ts <= 0:
+        return None
+    if ts > 10_000_000_000:
+        ts = ts / 1000.0
+    return ts
+
+
+def _safe_close_old_connections() -> None:
+    """Closes stale DB connections in background threads without disrupting active atomic blocks."""
+    from django.db import connection
+    if not connection.in_atomic_block:
+        close_old_connections()
+
+
+def _process_evolution_message_worker(
+    *,
+    company_id: int,
+    instance: str,
+    customer_phone: str,
+    customer_name: str,
+    msg_type: str,
+    message_text: str,
+    is_audio_payload: bool,
+    inline_audio_bytes: Optional[bytes],
+    raw_event_data: Dict[str, Any],
+) -> Dict[str, Any]:
+    """
+    Runs the full WhatsApp AI pipeline (media download -> STT -> LLM -> TTS -> Evolution send)
+    in a daemon background thread so EvolutionWebhookView returns 200 OK immediately.
+    """
+    _safe_close_old_connections()
+    try:
+        company = Company.objects.filter(pk=company_id).first()
+        if not company:
+            logger.warning(f"[Evolution Worker] Company id={company_id} not found; aborting.")
+            return {"success": False, "error": "company_not_found"}
+
+        audio_bytes = inline_audio_bytes
+        media_id = None
+        if is_audio_payload:
+            if not audio_bytes:
+                audio_bytes = evolution_client.get_media_base64(instance, raw_event_data)
+            if not audio_bytes:
+                logger.error(
+                    f"[Evolution Worker ERROR] Failed to obtain decrypted audio bytes for instance '{instance}' "
+                    f"from customer {customer_phone}."
+                )
+                media_id = None
+            else:
+                media_id = "evolution_voice_note"
+
+        logger.info(
+            f"[Evolution Worker] Processing message for '{company.name}' from {customer_phone} "
+            f"({customer_name}) | Type: {msg_type} | Text: '{message_text}' | "
+            f"Audio bytes: {len(audio_bytes) if audio_bytes else 0}"
+        )
+
+        agent_result = process_incoming_whatsapp_message(
+            sender_phone=customer_phone,
+            message_text=message_text,
+            phone_number_id=instance,
+            customer_name=customer_name,
+            media_id=media_id,
+            msg_type=msg_type,
+            company=company,
+            audio_bytes=audio_bytes,
+        )
+        logger.info(
+            f"[Evolution Worker] Completed for '{company.name}' -> {customer_phone} | "
+            f"success={agent_result.get('success')} | error={agent_result.get('error')} | "
+            f"reply_preview='{str(agent_result.get('reply_text') or '')[:80]}'"
+        )
+        return agent_result
+    except Exception as e:
+        logger.error(f"[Evolution Worker ERROR] Unhandled error for '{instance}' -> {customer_phone}: {e}", exc_info=True)
+        return {"success": False, "error": str(e)}
+    finally:
+        _safe_close_old_connections()
+
+
+def _dispatch_evolution_worker(**kwargs) -> None:
+    """Spawns a daemon background thread to process an Evolution WhatsApp message non-blockingly."""
+    t = threading.Thread(
+        target=_process_evolution_message_worker,
+        kwargs=kwargs,
+        daemon=True,
+        name=f"evo-wa-{kwargs.get('instance', 'inst')}",
+    )
+    t.start()
+
 
 def _build_evolution_webhook_url(request) -> str:
     """
     Returns the normalized Evolution API webhook URL with NO trailing slash,
-    preventing double slashes ('//connection-update') if webhook_by_events is enabled.
+    automatically rewriting 127.0.0.1 / localhost to host.docker.internal so
+    Dockerized Evolution API reaches the host Django server cleanly.
     """
     configured = getattr(settings, "EVOLUTION_WEBHOOK_URL", None)
     if configured:
-        return str(configured).strip().rstrip("/")
+        return evolution_client._normalize_webhook_url(configured) or evolution_client.DEFAULT_DOCKER_WEBHOOK_URL
     base = request.build_absolute_uri("/api/operations/whatsapp/evolution-webhook")
-    return base.rstrip("/")
+    return evolution_client._normalize_webhook_url(base) or evolution_client.DEFAULT_DOCKER_WEBHOOK_URL
 
 
 class ConnectWhatsAppView(APIView):
@@ -58,10 +194,16 @@ class ConnectWhatsAppView(APIView):
         if not company:
             return Response({"error": "No company associated with user"}, status=400)
 
-        # Assign instance name if not yet set
+        # Assign instance name and auto-enable AI agent out-of-the-box for any connecting tenant
+        update_fields = []
         if not company.whatsapp_instance_name:
             company.whatsapp_instance_name = f"company_{company.id}"
-            company.save(update_fields=["whatsapp_instance_name"])
+            update_fields.append("whatsapp_instance_name")
+        if not getattr(company, "agent_enabled", False):
+            company.agent_enabled = True
+            update_fields.append("agent_enabled")
+        if update_fields:
+            company.save(update_fields=update_fields)
 
         instance_name = company.whatsapp_instance_name
         webhook_url = _build_evolution_webhook_url(request)
@@ -73,11 +215,14 @@ class ConnectWhatsAppView(APIView):
             if company.whatsapp_connection_status != "connected":
                 company.whatsapp_connection_status = "connected"
                 company.save(update_fields=["whatsapp_connection_status"])
+            # Ensure existing connected instance uses the normalized host.docker.internal webhook URL
+            evolution_client.set_instance_webhook(instance_name, webhook_url=webhook_url)
             return Response(
                 {
                     "instance_name": instance_name,
                     "qrcode_base64": None,
                     "status": "connected",
+                    "webhook_url": webhook_url,
                     "details": {"state": "connected"},
                 },
                 status=200,
@@ -133,11 +278,20 @@ class ConnectWhatsAppView(APIView):
             company.whatsapp_connection_status = status
             company.save(update_fields=["whatsapp_connection_status"])
 
+        webhook_synced = None
+        if status == "connected":
+            webhook_url = _build_evolution_webhook_url(request)
+            sync_res = evolution_client.set_instance_webhook(
+                company.whatsapp_instance_name, webhook_url=webhook_url
+            )
+            webhook_synced = sync_res.get("webhook_url")
+
         return Response(
             {
                 "instance_name": company.whatsapp_instance_name,
                 "status": status,
                 "live_synced": True,
+                "webhook_url": webhook_synced,
             },
             status=200,
         )
@@ -224,22 +378,39 @@ class EvolutionWebhookView(APIView):
 
     def post(self, request, *args, **kwargs):
         payload = request.data if isinstance(request.data, dict) else {}
-        event = payload.get("event", "")
-        instance = payload.get("instance", "")
-        data = payload.get("data", {}) if isinstance(payload.get("data"), dict) else {}
+        event_slug = str(kwargs.get("event_slug") or "").strip()
+        raw_event = payload.get("event") or event_slug or ""
+        event_norm = str(raw_event).strip().lower().replace("-", ".").replace("_", ".")
+        instance = str(payload.get("instance") or "").strip()
+        raw_data = payload.get("data")
+        if isinstance(raw_data, list):
+            data = raw_data[0] if (raw_data and isinstance(raw_data[0], dict)) else {}
+        elif isinstance(raw_data, dict):
+            if "key" not in raw_data and isinstance(raw_data.get("messages"), list) and raw_data["messages"]:
+                first_msg = raw_data["messages"][0]
+                data = first_msg if isinstance(first_msg, dict) else raw_data
+            else:
+                data = raw_data
+        else:
+            data = {}
 
         if not instance:
-            logger.warning("[Evolution Webhook] Ignored payload without instance name")
+            logger.warning(f"[Evolution Webhook] Ignored payload without instance name (event='{raw_event}', slug='{event_slug}')")
             return Response({"ignored": "missing_instance"}, status=200)
 
         # Step 1: Resolve Company / Tenant Isolation
-        company = Company.objects.filter(whatsapp_instance_name=instance).first()
+        company = _resolve_company_for_instance(instance)
         if not company:
-            logger.warning(f"[Evolution Webhook] Ignored event for unmapped instance: '{instance}'")
+            logger.warning(f"[Evolution Webhook] Ignored event='{raw_event}' for unmapped instance: '{instance}'")
             return Response({"ignored": "unknown_instance"}, status=200)
 
-        # Step 2: Handle Connection Updates (connection.update or CONNECTION_UPDATE)
-        if event in ("connection.update", "CONNECTION_UPDATE"):
+        logger.info(
+            f"[Evolution Webhook] Received event='{raw_event}' (norm='{event_norm}', slug='{event_slug}') "
+            f"instance='{instance}' -> company='{company.name}' (id={company.id}, vertical='{company.business_type}')"
+        )
+
+        # Step 2: Handle Connection Updates (connection.update / CONNECTION_UPDATE / connection-update)
+        if event_norm == "connection.update":
             state = data.get("state") or data.get("connection") or data.get("status")
             new_status = "connected" if str(state).lower() == "open" else "disconnected"
 
@@ -248,9 +419,15 @@ class EvolutionWebhookView(APIView):
                 f"(instance: '{instance}'): {state} -> {new_status}"
             )
 
+            update_fields = []
             if company.whatsapp_connection_status != new_status:
                 company.whatsapp_connection_status = new_status
-                company.save(update_fields=["whatsapp_connection_status"])
+                update_fields.append("whatsapp_connection_status")
+            if new_status == "connected" and not getattr(company, "agent_enabled", False):
+                company.agent_enabled = True
+                update_fields.append("agent_enabled")
+            if update_fields:
+                company.save(update_fields=update_fields)
 
             # Auto-configure call rejection whenever session connects/opens
             if new_status == "connected" or str(state).lower() == "open":
@@ -264,19 +441,43 @@ class EvolutionWebhookView(APIView):
                 status=200,
             )
 
-        # Step 3: Handle Incoming Messages (messages.upsert or MESSAGES_UPSERT)
-        if event in ("messages.upsert", "MESSAGES_UPSERT"):
+        # Step 3: Handle Incoming Messages (messages.upsert / MESSAGES_UPSERT / messages-upsert)
+        if event_norm == "messages.upsert":
             key = data.get("key", {}) if isinstance(data.get("key"), dict) else {}
 
             # Ignore messages sent by the bot itself
             if key.get("fromMe") is True:
+                logger.info(f"[Evolution Webhook] Skipping fromMe=True message for '{company.name}' ({instance})")
                 return Response({"ignored": "from_me"}, status=200)
 
             remote_jid = str(key.get("remoteJid", "")).strip()
 
             # Ignore group messages and broadcast status updates
-            if remote_jid.endswith("@g.us") or remote_jid == "status@broadcast":
+            if not remote_jid or remote_jid.endswith("@g.us") or remote_jid == "status@broadcast":
+                logger.info(f"[Evolution Webhook] Skipping group/status/empty JID '{remote_jid}' for '{company.name}'")
                 return Response({"ignored": "group_or_status_message"}, status=200)
+
+            # Stale message guard (> 120s old): prevents reconnect/restart floods
+            msg_ts = _parse_message_timestamp(data.get("messageTimestamp"))
+            if msg_ts is not None:
+                age_seconds = time.time() - msg_ts
+                if age_seconds > EVOLUTION_STALE_MAX_AGE_SECONDS:
+                    logger.info(
+                        f"[Evolution Webhook] Ignoring stale message (age={int(age_seconds)}s > "
+                        f"{EVOLUTION_STALE_MAX_AGE_SECONDS}s) for '{company.name}' ({instance})"
+                    )
+                    return Response({"ignored": "stale_message"}, status=200)
+
+            # Deduplicate by Evolution message_id (10-minute TTL) to block webhook retry floods
+            message_id = str(key.get("id") or "").strip()
+            if message_id:
+                dedup_key = f"evo_msg_seen:{instance}:{message_id}"
+                if not cache.add(dedup_key, 1, timeout=EVOLUTION_DEDUP_TTL_SECONDS):
+                    logger.info(
+                        f"[Evolution Webhook] Ignoring duplicate message_id='{message_id}' "
+                        f"for '{company.name}' ({instance})"
+                    )
+                    return Response({"ignored": "duplicate_message"}, status=200)
 
             # Resolve @lid JIDs (Evolution API v2 / Baileys Linked Devices) to actual phone JID when available
             if remote_jid.endswith("@lid"):
@@ -310,9 +511,8 @@ class EvolutionWebhookView(APIView):
                         message_obj = inner
 
             msg_type = "text"
-            media_id = None
             message_text = ""
-            audio_bytes = None
+            inline_audio_bytes = None
 
             # Check for audio / voice note (including PTT voice notes)
             is_audio_payload = (
@@ -323,9 +523,6 @@ class EvolutionWebhookView(APIView):
                 import base64
                 msg_type = "audio"
                 audio_obj = message_obj.get("audioMessage", {}) if isinstance(message_obj.get("audioMessage"), dict) else {}
-                media_id = None
-
-                # Check all possible inline base64 locations
                 raw_b64 = (
                     raw_message_obj.get("base64")
                     or message_obj.get("base64")
@@ -336,48 +533,69 @@ class EvolutionWebhookView(APIView):
                     try:
                         if "," in str(raw_b64):
                             raw_b64 = str(raw_b64).split(",", 1)[1]
-                        audio_bytes = base64.b64decode(raw_b64)
+                        inline_audio_bytes = base64.b64decode(raw_b64)
                     except Exception as e:
                         logger.warning(f"[Evolution Webhook] Failed to decode inline base64 audio: {e}")
-
-                # If not present inline, fetch decrypted base64 from Evolution API
-                if not audio_bytes:
-                    audio_bytes = evolution_client.get_media_base64(instance, data)
-
-                if not audio_bytes:
-                    logger.error(
-                        f"[Evolution Webhook ERROR] Failed to obtain decrypted audio bytes for instance '{instance}' "
-                        f"from customer {customer_phone}. Skipping Meta download fallback to prevent missing token errors."
-                    )
-                    media_id = None
-                else:
-                    media_id = "evolution_voice_note"
             else:
                 conversation = message_obj.get("conversation", "")
-                extended = message_obj.get("extendedTextMessage", {}).get("text", "")
-                message_text = str(conversation or extended or "").strip()
+                extended = (
+                    message_obj.get("extendedTextMessage", {}).get("text", "")
+                    if isinstance(message_obj.get("extendedTextMessage"), dict)
+                    else ""
+                )
+                img_caption = (
+                    message_obj.get("imageMessage", {}).get("caption", "")
+                    if isinstance(message_obj.get("imageMessage"), dict)
+                    else ""
+                )
+                vid_caption = (
+                    message_obj.get("videoMessage", {}).get("caption", "")
+                    if isinstance(message_obj.get("videoMessage"), dict)
+                    else ""
+                )
+                btn_reply = (
+                    message_obj.get("buttonsResponseMessage", {}).get("selectedDisplayText", "")
+                    if isinstance(message_obj.get("buttonsResponseMessage"), dict)
+                    else ""
+                )
+                list_reply = (
+                    message_obj.get("listResponseMessage", {}).get("title", "")
+                    if isinstance(message_obj.get("listResponseMessage"), dict)
+                    else ""
+                )
+                message_text = str(
+                    conversation or extended or img_caption or vid_caption or btn_reply or list_reply or ""
+                ).strip()
+
+                if not message_text:
+                    logger.info(
+                        f"[Evolution Webhook] Skipping non-text/empty message for '{company.name}' from {customer_phone} "
+                        f"(message keys: {list(message_obj.keys())})"
+                    )
+                    return Response({"ignored": "empty_message"}, status=200)
 
             logger.info(
-                f"[Evolution Webhook] Incoming message for '{company.name}' from {customer_phone} "
-                f"({customer_name}) | Type: {msg_type} | Text: '{message_text}' | Audio bytes: {len(audio_bytes) if audio_bytes else 0}"
+                f"[Evolution Webhook] Queuing background AI processing for '{company.name}' "
+                f"from {customer_phone} ({customer_name}) | msg_id='{message_id}' | Type={msg_type}"
             )
 
-            # Route directly into the existing AI agent processing pipeline
-            try:
-                agent_result = process_incoming_whatsapp_message(
-                    sender_phone=customer_phone,
-                    message_text=message_text,
-                    phone_number_id=instance,
-                    customer_name=customer_name,
-                    media_id=media_id,
-                    msg_type=msg_type,
-                    company=company,
-                    audio_bytes=audio_bytes,
-                )
-                return Response({"status": "processed", "result": agent_result}, status=200)
-            except Exception as e:
-                logger.error(f"[Evolution Webhook ERROR] Failed processing message: {e}", exc_info=True)
-                return Response({"status": "error", "error": str(e)}, status=200)
+            # Dispatch non-blockingly in a daemon thread and return 200 OK immediately
+            _dispatch_evolution_worker(
+                company_id=company.id,
+                instance=instance,
+                customer_phone=customer_phone,
+                customer_name=customer_name,
+                msg_type=msg_type,
+                message_text=message_text,
+                is_audio_payload=is_audio_payload,
+                inline_audio_bytes=inline_audio_bytes,
+                raw_event_data=data,
+            )
+            return Response({"status": "queued", "message_id": message_id}, status=200)
 
-        # Fallback acknowledgment for other events (e.g. qrcode.updated, chats.set, etc.)
-        return Response({"status": "acknowledged", "event": event}, status=200)
+        # Fallback acknowledgment for other events (e.g. qrcode.updated, chats.update, messages.update)
+        logger.info(
+            f"[Evolution Webhook] Acknowledged non-actionable event='{raw_event}' (norm='{event_norm}') "
+            f"for '{company.name}' ({instance})"
+        )
+        return Response({"status": "acknowledged", "event": raw_event}, status=200)

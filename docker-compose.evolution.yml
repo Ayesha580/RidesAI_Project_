@@ -26,12 +26,14 @@ services:
       - redis
     ports:
       - "8080:8080"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     environment:
       - SERVER_URL=http://localhost:8080
       - AUTHENTICATION_API_KEY=ridesai-secret-key-123
       - DATABASE_ENABLED=true
       - DATABASE_PROVIDER=postgresql
-      - DATABASE_CONNECTION_URI=postgresql://evolution:evolution@postgres:5432/evolution
+      - DATABASE_CONNECTION_URI=postgresql://evolution:evolution@postgres:5432/evolution?connection_limit=20&pool_timeout=30
       - CACHE_REDIS_ENABLED=true
       - CACHE_REDIS_URI=redis://redis:6379/6
       - WEBHOOK_GLOBAL_URL=http://host.docker.internal:8000/api/operations/whatsapp/evolution-webhook
