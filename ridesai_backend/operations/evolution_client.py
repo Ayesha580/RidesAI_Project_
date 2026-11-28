@@ -117,12 +117,78 @@ def delete_instance(instance_name: str) -> Dict[str, Any]:
         return {"success": False, "error": str(e)}
 
 
+DEFAULT_DOCKER_WEBHOOK_URL = "http://host.docker.internal:8000/api/operations/whatsapp/evolution-webhook"
+
+
 def _normalize_webhook_url(webhook_url: Optional[str]) -> Optional[str]:
-    """Strips trailing slashes so Evolution API webhook_by_events never produces '//event'."""
+    """
+    Normalizes an Evolution API webhook URL:
+    1. Strips trailing slashes so webhook_by_events never produces '//event'.
+    2. Rewrites localhost / 127.0.0.1 to host.docker.internal so Dockerized Evolution API
+       reaches the host Django server instead of posting to itself.
+    """
     if not webhook_url:
         return None
+    import re
     cleaned = str(webhook_url).strip().rstrip("/")
-    return cleaned or None
+    if not cleaned:
+        return None
+    cleaned = re.sub(
+        r"^(https?://)(?:127\.0\.0\.1|localhost)(?=[:/]|$)",
+        r"\1host.docker.internal",
+        cleaned,
+        flags=re.IGNORECASE,
+    )
+    return cleaned
+
+
+def set_instance_webhook(instance_name: str, webhook_url: Optional[str] = None) -> Dict[str, Any]:
+    """
+    Updates/syncs the webhook URL on an existing Evolution API instance (POST /webhook/set/{instance_name})
+    without deleting or disconnecting the WhatsApp session.
+    """
+    api_url = _get_api_url()
+    url = f"{api_url}/webhook/set/{instance_name}"
+    clean_webhook = _normalize_webhook_url(
+        webhook_url or getattr(settings, "EVOLUTION_WEBHOOK_URL", None) or DEFAULT_DOCKER_WEBHOOK_URL
+    )
+    payload = {
+        "webhook": {
+            "enabled": True,
+            "url": clean_webhook,
+            "webhookByEvents": False,
+            "byEvents": False,
+            "webhookBase64": True,
+            "base64": True,
+            "events": ["MESSAGES_UPSERT", "CONNECTION_UPDATE"],
+        }
+    }
+    try:
+        logger.info(f"[Evolution API] Syncing webhook for '{instance_name}' -> {clean_webhook}")
+        res = requests.post(url, headers=_get_headers(), json=payload, timeout=15)
+        try:
+            body = res.json()
+        except Exception:
+            body = {"status_code": res.status_code, "text": res.text}
+        if 200 <= res.status_code < 300:
+            return {"success": True, "webhook_url": clean_webhook, "data": body}
+        # Fallback for Evolution v1 flat payload format
+        flat_payload = {
+            "enabled": True,
+            "url": clean_webhook,
+            "webhook_by_events": False,
+            "webhook_base64": True,
+            "events": ["MESSAGES_UPSERT", "CONNECTION_UPDATE"],
+        }
+        res2 = requests.post(url, headers=_get_headers(), json=flat_payload, timeout=15)
+        try:
+            body2 = res2.json()
+        except Exception:
+            body2 = {"status_code": res2.status_code, "text": res2.text}
+        return {"success": 200 <= res2.status_code < 300, "webhook_url": clean_webhook, "data": body2}
+    except Exception as e:
+        logger.warning(f"[Evolution API] Failed to sync webhook for '{instance_name}': {e}")
+        return {"success": False, "error": str(e), "webhook_url": clean_webhook}
 
 
 def _is_valid_qr_base64(qr: Optional[str]) -> bool:
@@ -246,7 +312,7 @@ def create_instance(
     api_url = _get_api_url()
     create_url = f"{api_url}/instance/create"
     clean_webhook = _normalize_webhook_url(
-        webhook_url or getattr(settings, "EVOLUTION_WEBHOOK_URL", None)
+        webhook_url or getattr(settings, "EVOLUTION_WEBHOOK_URL", None) or DEFAULT_DOCKER_WEBHOOK_URL
     )
     payload: Dict[str, Any] = {
         "instanceName": instance_name,
@@ -415,7 +481,7 @@ def send_audio_message(instance_name: str, phone: str, audio_base64: str) -> Dic
 
     try:
         logger.info(f"[Evolution API] Sending audio voice note to {cleaned_phone} via '{instance_name}'")
-        res = requests.post(url, headers=_get_headers(), json=payload, timeout=15)
+        res = requests.post(url, headers=_get_headers(), json=payload, timeout=45)
         try:
             body = res.json()
         except Exception:
@@ -468,7 +534,7 @@ def get_media_base64(instance_name: str, message_data: dict) -> Optional[bytes]:
 
     try:
         logger.info(f"[Evolution API] Fetching media base64 for instance '{instance_name}' at {url}")
-        res = requests.post(url, headers=_get_headers(), json=payload, timeout=20)
+        res = requests.post(url, headers=_get_headers(), json=payload, timeout=45)
         if not (200 <= res.status_code < 300):
             logger.error(
                 f"[Evolution API ERROR] getBase64FromMediaMessage failed for '{instance_name}' "

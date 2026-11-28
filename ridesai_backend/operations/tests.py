@@ -9415,3 +9415,139 @@ class HospitalModule5Tests(TestCase):
         self.assertEqual(client_b.get(f"/api/operations/hospital/lab-orders/{o1['id']}/").status_code, 404)
         rep_b = client_b.get("/api/operations/hospital/reports/summary/?days=30").json()
         self.assertEqual(rep_b["revenue"]["total_revenue"], 0.0)
+
+
+class HospitalEvolutionWebhookTests(TestCase):
+    """Tests non-blocking Evolution API WhatsApp webhook, deduplication, stale guard, and Hospital AI reply."""
+
+    def setUp(self):
+        from operations.models import HospitalDepartment, HospitalDoctor, HospitalDoctorSchedule
+        from datetime import time as _time
+        self.client = APIClient()
+        self.hospital = Company.objects.create(
+            name="HospitalCare Webhook Test",
+            business_type="hospital",
+            status=Company.STATUS_ACTIVE,
+            payment_status=Company.PAYMENT_OK,
+            subscription_status=Company.SUBSCRIPTION_ACTIVE,
+            agent_enabled=False,
+            whatsapp_instance_name="",
+        )
+        dept = HospitalDepartment.objects.create(
+            company=self.hospital, name="Cardiology", code="CARD", is_active=True
+        )
+        doc = HospitalDoctor.objects.create(
+            company=self.hospital,
+            department=dept,
+            full_name="Dr. Ayesha Khan",
+            specialization="Cardiologist",
+            consultation_fee=Decimal("2500.00"),
+            room_number="OPD Room 4",
+            is_active=True,
+        )
+        HospitalDoctorSchedule.objects.create(
+            company=self.hospital,
+            doctor=doc,
+            day_of_week="mon",
+            start_time=_time(9, 0),
+            end_time=_time(14, 0),
+            is_active=True,
+        )
+
+    @patch("operations.evolution_views._dispatch_evolution_worker")
+    @patch("operations.evolution_client.send_text_message")
+    @patch("operations.whatsapp_agent.synthesize_speech", return_value=None)
+    @patch("operations.evolution_client.configure_instance_settings")
+    def test_hospital_evolution_webhook_queued_dedup_stale_and_reply(self, mock_cfg, mock_tts, mock_send, mock_dispatch):
+        import time as _time
+        from django.core.cache import cache
+        from operations.evolution_views import _process_evolution_message_worker
+
+        cache.clear()
+        mock_send.return_value = {"status": "SUCCESS", "key": {"id": "msg_123"}}
+        # Run worker inline during TestCase so DB transaction visibility is preserved
+        mock_dispatch.side_effect = lambda **kw: _process_evolution_message_worker(**kw)
+        instance_name = f"company_{self.hospital.id}"
+
+        # 1. Connection update (open) resolves company_<id> fallback and auto-enables agent_enabled
+        conn_res = self.client.post(
+            "/api/operations/whatsapp/evolution-webhook/connection-update",
+            {
+                "event": "connection.update",
+                "instance": instance_name,
+                "data": {"state": "open"},
+            },
+            format="json",
+        )
+        self.assertEqual(conn_res.status_code, 200)
+        self.hospital.refresh_from_db()
+        self.assertEqual(self.hospital.whatsapp_connection_status, "connected")
+        self.assertEqual(self.hospital.whatsapp_instance_name, instance_name)
+        self.assertTrue(self.hospital.agent_enabled)
+
+        # 2. Fresh patient message returns 200 {"status": "queued"} immediately & triggers Hospital AI reply
+        fresh_ts = int(_time.time())
+        msg_payload = {
+            "event": "messages-upsert",
+            "instance": instance_name,
+            "data": {
+                "key": {
+                    "remoteJid": "923001112233@s.whatsapp.net",
+                    "fromMe": False,
+                    "id": "WA_MSG_001",
+                },
+                "messageTimestamp": fresh_ts,
+                "pushName": "Ali Raza",
+                "message": {
+                    "conversation": "cardiologist kon hai aur unki fee kitni hai?",
+                },
+            },
+        }
+        msg_res = self.client.post(
+            "/api/operations/whatsapp/evolution-webhook/messages-upsert",
+            msg_payload,
+            format="json",
+        )
+        self.assertEqual(msg_res.status_code, 200)
+        self.assertEqual(msg_res.json()["status"], "queued")
+        mock_dispatch.assert_called_once()
+        mock_send.assert_called_once()
+        call_kwargs = mock_send.call_args[1]
+        self.assertEqual(call_kwargs["instance_name"], instance_name)
+        self.assertEqual(call_kwargs["phone"], "923001112233")
+        self.assertIn("Dr. Ayesha Khan", call_kwargs["text"])
+        self.assertIn("2500", call_kwargs["text"])
+
+        # 3. Duplicate message_id retry is deduplicated and ignored
+        dup_res = self.client.post(
+            "/api/operations/whatsapp/evolution-webhook/messages-upsert",
+            msg_payload,
+            format="json",
+        )
+        self.assertEqual(dup_res.status_code, 200)
+        self.assertEqual(dup_res.json().get("ignored"), "duplicate_message")
+        self.assertEqual(mock_dispatch.call_count, 1)
+
+        # 4. Stale message (> 120s old) is ignored to prevent reconnect reply floods
+        stale_payload = {
+            "event": "messages.upsert",
+            "instance": instance_name,
+            "data": {
+                "key": {
+                    "remoteJid": "923001112233@s.whatsapp.net",
+                    "fromMe": False,
+                    "id": "WA_MSG_STALE_002",
+                },
+                "messageTimestamp": int(_time.time()) - 300,
+                "pushName": "Ali Raza",
+                "message": {"conversation": "old message from 5 minutes ago"},
+            },
+        }
+        stale_res = self.client.post(
+            "/api/operations/whatsapp/evolution-webhook/",
+            stale_payload,
+            format="json",
+        )
+        self.assertEqual(stale_res.status_code, 200)
+        self.assertEqual(stale_res.json().get("ignored"), "stale_message")
+        self.assertEqual(mock_dispatch.call_count, 1)

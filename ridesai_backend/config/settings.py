@@ -223,3 +223,7 @@ WHATSAPP_VERIFY_TOKEN = os.environ.get("WHATSAPP_VERIFY_TOKEN", "rides_default_v
 
 EVOLUTION_API_URL = os.getenv("EVOLUTION_API_URL", "http://localhost:8080")
 EVOLUTION_API_KEY = os.getenv("EVOLUTION_API_KEY", "ridesai-secret-key-123")
+EVOLUTION_WEBHOOK_URL = os.getenv(
+    "EVOLUTION_WEBHOOK_URL",
+    "http://host.docker.internal:8000/api/operations/whatsapp/evolution-webhook",
+)
