@@ -11,13 +11,24 @@ const EMPTY_MED = { name: "", dosage: "", frequency: "1+0+1", duration: "5 days"
 const EMPTY_RX_FORM = {
   patient_id: "",
   doctor_id: "",
-  vitals: { bp: "", pulse: "", temp: "", weight: "" },
+  vitals: { bp: "", pulse: "", temp: "", temp_unit: "°F", weight: "" },
   diagnosis: "",
   medications: [{ ...EMPTY_MED }],
   lab_tests_advised: "",
   clinical_notes: "",
   follow_up_date: "",
 };
+
+function formatTempDisplay(vitals) {
+  if (!vitals || !vitals.temp) return "";
+  const raw = String(vitals.temp).trim();
+  if (!raw) return "";
+  // Normalize legacy "98.6 F" / "37 C" or already formatted "37.0 °C"
+  if (/°\s*[CF]$/i.test(raw)) return raw.replace(/\s*°\s*([CF])$/i, (_, u) => ` °${u.toUpperCase()}`);
+  if (/\s+[CF]$/i.test(raw)) return raw.replace(/\s+([CF])$/i, (_, u) => ` °${u.toUpperCase()}`);
+  const unit = vitals.temp_unit === "°C" || vitals.temp_unit === "C" ? "°C" : "°F";
+  return `${raw} ${unit}`;
+}
 
 function formatDate(iso) {
   if (!iso) return "—";
@@ -135,10 +146,17 @@ export default function HospitalPrescriptions({ staff = false }) {
     setError("");
     try {
       const cleanedMeds = form.medications.filter((m) => m.name && m.name.trim());
+      const vitalsPayload = { ...form.vitals };
+      if (vitalsPayload.temp && String(vitalsPayload.temp).trim()) {
+        vitalsPayload.temp = formatTempDisplay(vitalsPayload);
+      } else {
+        delete vitalsPayload.temp;
+        delete vitalsPayload.temp_unit;
+      }
       const payload = {
         patient_id: Number(form.patient_id),
         doctor_id: form.doctor_id ? Number(form.doctor_id) : null,
-        vitals: form.vitals,
+        vitals: vitalsPayload,
         diagnosis: form.diagnosis,
         medications: cleanedMeds,
         lab_tests_advised: form.lab_tests_advised,
@@ -301,7 +319,13 @@ export default function HospitalPrescriptions({ staff = false }) {
                         <div style={{ fontSize: 11.5, color: "#64748b" }}>{rx.doctor_department || rx.doctor_specialization || ""}</div>
                       </td>
                       <td style={{ padding: "12px 14px", maxWidth: 220, color: "#334155" }}>
-                        {rx.diagnosis.length > 60 ? `${rx.diagnosis.slice(0, 60)}...` : rx.diagnosis}
+                        <div>{rx.diagnosis.length > 60 ? `${rx.diagnosis.slice(0, 60)}...` : rx.diagnosis}</div>
+                        {rx.vitals?.temp && (
+                          <div style={{ fontSize: 11, color: "#64748b", marginTop: 2 }}>
+                            Temp: {formatTempDisplay(rx.vitals)}
+                            {rx.vitals?.bp ? ` • BP: ${rx.vitals.bp}` : ""}
+                          </div>
+                        )}
                       </td>
                       <td style={{ padding: "12px 14px" }}>
                         <span style={{ fontSize: 11.5, fontWeight: 700, background: "#fdf4ff", color: "#86198f", border: `1px solid ${ACCENT}`, borderRadius: 999, padding: "2px 9px" }}>
@@ -393,10 +417,30 @@ export default function HospitalPrescriptions({ staff = false }) {
             {/* Vitals Strip */}
             <div style={{ background: "#f8fafc", border: "1px solid #e2e8f0", borderRadius: 12, padding: 12 }}>
               <div style={{ fontSize: 11.5, fontWeight: 800, color: "#475569", marginBottom: 8, textTransform: "uppercase" }}>Patient Vitals</div>
-              <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 8 }}>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1.45fr 1fr", gap: 8 }}>
                 <input placeholder="BP (120/80)" value={form.vitals.bp} onChange={(e) => setForm({ ...form, vitals: { ...form.vitals, bp: e.target.value } })} style={{ padding: "8px 10px", borderRadius: 8, border: "1px solid #cbd5e1", fontSize: 12.5 }} />
                 <input placeholder="Pulse (76 bpm)" value={form.vitals.pulse} onChange={(e) => setForm({ ...form, vitals: { ...form.vitals, pulse: e.target.value } })} style={{ padding: "8px 10px", borderRadius: 8, border: "1px solid #cbd5e1", fontSize: 12.5 }} />
-                <input placeholder="Temp (98.6 F)" value={form.vitals.temp} onChange={(e) => setForm({ ...form, vitals: { ...form.vitals, temp: e.target.value } })} style={{ padding: "8px 10px", borderRadius: 8, border: "1px solid #cbd5e1", fontSize: 12.5 }} />
+                <div style={{ display: "flex", gap: 4 }}>
+                  <input
+                    type="number"
+                    step="0.1"
+                    min={form.vitals.temp_unit === "°C" ? 30 : 86}
+                    max={form.vitals.temp_unit === "°C" ? 45 : 113}
+                    placeholder={form.vitals.temp_unit === "°C" ? "Temp (37.0)" : "Temp (98.6)"}
+                    value={form.vitals.temp}
+                    onChange={(e) => setForm({ ...form, vitals: { ...form.vitals, temp: e.target.value } })}
+                    style={{ width: "100%", padding: "8px 9px", borderRadius: 8, border: "1px solid #cbd5e1", fontSize: 12.5 }}
+                  />
+                  <select
+                    aria-label="Temperature Unit"
+                    value={form.vitals.temp_unit || "°F"}
+                    onChange={(e) => setForm({ ...form, vitals: { ...form.vitals, temp_unit: e.target.value } })}
+                    style={{ padding: "8px 6px", borderRadius: 8, border: "1px solid #cbd5e1", fontSize: 12.5, fontWeight: 700, background: "#fff", cursor: "pointer" }}
+                  >
+                    <option value="°F">°F</option>
+                    <option value="°C">°C</option>
+                  </select>
+                </div>
                 <input placeholder="Weight (70 kg)" value={form.vitals.weight} onChange={(e) => setForm({ ...form, vitals: { ...form.vitals, weight: e.target.value } })} style={{ padding: "8px 10px", borderRadius: 8, border: "1px solid #cbd5e1", fontSize: 12.5 }} />
               </div>
             </div>
@@ -515,7 +559,7 @@ export default function HospitalPrescriptions({ staff = false }) {
                 <strong>Vitals:</strong>
                 {printRx.vitals.bp && <span>BP: <strong>{printRx.vitals.bp}</strong></span>}
                 {printRx.vitals.pulse && <span>Pulse: <strong>{printRx.vitals.pulse}</strong></span>}
-                {printRx.vitals.temp && <span>Temp: <strong>{printRx.vitals.temp}</strong></span>}
+                {printRx.vitals.temp && <span>Temp: <strong>{formatTempDisplay(printRx.vitals)}</strong></span>}
                 {printRx.vitals.weight && <span>Weight: <strong>{printRx.vitals.weight}</strong></span>}
               </div>
             )}

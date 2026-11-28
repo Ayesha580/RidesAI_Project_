@@ -2095,7 +2095,7 @@ class HospitalPrescriptionsAPIView(HospitalBaseAPIView):
         vitals = {
             k: str(v).strip()[:40]
             for k, v in raw_vitals.items()
-            if k in ("bp", "pulse", "temp", "weight", "spo2", "height") and str(v or "").strip()
+            if k in ("bp", "pulse", "temp", "temp_unit", "weight", "spo2", "height") and str(v or "").strip()
         }
 
         try:
@@ -2154,7 +2154,7 @@ class HospitalPrescriptionDetailAPIView(HospitalBaseAPIView):
             rx.vitals = {
                 k: str(v).strip()[:40]
                 for k, v in request.data["vitals"].items()
-                if k in ("bp", "pulse", "temp", "weight", "spo2", "height") and str(v or "").strip()
+                if k in ("bp", "pulse", "temp", "temp_unit", "weight", "spo2", "height") and str(v or "").strip()
             }
         if "medications" in request.data:
             try:
